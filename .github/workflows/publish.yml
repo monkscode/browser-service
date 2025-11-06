@@ -15,13 +15,16 @@ on:
 
 jobs:
   extract-tag:  
-    runs-on: ubuntu-latest  
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:  
       version: ${{ steps.extract_tag.outputs.tag }}  
     steps:  
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Fetch all history for version calculation
+          token: ${{ secrets.GITHUB_TOKEN }}
       
       - id: extract_tag  
         name: Extract or generate version  
@@ -55,9 +58,12 @@ jobs:
     environment: 
       name: pypi
     permissions:
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Set up Python 3.9
         uses: actions/setup-python@v3
         with:

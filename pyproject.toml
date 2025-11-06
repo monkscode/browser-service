@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "browser-service"
+version = "1.0.0"
+description = "Browser automation service with AI-powered element identification and locator generation"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}  # Update if different
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}  # Update
+]
+maintainers = [
+    {name = "Your Name", email = "your.email@example.com"}  # Update
+]
+keywords = ["browser", "automation", "testing", "locators", "selenium", "playwright", "robot-framework", "ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "browser-use>=0.7.10",
+    "playwright>=1.40.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "aiohttp>=3.9.0",
+    "beautifulsoup4>=4.12.0",
+    "langchain-google-genai>=0.0.5",
+    "flask>=3.0.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "flake8>=6.0",
+    "mypy>=1.0",
+    "isort>=5.12",
+]
+test = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/YOUR_USERNAME/browser-service"  # Update
+Documentation = "https://github.com/YOUR_USERNAME/browser-service#readme"  # Update
+Repository = "https://github.com/YOUR_USERNAME/browser-service"  # Update
+"Bug Tracker" = "https://github.com/YOUR_USERNAME/browser-service/issues"  # Update
+
+[tool.setuptools]
+packages = ["browser_service"]
+
+[tool.setuptools.package-data]
+browser_service = ["py.typed"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"

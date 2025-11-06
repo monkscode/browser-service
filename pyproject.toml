@@ -8,12 +8,13 @@ version = "1.0.0"
 description = "Browser automation service with AI-powered element identification and locator generation"
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "MIT"}  # Update if different
+license = {text = "Apache 2.0"}  # Update if different
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}  # Update
+    {name = "monkscode", email = "1dhruvilvyas@gmail.com"}  # Update
 ]
 maintainers = [
-    {name = "Your Name", email = "your.email@example.com"}  # Update
+    {name = "monkscode", email = "1dhruvilvyas@gmail.com"}, 
+    {name = "Devasy23", email = "patel.devasy.23@gmail.com"}
 ]
 keywords = ["browser", "automation", "testing", "locators", "selenium", "playwright", "robot-framework", "ai"]
 classifiers = [
@@ -61,10 +62,10 @@ test = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/YOUR_USERNAME/browser-service"  # Update
-Documentation = "https://github.com/YOUR_USERNAME/browser-service#readme"  # Update
-Repository = "https://github.com/YOUR_USERNAME/browser-service"  # Update
-"Bug Tracker" = "https://github.com/YOUR_USERNAME/browser-service/issues"  # Update
+Homepage = "https://github.com/monkscode/browser-service"  # Update
+Documentation = "https://github.com/monkscode/browser-service#readme"  # Update
+Repository = "https://github.com/monkscode/browser-service"  # Update
+"Bug Tracker" = "https://github.com/monkscode/browser-service/issues"  # Update
 
 [tool.setuptools]
 packages = ["browser_service"]

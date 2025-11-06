@@ -16,16 +16,16 @@ with open(os.path.join(this_directory, 'requirements.txt'), encoding='utf-8') as
 setup(
     name='browser-service',
     version='1.0.0',  # Update version in browser_service/__init__.py too
-    author='Your Name',  # Update with your name
-    author_email='your.email@example.com',  # Update with your email
+    author='monkscode',  # Update with your name
+    author_email='1dhruvilvyas@gmail.com',  # Update with your email
     description='Browser automation service with AI-powered element identification and locator generation',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    url='https://github.com/YOUR_USERNAME/browser-service',  # Update with your repo URL
+    url='https://github.com/monkscode/browser-service',  # Update with your repo URL
     project_urls={
-        'Bug Reports': 'https://github.com/YOUR_USERNAME/browser-service/issues',
-        'Source': 'https://github.com/YOUR_USERNAME/browser-service',
-        'Documentation': 'https://github.com/YOUR_USERNAME/browser-service#readme',
+        'Bug Reports': 'https://github.com/monkscode/browser-service/issues',
+        'Source': 'https://github.com/monkscode/browser-service',
+        'Documentation': 'https://github.com/monkscode/browser-service#readme',
     },
     packages=find_packages(exclude=['tests', 'tests.*', 'docs', 'examples']),
     classifiers=[

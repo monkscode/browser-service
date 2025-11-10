@@ -144,6 +144,7 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             user_query = data["user_query"]
             session_config = data["session_config"]
             enable_custom_actions = data["enable_custom_actions"]
+            parent_workflow_id = data.get("parent_workflow_id")  # Optional
 
             # Feature flag: enable_custom_actions (defaults to config value if not provided)
             if enable_custom_actions is None:
@@ -151,6 +152,10 @@ def register_routes(app: Flask, task_processor: Any) -> None:
                 logger.info(f"🔧 enable_custom_actions not provided in request, using config default: {enable_custom_actions}")
             else:
                 logger.info(f"🔧 enable_custom_actions provided in request: {enable_custom_actions}")
+            
+            # Log parent_workflow_id if provided
+            if parent_workflow_id:
+                logger.info(f"📎 Parent workflow ID provided: {parent_workflow_id} (will skip duplicate metrics)")
 
             # All tasks are processed as unified workflows
             logger.info("✅ Using unified workflow mode (all tasks processed as workflows)")
@@ -183,7 +188,8 @@ def register_routes(app: Flask, task_processor: Any) -> None:
                 user_query,
                 session_config,
                 enable_custom_actions,
-                task_processor.get_tasks_dict()
+                task_processor.get_tasks_dict(),
+                parent_workflow_id  # Pass parent_workflow_id to prevent duplicate metrics
             )
 
             # Return the task ID immediately

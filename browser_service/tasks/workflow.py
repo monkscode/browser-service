@@ -38,7 +38,8 @@ def process_workflow_task(
     user_query: str,
     session_config: Dict[str, Any],
     enable_custom_actions: Optional[bool] = None,
-    tasks_dict: Optional[Dict[str, Dict[str, Any]]] = None
+    tasks_dict: Optional[Dict[str, Dict[str, Any]]] = None,
+    parent_workflow_id: Optional[str] = None
 ) -> None:
     """
     Process elements as a UNIFIED WORKFLOW in a single browser session.
@@ -2193,7 +2194,8 @@ def process_workflow_task(
         # RECORD WORKFLOW METRICS
         # ========================================
         # Send metrics to the workflow metrics API endpoint for persistence
-        if settings.TRACK_LLM_COSTS and 'summary' in results:
+        # Skip if parent_workflow_id is provided (main workflow will handle unified metrics)
+        if settings.TRACK_LLM_COSTS and 'summary' in results and not parent_workflow_id:
             try:
                 record_workflow_metrics(
                     workflow_id=task_id,
@@ -2202,9 +2204,12 @@ def process_workflow_task(
                     session_id=results.get('session_id'),
                     backend_port=settings.APP_PORT
                 )
+                logger.info(f"📊 Browser-use metrics recorded for task {task_id}")
             except Exception as metrics_error:
                 # Don't fail the workflow if metrics recording fails
                 logger.warning(f"⚠️ Failed to record workflow metrics: {metrics_error}")
+        elif parent_workflow_id:
+            logger.info(f"⏭️  Skipping browser-use metrics recording (parent workflow {parent_workflow_id} will handle unified metrics)")
 
     except Exception as e:
         logger.error(

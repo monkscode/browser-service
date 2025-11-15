@@ -1,5 +1,9 @@
 name: Publish Python 🐍 distributions 📦 to PyPI
 
+env:
+  AUTO_BUMP_LEVEL: patch
+  PYPI_PACKAGE_NAME: browser-service
+
 on:
   push:
     branches:
@@ -25,31 +29,19 @@ jobs:
         with:
           fetch-depth: 0  # Fetch all history for version calculation
           token: ${{ secrets.GITHUB_TOKEN }}
-      
       - id: extract_tag  
         name: Extract or generate version  
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            # Manual trigger - use input version
-            echo "::set-output name=tag::${{ github.event.inputs.version }}"
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # Tag push - extract version from tag
-            echo "::set-output name=tag::$(echo $GITHUB_REF | cut -d / -f 3)"
+            TAG="${GITHUB_REF#refs/tags/}"
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           else
-            # Auto trigger on main branch - generate version
-            # Get the latest tag, default to 0.0.0 if none exists
-            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")
-            echo "Latest tag: $LATEST_TAG"
-            
-            # Extract version parts
-            IFS='.' read -r MAJOR MINOR PATCH <<< "${LATEST_TAG#v}"
-            
-            # Increment patch version
-            PATCH=$((PATCH + 1))
-            NEW_VERSION="$MAJOR.$MINOR.$PATCH"
-            
-            echo "Generated version: $NEW_VERSION"
-            echo "::set-output name=tag::$NEW_VERSION"
+            NEW_VERSION=$(python3 .github/scripts/resolve_version.py)
+            echo "tag=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
           fi  
 
   build-and-publish-pypi:

@@ -21,11 +21,15 @@ def extract_json_for_element(text: str, element_id: str) -> Optional[Dict[str, A
     """
     Extract JSON object for a specific element_id from text, handling nested braces properly.
 
+    ⚠️ IMPORTANT: This function expects VALID JSON with double quotes.
+    If you're passing Python dict str() representations (with single quotes),
+    conversion will fail. Use direct dict access instead when possible.
+
     This function searches for JSON objects containing a specific element_id and extracts
     the complete JSON structure, handling nested braces and escaped quotes correctly.
 
     Args:
-        text: The text containing JSON data
+        text: The text containing JSON data (must be valid JSON, not Python dict repr)
         element_id: The element ID to search for (e.g., "elem_1")
 
     Returns:
@@ -37,6 +41,15 @@ def extract_json_for_element(text: str, element_id: str) -> Optional[Dict[str, A
         >>> result['found']
         True
     """
+    # Edge case: Validate inputs
+    if not text or not isinstance(text, str):
+        logger.debug("extract_json_for_element: text is None or not a string")
+        return None
+    
+    if not element_id or not isinstance(element_id, str):
+        logger.debug("extract_json_for_element: element_id is None or not a string")
+        return None
+    
     # Find the starting position of the element_id
     # Check multiple patterns (with and without space after colon)
     search_patterns = [
@@ -161,6 +174,12 @@ def extract_workflow_json(text: str) -> Optional[Dict[str, Any]]:
 
     Returns:
         Parsed JSON dict if found and valid, None otherwise
+    
+    Edge cases handled:
+        - Empty or None text
+        - Invalid text types
+        - Malformed JSON
+        - Missing required fields
 
     Example:
         >>> text = '{"workflow_completed": true, "results": [...]}'
@@ -168,6 +187,11 @@ def extract_workflow_json(text: str) -> Optional[Dict[str, Any]]:
         >>> result['workflow_completed']
         True
     """
+    # Edge case: Validate input
+    if not text or not isinstance(text, str):
+        logger.debug("extract_workflow_json: text is None or not a string")
+        return None
+    
     # Find the starting position of workflow_completed
     search_pattern = '"workflow_completed"'
     start_pos = text.find(search_pattern)

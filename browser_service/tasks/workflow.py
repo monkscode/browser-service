@@ -369,6 +369,48 @@ def process_workflow_task(
             logger.info(f"📊 METRIC: Workflow execution time: {execution_time:.2f}s")
 
             # ========================================
+            # EXTRACT RESULTS FROM CUSTOM ACTION METADATA (IF ENABLED)
+            # ========================================
+            # When custom actions are enabled, results are stored directly in ActionResult.metadata
+            # This is the FASTEST path - no coordinate parsing, no Playwright extraction needed
+            results_list = []
+            
+            if custom_actions_enabled and hasattr(agent_result, 'history') and agent_result.history:
+                logger.info("🎯 Extracting results from custom action metadata (primary path)...")
+                
+                for idx, step in enumerate(agent_result.history):
+                    if hasattr(step, 'result') and step.result:
+                        if isinstance(step.result, list):
+                            for action_result in step.result:
+                                if hasattr(action_result, 'metadata') and isinstance(action_result.metadata, dict):
+                                    metadata = action_result.metadata
+                                    elem_id = metadata.get('element_id')
+                                    
+                                    # Check if this is a custom action result with locator data
+                                    if elem_id and metadata.get('found') and metadata.get('best_locator'):
+                                        logger.info(f"   ✅ Found custom action result for {elem_id}: {metadata.get('best_locator')}")
+                                        
+                                        # Check if we already have this element
+                                        existing_idx = next(
+                                            (i for i, r in enumerate(results_list) if r.get('element_id') == elem_id), 
+                                            None
+                                        )
+                                        
+                                        if existing_idx is None:
+                                            # First occurrence, add it
+                                            results_list.append(metadata)
+                                        else:
+                                            # Already have it (agent retry/update), replace with latest
+                                            logger.info(f"   🔄 Updating {elem_id} with latest result")
+                                            results_list[existing_idx] = metadata
+                
+                if results_list:
+                    logger.info(f"   🎉 Extracted {len(results_list)}/{len(elements)} elements via custom action metadata")
+                    logger.info(f"   ⏭️  Skipping coordinate parsing and Playwright extraction (not needed)")
+                else:
+                    logger.warning("   ⚠️  No custom action results found in metadata - will try fallback methods")
+
+            # ========================================
             # EXTRACT LOCATORS USING PLAYWRIGHT'S BUILT-IN METHODS
             # ========================================
 
@@ -482,7 +524,7 @@ def process_workflow_task(
                                 final_result = str(last_step.result)
 
                     logger.info(
-                        f"📝 Agent final result (first 500 chars): {result[:500]}")
+                        f"📝 Agent final result (first 500 chars): {final_result[:500]}")
 
                     # Look for JSON with elements_found
                     json_match = re.search(
@@ -630,10 +672,17 @@ def process_workflow_task(
                 import traceback
                 logger.error(traceback.format_exc())
 
-            results_list = []
+            # results_list already initialized above after custom action extraction
             workflow_completed = False
 
-            if not page:
+            # OPTIMIZATION: When custom actions are enabled and we already have results, skip extraction
+            if custom_actions_enabled and results_list:
+                logger.info(f"✅ Already have {len(results_list)} results from custom actions - skipping coordinate-based extraction")
+                workflow_completed = (len(results_list) == len(elements))
+            elif custom_actions_enabled and not elements_found:
+                logger.info("✅ Custom actions enabled but no results yet - skipping coordinate-based extraction")
+                logger.info("   Results will be extracted from action metadata in fallback section")
+            elif not page:
                 logger.error("❌ No Playwright page available")
             else:
                 # Extract and validate locators for each element using Playwright
@@ -642,11 +691,10 @@ def process_workflow_task(
 
                     # Find element description from original elements list
                     elem_desc = next(
-                        (e.get('description')
-                         for e in elements if e.get('id') == elem_id),
+                        (e.get('description') for e in elements if e.get('id') == elem_id),
                         'Unknown element'
                     )
-
+                    
                     if elem_data.get('found') and elem_data.get('coordinates'):
                         coords = elem_data.get('coordinates')
                         logger.info(
@@ -808,9 +856,15 @@ def process_workflow_task(
             # OLD PARSING LOGIC (SKIPPED) - removed dead code that referenced undefined variables
 
             # If no structured results, try to extract individual element results from history
+            # NOTE: When custom actions are enabled, we should already have results from the metadata extraction above
             if not results_list:
-                logger.warning(
-                    "No structured workflow results, attempting to extract from history...")
+                if custom_actions_enabled:
+                    logger.warning(
+                        "⚠️ Custom actions enabled but no results extracted from metadata - trying fallback history parsing...")
+                    logger.warning("   This shouldn't normally happen - check custom action implementation")
+                else:
+                    logger.warning(
+                        "No structured workflow results, attempting to extract from history...")
 
                 # APPROACH 1: Extract actual result content from agent history
                 logger.info(
@@ -828,69 +882,26 @@ def process_workflow_task(
 
                 # Strategy 1: Try all_results attribute
                 if hasattr(agent_result, 'all_results') and agent_result.all_results:
-                    logger.info(
-                        f"   ✅ Found all_results with {len(agent_result.all_results)} items")
-                    for idx, action_result in enumerate(agent_result.all_results):
-                        # DEBUG: Log available attributes
-                        logger.info(
-                            f"   📋 all_results[{idx}] type: {type(action_result)}")
-                        logger.info(
-                            f"   📋 all_results[{idx}] has metadata: {hasattr(action_result, 'metadata')}")
-
+                    for action_result in agent_result.all_results:
                         # PRIORITY 1: Check for metadata attribute (custom actions)
-                        if hasattr(action_result, 'metadata') and action_result.metadata:
-                            logger.info(
-                                f"   🔍 all_results[{idx}].metadata exists, type: {type(action_result.metadata)}")
-                            if isinstance(action_result.metadata, dict):
-                                logger.info(
-                                    f"   🎯 all_results[{idx}].metadata is a dict! Direct access possible")
-                                logger.info(
-                                    f"   🔍 metadata keys: {list(action_result.metadata.keys())}")
-                                if 'element_id' in action_result.metadata:
-                                    direct_results.append(action_result.metadata)
-                                    logger.info(
-                                        f"   ✅ Found element_id in all_results[{idx}].metadata dict!")
-                                    continue  # Skip string conversion
-                                else:
-                                    logger.warning(
-                                        "   ⚠️ metadata exists but no element_id key")
-                            else:
-                                logger.warning(
-                                    f"   ⚠️ metadata is not a dict: {type(action_result.metadata)}")
-                        else:
-                            logger.debug(
-                                f"   all_results[{idx}] has no metadata or metadata is None")
+                        if hasattr(action_result, 'metadata') and isinstance(action_result.metadata, dict):
+                            if 'element_id' in action_result.metadata:
+                                direct_results.append(action_result.metadata)
+                                continue
 
-                        # PRIORITY 2: Try multiple attribute names
-                        content = None
-                        if hasattr(action_result, 'extracted_content') and action_result.extracted_content:
-                            content = action_result.extracted_content
-                            logger.debug(
-                                f"   Using extracted_content from all_results[{idx}]")
-                        elif hasattr(action_result, 'content') and action_result.content:
-                            content = action_result.content
-                            logger.debug(
-                                f"   Using content from all_results[{idx}]")
-                        elif hasattr(action_result, 'result') and action_result.result:
-                            # Check if result is a dict/object with direct access
+                        # PRIORITY 2: Try result attribute
+                        if hasattr(action_result, 'result') and action_result.result:
                             if isinstance(action_result.result, dict):
-                                logger.debug(
-                                    f"   all_results[{idx}].result is a dict!")
                                 direct_results.append(action_result.result)
-                                continue  # Skip string conversion
+                                continue
                             content = str(action_result.result)
-                            logger.debug(
-                                f"   Using str(result) from all_results[{idx}]")
-
-                        if content:
-                            result_strings.append(content)
-                            logger.debug(
-                                f"   Collected content from all_results[{idx}]: {len(content)} chars")
+                            if content not in result_strings:
+                                result_strings.append(content)
 
                 # Strategy 2: Try history attribute (MOST IMPORTANT for execute_js results)
                 if hasattr(agent_result, 'history') and agent_result.history:
-                    logger.info(
-                        f"   ✅ Found history with {len(agent_result.history)} items")
+                    logger.info(f"   ✅ Found history with {len(agent_result.history)} items")
+                    
                     for idx, step in enumerate(agent_result.history):
                         logger.info(f"   📋 history[{idx}] type: {type(step)}")
                         logger.info(f"   📋 history[{idx}] has result: {hasattr(step, 'result')}")
@@ -906,110 +917,39 @@ def process_workflow_task(
                                     logger.info(f"   🔍 history[{idx}].result[{result_idx}] type: {type(action_result)}")
                                     logger.info(f"   🔍 history[{idx}].result[{result_idx}] has metadata: {hasattr(action_result, 'metadata')}")
 
-                                    if hasattr(action_result, 'metadata') and action_result.metadata:
-                                        if isinstance(action_result.metadata, dict):
-                                            logger.info(
-                                                f"   🎯 history[{idx}].result[{result_idx}].metadata is a dict! Direct access possible")
-                                            logger.info(
-                                                f"   🔍 metadata keys: {list(action_result.metadata.keys())}")
-                                            if 'element_id' in action_result.metadata:
-                                                direct_results.append(action_result.metadata)
-                                                logger.info(
-                                                    f"   ✅ Found element_id in history[{idx}].result[{result_idx}].metadata dict!")
-                                                # Don't break - there might be more ActionResults with metadata
+                                    if hasattr(action_result, 'metadata') and isinstance(action_result.metadata, dict):
+                                        logger.info(f"   🎯 history[{idx}].result[{result_idx}].metadata is a dict! Direct access possible")
+                                        logger.info(f"   🔍 metadata keys: {list(action_result.metadata.keys())}")
+                                        if 'element_id' in action_result.metadata:
+                                            direct_results.append(action_result.metadata)
+                                            logger.info(f"   ✅ Found element_id in history[{idx}].result[{result_idx}].metadata dict!")
 
                             # If result is not a list, check if it has metadata directly
-                            elif hasattr(step.result, 'metadata') and step.result.metadata:
-                                if isinstance(step.result.metadata, dict):
-                                    logger.info(
-                                        f"   🎯 history[{idx}].result.metadata is a dict! Direct access possible")
-                                    logger.info(
-                                        f"   🔍 metadata keys: {list(step.result.metadata.keys())}")
-                                    if 'element_id' in step.result.metadata:
-                                        direct_results.append(step.result.metadata)
-                                        logger.info(
-                                            f"   ✅ Found element_id in history[{idx}].result.metadata dict!")
-                        # Check for tool_results in state (this is where execute_js output is stored)
+                            elif hasattr(step.result, 'metadata') and isinstance(step.result.metadata, dict):
+                                logger.info(f"   🎯 history[{idx}].result.metadata is a dict! Direct access possible")
+                                if step.result.metadata and 'element_id' in step.result.metadata:
+                                    logger.info(f"   🔍 metadata keys: {list(step.result.metadata.keys())}")
+                                    direct_results.append(step.result.metadata)
+                                    logger.info(f"   ✅ Found element_id in history[{idx}].result.metadata dict!")
+                        
+                        # Check for tool_results in state
                         if hasattr(step, 'state') and hasattr(step.state, 'tool_results'):
-                            logger.debug(
-                                f"   history[{idx}] has tool_results: {len(step.state.tool_results)} items")
-                            for tool_idx, tool_result in enumerate(step.state.tool_results):
-                                # DEBUG: Check what type tool_result is
-                                logger.debug(
-                                    f"   tool_result[{tool_idx}] type: {type(tool_result)}")
-                                # First 10 attrs
-                                logger.debug(
-                                    f"   tool_result[{tool_idx}] attributes: {dir(tool_result)[:10]}...")
-
-                                # Try to access result directly without str()
-                                # PRIORITY 1: Check for metadata attribute (custom actions)
-                                if hasattr(tool_result, 'metadata') and tool_result.metadata:
-                                    if isinstance(tool_result.metadata, dict):
-                                        logger.info(
-                                            f"   🎯 tool_result[{tool_idx}].metadata is a dict! Direct access possible")
-                                        if 'element_id' in tool_result.metadata:
-                                            direct_results.append(tool_result.metadata)
-                                            logger.info(
-                                                "   ✅ Found element_id in tool_result.metadata dict!")
-                                            continue  # Skip string conversion
-
-                                # PRIORITY 2: Check if tool_result itself is a dict
-                                if isinstance(tool_result, dict):
-                                    logger.info(
-                                        f"   🎯 tool_result[{tool_idx}] is a dict! Direct access possible")
-                                    if 'element_id' in tool_result:
-                                        direct_results.append(tool_result)
-                                        logger.info(
-                                            "   ✅ Found element_id in tool_result dict!")
-                                        continue  # Skip string conversion
-
-                                # PRIORITY 3: Check result attribute
-                                elif hasattr(tool_result, 'result'):
-                                    if isinstance(tool_result.result, dict):
-                                        logger.info(
-                                            f"   🎯 tool_result[{tool_idx}].result is a dict!")
-                                        if 'element_id' in tool_result.result:
-                                            direct_results.append(
-                                                tool_result.result)
-                                            logger.info(
-                                                "   ✅ Found element_id in tool_result.result dict!")
-                                            continue  # Skip string conversion
-                                    else:
-                                        # Add to string collection
-                                        content = str(tool_result.result)
-                                        if content and content not in result_strings:
-                                            result_strings.append(content)
-                                else:
-                                    # Last resort: convert to string
-                                    content = str(tool_result)
-                                    if content and content not in result_strings:
-                                        result_strings.append(content)
-
-                        # Also try direct content attributes
-                        content = None
-                        if hasattr(step, 'extracted_content') and step.extracted_content:
-                            content = step.extracted_content
-                        elif hasattr(step, 'content') and step.content:
-                            content = step.content
-                        elif hasattr(step, 'result'):
-                            if hasattr(step.result, 'extracted_content') and step.result.extracted_content:
-                                content = step.result.extracted_content
-                            elif hasattr(step.result, 'content') and step.result.content:
-                                content = step.result.content
-                            elif step.result:
-                                content = str(step.result)
-                                logger.debug(
-                                    f"   Using str() for history[{idx}].result")
-
-                        if content and content not in result_strings:
-                            result_strings.append(content)
-                            logger.debug(
-                                f"   Collected content from history[{idx}]: {len(content)} chars")
+                            for tool_result in step.state.tool_results:
+                                # Check for metadata or dict
+                                if hasattr(tool_result, 'metadata') and isinstance(tool_result.metadata, dict):
+                                    if 'element_id' in tool_result.metadata:
+                                        direct_results.append(tool_result.metadata)
+                                        continue
+                                elif isinstance(tool_result, dict) and 'element_id' in tool_result:
+                                    direct_results.append(tool_result)
+                                    continue
+                                elif hasattr(tool_result, 'result') and isinstance(tool_result.result, dict):
+                                    if 'element_id' in tool_result.result:
+                                        direct_results.append(tool_result.result)
+                                        continue
 
                 # Strategy 3: If still nothing, try converting entire agent_result to string as last resort
                 if not result_strings and not direct_results:
-                    logger.warning(
-                        "   No content found via direct access, falling back to str(agent_result)")
                     result_strings.append(str(agent_result))
 
                 # PRIORITY: If we found direct dict results, use them immediately!
@@ -1039,323 +979,321 @@ def process_workflow_task(
                     if len(results_list) == len(elements):
                         logger.info(
                             f"   🏆 All {len(elements)} elements extracted via DIRECT ACCESS (fastest path)!")
-                        # Skip all parsing - we have everything!
-                        # Jump to re-ranking section
-
-                # Combine all result strings
-                full_result_str = "\n".join(result_strings)
-                logger.info(
-                    f"   Collected {len(result_strings)} result strings, total length: {len(full_result_str)} characters")
-
-                # DEBUG: Show sample of result string to understand format
-                logger.info("   📋 Result string sample (first 2000 chars):")
-                logger.info(f"   {full_result_str[:2000]}")
-                logger.info(f"   {'='*80}")
-
-                # ROBUST EXTRACTION: Leverage "Result:" pattern from browser_use library
-                # The browser_use library ALWAYS prints "Result: {json}" after JavaScript execution
-                # This is the most reliable source of locator data
-                logger.info(
-                    "   🎯 Strategy: Extract from 'Result:' lines (most reliable)")
-
-                # STRATEGY 1: Extract from "Result:" lines (MOST RELIABLE)
-                # Pattern: "Result: {complete JSON object}"
-                # The browser_use library prints this after every JavaScript execution
-                def extract_from_result_lines(text):
-                    """
-                    Extract JSON from 'Result:' lines printed by browser_use.
-                    This is the MOST RELIABLE method because:
-                    1. Always printed by browser_use after JS execution
-                    2. Contains complete, valid JSON
-                    3. Has best_locator already selected (first unique locator)
-                    4. No double-escaping issues
-                    """
-                    results = []
-                    # Look for "Result: {" followed by JSON
-                    # Find all Result: lines
-                    lines = text.split('\n')
-                    for line in lines:
-                        if 'Result:' in line and 'element_id' in line:
-                            # Extract everything after "Result:"
-                            result_start = line.find('Result:')
-                            if result_start != -1:
-                                json_part = line[result_start + 7:].strip()
-
-                                # Find complete JSON using brace matching
-                                if json_part.startswith('{'):
-                                    brace_count = 0
-                                    in_string = False
-                                    escape_next = False
-
-                                    for i, char in enumerate(json_part):
-                                        if escape_next:
-                                            escape_next = False
-                                            continue
-                                        if char == '\\':
-                                            escape_next = True
-                                            continue
-                                        if char == '"':
-                                            in_string = not in_string
-                                            continue
-                                        if in_string:
-                                            continue
-
-                                        if char == '{':
-                                            brace_count += 1
-                                        elif char == '}':
-                                            brace_count -= 1
-                                            if brace_count == 0:
-                                                json_str = json_part[:i+1]
-                                                results.append(json_str)
-                                                break
-
-                    return results
-
-                # STRATEGY 2: Extract any JSON with element_id (FALLBACK)
-                def extract_all_element_jsons(text):
-                    """Extract all JSON objects containing element_id from text."""
-                    found_jsons = []
-                    # Look for {"element_id": patterns
-                    for pattern in ['"element_id":', "'element_id':"]:
-                        pos = 0
-                        while True:
-                            pos = text.find(pattern, pos)
-                            if pos == -1:
-                                break
-
-                            # Find the opening brace
-                            brace_pos = text.rfind(
-                                '{', max(0, pos - 50), pos + 20)
-                            if brace_pos == -1:
-                                pos += 1
-                                continue
-
-                            # Match braces to find complete JSON
-                            brace_count = 0
-                            in_string = False
-                            escape_next = False
-
-                            for i in range(brace_pos, min(len(text), brace_pos + 10000)):
-                                char = text[i]
-
-                                if escape_next:
-                                    escape_next = False
-                                    continue
-                                if char == '\\':
-                                    escape_next = True
-                                    continue
-                                if char == '"':
-                                    in_string = not in_string
-                                    continue
-                                if in_string:
-                                    continue
-
-                                if char == '{':
-                                    brace_count += 1
-                                elif char == '}':
-                                    brace_count -= 1
-                                    if brace_count == 0:
-                                        json_str = text[brace_pos:i+1]
-                                        if json_str not in found_jsons:
-                                            found_jsons.append(json_str)
-                                        break
-
-                            pos += 1
-
-                    return found_jsons
-
-                # Try Strategy 1 first (Result: lines)
-                result_line_jsons = extract_from_result_lines(full_result_str)
-                if result_line_jsons:
-                    logger.info(
-                        f"   ✅ Extracted {len(result_line_jsons)} JSON blocks from 'Result:' lines")
-                    extracted_jsons = result_line_jsons
-                else:
-                    logger.warning(
-                        "   ⚠️  No 'Result:' lines found, trying fallback extraction...")
-                    # Try Strategy 2 (any JSON with element_id)
-                    extracted_jsons = extract_all_element_jsons(
-                        full_result_str)
-                    if extracted_jsons:
-                        logger.info(
-                            f"   ✅ Extracted {len(extracted_jsons)} JSON blocks (fallback method)")
+                        # Early exit - skip all string parsing and jump to re-ranking
+                        # No need to process result_strings, extract JSON, or check history
+                        logger.info("   ⏭️  Skipping all fallback extraction methods (100% success via direct access)")
                     else:
-                        logger.warning(
-                            "   ⚠️  No JSON blocks with element_id found in output")
+                        # Only do string parsing if we're missing elements
+                        logger.info(f"   ⚠️  Missing {len(elements) - len(results_list)} elements, will try string-based extraction...")
 
-                # Add extracted JSONs to the result string for pattern matching
-                if extracted_jsons:
-                    full_result_str += "\n" + "\n".join(extracted_jsons)
-                    logger.debug(
-                        f"   Added {len(extracted_jsons)} JSON blocks to search string")
-
-                    # OPTIMIZATION: Try to parse extracted JSONs directly
-                    # This is faster and more reliable than pattern matching + extraction
+                # Combine all result strings (needed for extraction functions)
+                full_result_str = "\n".join(result_strings)
+                
+                # Only process strings if we don't have all elements yet
+                if len(results_list) < len(elements):
                     logger.info(
-                        "   🚀 Attempting direct JSON parsing (optimized path)...")
-                    for json_str in extracted_jsons:
-                        try:
-                            parsed = json.loads(json_str)
-                            elem_id = parsed.get('element_id')
-                            if elem_id and parsed.get('found'):
-                                # CRITICAL: Use validated locators from agent if available
-                                # The agent now validates locators during execution (while browser is open)
-                                # This is more reliable than validating after browser closes
+                        f"   Collected {len(result_strings)} result strings, total length: {len(full_result_str)} characters")
 
-                                # Initialize variables at the top level to avoid UnboundLocalError
-                                dom_attrs = parsed.get('dom_attributes', {})
-                                dom_id = parsed.get(
-                                    'dom_id') or dom_attrs.get('id')
-                                generated_locators = []
+                    # ROBUST EXTRACTION: Leverage "Result:" pattern from browser_use library
+                    # The browser_use library ALWAYS prints "Result: {json}" after JavaScript execution
+                    # This is the most reliable source of locator data
+                    logger.info(
+                        "   🎯 Strategy: Extract from 'Result:' lines (most reliable)")
 
-                                # Check if agent already validated locators
-                                if 'locators' in parsed and parsed['locators']:
-                                    # Agent provided locators - verify they were actually validated
-                                    generated_locators = parsed['locators']
-                                    logger.info(
-                                        f"   📋 Received {len(generated_locators)} locators from agent")
+                    # STRATEGY 1: Extract from "Result:" lines (MOST RELIABLE)
+                    # Pattern: "Result: {complete JSON object}"
+                    # The browser_use library prints this after every JavaScript execution
+                    def extract_from_result_lines(text):
+                        """
+                        Extract JSON from 'Result:' lines printed by browser_use.
+                        This is the MOST RELIABLE method because:
+                        1. Always printed by browser_use after JS execution
+                        2. Contains complete, valid JSON
+                        3. Has best_locator already selected (first unique locator)
+                        4. No double-escaping issues
+                        """
+                        results = []
+                        # Look for "Result: {" followed by JSON
+                        # Find all Result: lines
+                        lines = text.split('\n')
+                        for line in lines:
+                            if 'Result:' in line and 'element_id' in line:
+                                # Extract everything after "Result:"
+                                result_start = line.find('Result:')
+                                if result_start != -1:
+                                    json_part = line[result_start + 7:].strip()
 
-                                    # Add priority field if missing and verify validation status
-                                    priority_map = {
-                                        'id': 1, 'data-testid': 2, 'name': 3, 'css-class': 7}
+                                    # Find complete JSON using brace matching
+                                    if json_part.startswith('{'):
+                                        brace_count = 0
+                                        in_string = False
+                                        escape_next = False
 
-                                    actually_validated_count = 0
-                                    for loc in generated_locators:
-                                        if 'priority' not in loc:
-                                            loc['priority'] = priority_map.get(
-                                                loc.get('type'), 10)
+                                        for i, char in enumerate(json_part):
+                                            if escape_next:
+                                                escape_next = False
+                                                continue
+                                            if char == '\\':
+                                                escape_next = True
+                                                continue
+                                            if char == '"':
+                                                in_string = not in_string
+                                                continue
+                                            if in_string:
+                                                continue
 
-                                        # CRITICAL: Only mark as valid if it's unique (count=1)
-                                        # For test automation, only unique locators are usable
-                                        if loc.get('validated') and 'count' in loc:
-                                            # Has validation data from JavaScript
-                                            count = loc.get('count', 0)
-                                            loc['unique'] = (count == 1)
-                                            # ONLY unique locators are valid for testing
-                                            loc['valid'] = (count == 1)
-                                            loc['validated'] = True
-                                            actually_validated_count += 1
+                                            if char == '{':
+                                                brace_count += 1
+                                            elif char == '}':
+                                                brace_count -= 1
+                                                if brace_count == 0:
+                                                    json_str = json_part[:i+1]
+                                                    results.append(json_str)
+                                                    break
 
-                                            if count == 1:
-                                                status = "✅ VALID & UNIQUE"
-                                            elif count == 0:
-                                                status = "❌ NOT FOUND"
+                        return results
+
+                    # STRATEGY 2: Extract any JSON with element_id (FALLBACK)
+                    def extract_all_element_jsons(text):
+                        """Extract all JSON objects containing element_id from text."""
+                        found_jsons = []
+                        # Look for {"element_id": patterns
+                        for pattern in ['"element_id":', "'element_id':"]:
+                            pos = 0
+                            while True:
+                                pos = text.find(pattern, pos)
+                                if pos == -1:
+                                    break
+
+                                # Find the opening brace
+                                brace_pos = text.rfind(
+                                    '{', max(0, pos - 50), pos + 20)
+                                if brace_pos == -1:
+                                    pos += 1
+                                    continue
+
+                                # Match braces to find complete JSON
+                                brace_count = 0
+                                in_string = False
+                                escape_next = False
+
+                                for i in range(brace_pos, min(len(text), brace_pos + 10000)):
+                                    char = text[i]
+
+                                    if escape_next:
+                                        escape_next = False
+                                        continue
+                                    if char == '\\':
+                                        escape_next = True
+                                        continue
+                                    if char == '"':
+                                        in_string = not in_string
+                                        continue
+                                    if in_string:
+                                        continue
+
+                                    if char == '{':
+                                        brace_count += 1
+                                    elif char == '}':
+                                        brace_count -= 1
+                                        if brace_count == 0:
+                                            json_str = text[brace_pos:i+1]
+                                            if json_str not in found_jsons:
+                                                found_jsons.append(json_str)
+                                            break
+
+                                pos += 1
+
+                        return found_jsons
+
+                    # Try Strategy 1 first (Result: lines)
+                    result_line_jsons = extract_from_result_lines(full_result_str)
+                    if result_line_jsons:
+                        logger.info(
+                            f"   ✅ Extracted {len(result_line_jsons)} JSON blocks from 'Result:' lines")
+                        extracted_jsons = result_line_jsons
+                    else:
+                        # Try Strategy 2 (any JSON with element_id)
+                        extracted_jsons = extract_all_element_jsons(
+                            full_result_str)
+                        if extracted_jsons:
+                            logger.info(
+                                f"   ✅ Extracted {len(extracted_jsons)} JSON blocks (fallback method)")
+                        else:
+                            extracted_jsons = []
+
+                    # Try to parse extracted JSONs directly
+                    if extracted_jsons:
+                        logger.info("   🚀 Attempting direct JSON parsing...")
+                        for json_str in extracted_jsons:
+                            if not json_str:
+                                continue
+                            
+                            try:
+                                parsed = json.loads(json_str)
+                                if not isinstance(parsed, dict):
+                                    continue
+                                
+                                elem_id = parsed.get('element_id')
+                                if elem_id and parsed.get('found'):
+                                    # CRITICAL: Use validated locators from agent if available
+                                    # The agent now validates locators during execution (while browser is open)
+                                    # This is more reliable than validating after browser closes
+
+                                    # Initialize variables at the top level to avoid UnboundLocalError
+                                    dom_attrs = parsed.get('dom_attributes', {})
+                                    dom_id = parsed.get(
+                                        'dom_id') or dom_attrs.get('id')
+                                    generated_locators = []
+
+                                    # Check if agent already validated locators
+                                    if 'locators' in parsed and parsed['locators']:
+                                        # Agent provided locators - verify they were actually validated
+                                        generated_locators = parsed['locators']
+                                        logger.info(
+                                            f"   📋 Received {len(generated_locators)} locators from agent")
+
+                                        # Add priority field if missing and verify validation status
+                                        priority_map = {
+                                            'id': 1, 'data-testid': 2, 'name': 3, 'css-class': 7}
+
+                                        actually_validated_count = 0
+                                        for loc in generated_locators:
+                                            if 'priority' not in loc:
+                                                loc['priority'] = priority_map.get(
+                                                    loc.get('type'), 10)
+
+                                            # CRITICAL: Only mark as valid if it's unique (count=1)
+                                            # For test automation, only unique locators are usable
+                                            if loc.get('validated') and 'count' in loc:
+                                                # Has validation data from JavaScript
+                                                count = loc.get('count', 0)
+                                                loc['unique'] = (count == 1)
+                                                # ONLY unique locators are valid for testing
+                                                loc['valid'] = (count == 1)
+                                                loc['validated'] = True
+                                                actually_validated_count += 1
+
+                                                if count == 1:
+                                                    status = "✅ VALID & UNIQUE"
+                                                elif count == 0:
+                                                    status = "❌ NOT FOUND"
+                                                else:
+                                                    status = f"❌ INVALID - {count} matches (not unique)"
+
+                                                logger.info(
+                                                    f"      {loc['type']}: {loc['locator']} → {status} (agent-validated)")
                                             else:
-                                                status = f"❌ INVALID - {count} matches (not unique)"
+                                                # No validation data - mark as unvalidated
+                                                loc['validated'] = False
+                                                loc['unique'] = False
+                                                loc['valid'] = False
+                                                logger.warning(
+                                                    f"      {loc['type']}: {loc['locator']} → ⚠️ No validation data")
 
-                                            logger.info(
-                                                f"      {loc['type']}: {loc['locator']} → {status} (agent-validated)")
-                                        else:
-                                            # No validation data - mark as unvalidated
-                                            loc['validated'] = False
-                                            loc['unique'] = False
-                                            loc['valid'] = False
-                                            logger.warning(
-                                                f"      {loc['type']}: {loc['locator']} → ⚠️ No validation data")
+                                        logger.info(
+                                            f"   ✅ {actually_validated_count}/{len(generated_locators)} locators have validation data")
+                                    else:
+                                        # Fallback: Generate locators from DOM attributes
+                                        logger.info(
+                                            "   ⚠️ No pre-validated locators, generating from DOM attributes...")
 
-                                    logger.info(
-                                        f"   ✅ {actually_validated_count}/{len(generated_locators)} locators have validation data")
-                                else:
-                                    # Fallback: Generate locators from DOM attributes
-                                    logger.info(
-                                        "   ⚠️ No pre-validated locators, generating from DOM attributes...")
-
-                                    # Priority 1: ID
-                                    if dom_id:
-                                        generated_locators.append({
-                                            'type': 'id',
-                                            'locator': f'id={dom_id}',
-                                            'priority': 1,
-                                            # Assume unique/valid but not validated yet
-                                            'unique': None,  # Unknown until validated
-                                            'valid': None,   # Unknown until validated
-                                            'validated': False  # Not yet validated
-                                        })
-
-                                    # Priority 2: data-testid
-                                    if dom_attrs.get('data-testid'):
-                                        generated_locators.append({
-                                            'type': 'data-testid',
-                                            'locator': f'data-testid={dom_attrs["data-testid"]}',
-                                            'priority': 2,
-                                            'unique': None,
-                                            'valid': None,
-                                            'validated': False
-                                        })
-
-                                    # Priority 3: name
-                                    if dom_attrs.get('name'):
-                                        generated_locators.append({
-                                            'type': 'name',
-                                            'locator': f'name={dom_attrs["name"]}',
-                                            'priority': 3,
-                                            'unique': None,
-                                            'valid': None,
-                                            'validated': False
-                                        })
-
-                                    # Priority 4: CSS class (if available)
-                                    if dom_attrs.get('class'):
-                                        first_class = dom_attrs['class'].split(
-                                        )[0] if dom_attrs['class'] else None
-                                        if first_class:
-                                            element_type = parsed.get(
-                                                'element_type', 'div')
+                                        # Priority 1: ID
+                                        if dom_id:
                                             generated_locators.append({
-                                                'type': 'css-class',
-                                                'locator': f'{element_type}.{first_class}',
-                                                'priority': 7,
+                                                'type': 'id',
+                                                'locator': f'id={dom_id}',
+                                                'priority': 1,
+                                                # Assume unique/valid but not validated yet
+                                                'unique': None,  # Unknown until validated
+                                                'valid': None,   # Unknown until validated
+                                                'validated': False  # Not yet validated
+                                            })
+
+                                        # Priority 2: data-testid
+                                        if dom_attrs.get('data-testid'):
+                                            generated_locators.append({
+                                                'type': 'data-testid',
+                                                'locator': f'data-testid={dom_attrs["data-testid"]}',
+                                                'priority': 2,
                                                 'unique': None,
                                                 'valid': None,
                                                 'validated': False
                                             })
 
-                                # VALIDATION: If Playwright page is available, validate locators
-                                # This confirms uniqueness and that the locator actually works
-                                if page:
-                                    logger.info(
-                                        f"   🔍 Validating {len(generated_locators)} locators for {elem_id}...")
-                                    for loc in generated_locators:
-                                        # Skip if already validated by agent
-                                        if loc.get('validated') and 'count' in loc:
-                                            logger.info(
-                                                f"      {loc['type']}: {loc['locator']} → Already validated by agent")
-                                            continue
+                                        # Priority 3: name
+                                        if dom_attrs.get('name'):
+                                            generated_locators.append({
+                                                'type': 'name',
+                                                'locator': f'name={dom_attrs["name"]}',
+                                                'priority': 3,
+                                                'unique': None,
+                                                'valid': None,
+                                                'validated': False
+                                            })
 
-                                        try:
-                                            # Use Playwright to count matches
-                                            count = await page.locator(loc['locator']).count()
-                                            loc['count'] = count
-                                            loc['unique'] = (count == 1)
-                                            # ONLY unique locators are valid for testing
-                                            loc['valid'] = (count == 1)
-                                            # Successfully validated
-                                            loc['validated'] = True
+                                        # Priority 4: CSS class (if available)
+                                        if dom_attrs.get('class'):
+                                            first_class = dom_attrs['class'].split(
+                                            )[0] if dom_attrs['class'] else None
+                                            if first_class:
+                                                element_type = parsed.get(
+                                                    'element_type', 'div')
+                                                generated_locators.append({
+                                                    'type': 'css-class',
+                                                    'locator': f'{element_type}.{first_class}',
+                                                    'priority': 7,
+                                                    'unique': None,
+                                                    'valid': None,
+                                                    'validated': False
+                                                })
 
-                                            if count == 1:
-                                                status = "✅ VALID & UNIQUE"
-                                            elif count == 0:
-                                                status = "❌ NOT FOUND"
-                                            else:
-                                                status = f"❌ INVALID - {count} matches (not unique)"
+                                    # VALIDATION: If Playwright page is available, validate locators
+                                    # This confirms uniqueness and that the locator actually works
+                                    if page:
+                                        logger.info(
+                                            f"   🔍 Validating {len(generated_locators)} locators for {elem_id}...")
+                                        for loc in generated_locators:
+                                            # Skip if already validated by agent
+                                            if loc.get('validated') and 'count' in loc:
+                                                logger.info(
+                                                    f"      {loc['type']}: {loc['locator']} → Already validated by agent")
+                                                continue
 
-                                            logger.info(
-                                                f"      {loc['type']}: {loc['locator']} → {status} (playwright-validated)")
-                                        except Exception as e:
-                                            # Validation attempt failed due to technical error (invalid syntax, etc.)
-                                            logger.warning(
-                                                f"      ❌ {loc['type']}: {loc['locator']} → Validation error: {e}")
-                                            # Unknown count due to error
-                                            loc['count'] = None
-                                            loc['unique'] = False
-                                            loc['valid'] = False
-                                            # Could not validate due to error
-                                            loc['validated'] = False
-                                            # Store error for debugging
-                                            loc['validation_error'] = str(e)
-                                else:
-                                    logger.info(
-                                        f"   ⚠️ Page not available, skipping validation for {elem_id} (trusting browser_use)")
+                                            try:
+                                                # Use Playwright to count matches
+                                                count = await page.locator(loc['locator']).count()
+                                                loc['count'] = count
+                                                loc['unique'] = (count == 1)
+                                                # ONLY unique locators are valid for testing
+                                                loc['valid'] = (count == 1)
+                                                # Successfully validated
+                                                loc['validated'] = True
+
+                                                if count == 1:
+                                                    status = "✅ VALID & UNIQUE"
+                                                elif count == 0:
+                                                    status = "❌ NOT FOUND"
+                                                else:
+                                                    status = f"❌ INVALID - {count} matches (not unique)"
+
+                                                logger.info(
+                                                    f"      {loc['type']}: {loc['locator']} → {status} (playwright-validated)")
+                                            except Exception as e:
+                                                # Validation attempt failed due to technical error (invalid syntax, etc.)
+                                                logger.warning(
+                                                    f"      ❌ {loc['type']}: {loc['locator']} → Validation error: {e}")
+                                                # Unknown count due to error
+                                                loc['count'] = None
+                                                loc['unique'] = False
+                                                loc['valid'] = False
+                                                # Could not validate due to error
+                                                loc['validated'] = False
+                                                # Store error for debugging
+                                                loc['validation_error'] = str(e)
+                                    else:
+                                        logger.info(
+                                            f"   ⚠️ Page not available, skipping validation for {elem_id} (trusting browser_use)")
 
                                 # Select best locator - ONLY use validated, unique, valid locators
                                 # valid=True means count=1 (unique and usable for testing)
@@ -1479,189 +1417,72 @@ def process_workflow_task(
                                     results_list.append(result)
                                     logger.info(
                                         f"   ✅ Directly parsed and added {elem_id} (best_locator: {best_locator})")
-                        except json.JSONDecodeError as e:
-                            logger.debug(
-                                f"   Failed to parse JSON directly: {e}")
-                            # Will fall back to pattern matching below
+                            except json.JSONDecodeError as e:
+                                logger.debug(
+                                    f"   Failed to parse JSON directly: {e}")
+                                # Will fall back to pattern matching below
 
                     # If we got all elements via direct parsing, we're done!
                     if len(results_list) == len(elements):
                         logger.info(
                             f"   🎉 All {len(elements)} elements extracted via direct JSON parsing!")
                         # Skip pattern matching - we have everything we need
+                        # Jump directly to re-ranking section
+                        logger.info("   ⏭️  Skipping string-based extraction (all elements found via direct access)")
 
-                for elem in elements:
-                    elem_id = elem.get('id')
-                    logger.info(f"   🔍 Looking for {elem_id}...")
+                # ONLY do string-based extraction if we don't have all elements yet
+                if len(results_list) < len(elements):
+                    logger.info(f"   🔍 Missing {len(elements) - len(results_list)} elements, trying string-based extraction...")
+                else:
+                    logger.info("   ✅ All elements found via direct access, skipping string parsing")
+                    # Skip to re-ranking by using a flag or just not entering the loop
+                    # We'll just make the loop conditional
 
-                    # Check multiple patterns (with and without space after colon)
-                    patterns_to_check = [
-                        # No space (common in minified JSON)
-                        f'"element_id":"{elem_id}"',
-                        f'"element_id": "{elem_id}"',  # With space
-                        f"'element_id':'{elem_id}'",  # Single quotes, no space
-                        # Single quotes, with space
-                        f"'element_id': '{elem_id}'"
-                    ]
+                # Only run pattern matching if we're missing elements
+                if len(results_list) < len(elements):
+                    # Check which elements we're still missing
+                    missing_ids = [e.get('id') for e in elements if not any(r.get('element_id') == e.get('id') for r in results_list)]
+                    logger.info(f"   🔍 Looking for {len(missing_ids)} missing elements: {missing_ids}")
+                    
+                    for elem in elements:
+                        elem_id = elem.get('id')
+                        
+                        # Skip if we already have this element
+                        if any(r.get('element_id') == elem_id for r in results_list):
+                            continue
 
-                    # DEBUG: Show which patterns we're checking
-                    logger.info(
-                        f"   📝 Checking {len(patterns_to_check)} patterns:")
-                    for idx, pattern in enumerate(patterns_to_check, 1):
-                        is_found = pattern in full_result_str
-                        status = "✅ FOUND" if is_found else "❌ Not found"
-                        logger.info(f"      {idx}. '{pattern}' -> {status}")
+                        # Check multiple patterns (with and without space after colon)
+                        patterns_to_check = [
+                            f'"element_id":"{elem_id}"',
+                            f'"element_id": "{elem_id}"',
+                            f"'element_id':'{elem_id}'",
+                            f"'element_id': '{elem_id}'"
+                        ]
 
-                    found = any(
-                        pattern in full_result_str for pattern in patterns_to_check)
+                        found = any(
+                            pattern in full_result_str for pattern in patterns_to_check)
 
-                    # DEBUG: Check if elem_id appears ANYWHERE in the string (any format)
-                    if not found:
-                        if elem_id in full_result_str:
-                            logger.warning(
-                                f"   ⚠️  '{elem_id}' exists in result but pattern didn't match!")
-                            logger.warning(
-                                f"   💡 Searching for context around '{elem_id}'...")
-                            # Find where elem_id appears and show context
-                            pos = full_result_str.find(elem_id)
-                            if pos != -1:
-                                start = max(0, pos - 100)
-                                end = min(len(full_result_str), pos + 100)
-                                context = full_result_str[start:end]
-                                logger.warning(f"   Context: ...{context}...")
-                        else:
-                            logger.warning(
-                                f"   ❌ '{elem_id}' does not appear ANYWHERE in result string")
+                        if not found:
+                            logger.warning(f"   ⚠️  '{elem_id}' not found in result string")
+                            continue
 
-                    if found:
-                        logger.info(f"   Found '{elem_id}' in result string!")
-                        try:
-                            elem_data = extract_json_for_element(
-                                full_result_str, elem_id)
-                            if elem_data:
-                                logger.info(
-                                    f"   Extracted JSON for {elem_id}: found={elem_data.get('found')}")
-                                if elem_data.get('found'):
+                        if found:
+                            try:
+                                elem_data = extract_json_for_element(
+                                    full_result_str, elem_id)
+                                if elem_data and elem_data.get('found'):
                                     existing_idx = next(
                                         (i for i, r in enumerate(results_list) if r.get('element_id') == elem_id), None)
-                                    if existing_idx is not None:
-                                        # Check if we should replace
-                                        old_result = results_list[existing_idx]
-                                        old_locator = old_result.get(
-                                            'best_locator')
-                                        new_locator = elem_data.get(
-                                            'best_locator')
-
-                                        # CRITICAL: Don't replace if old has locators but new doesn't
-                                        if old_locator and not new_locator:
-                                            logger.info(
-                                                f"   ⚠️ Skipping replacement for {elem_id}: old has locator '{old_locator}', new doesn't")
-                                        else:
-                                            # Replace existing result (agent retry/correction)
-                                            logger.info(
-                                                f"   🔄 Replacing {elem_id}: '{old_locator}' → '{new_locator}' (agent retry/correction)")
-                                            results_list[existing_idx] = elem_data
-                                    else:
+                                    if existing_idx is None:
                                         # First occurrence, add it
                                         results_list.append(elem_data)
                                         logger.info(
-                                            f"   ✅ Extracted {elem_id} from full result string")
-                                else:
-                                    logger.warning(
-                                        f"   {elem_id} found but 'found' is False")
-                            else:
-                                logger.warning(
-                                    f"   extract_json_for_element returned None for {elem_id}")
-                        except Exception as e:
-                            logger.error(
-                                f"   Exception extracting {elem_id}: {e}")
-                            import traceback
-                            logger.error(traceback.format_exc())
-                    else:
-                        logger.warning(
-                            f"   '{elem_id}' not found in result string")
-
-                # APPROACH 2: Check agent history structure
-                if not results_list and hasattr(agent_result, 'history'):
-                    logger.info(
-                        f"   Approach 2: Checking agent history ({len(agent_result.history)} steps)...")
-
-                    for step_idx, step in enumerate(agent_result.history):
-                        # PRIORITY 1: Try to access metadata directly from ActionResult (for custom actions)
-                        # This avoids the string conversion issue where Python dicts use single quotes
-                        if hasattr(step, 'result'):
-                            result_obj = step.result
-                            # Check if result is an ActionResult with metadata
-                            if hasattr(result_obj, 'metadata') and result_obj.metadata:
-                                metadata = result_obj.metadata
-                                # Check if this metadata is for one of our elements
-                                if isinstance(metadata, dict) and 'element_id' in metadata:
-                                    elem_id = metadata.get('element_id')
-                                    if elem_id and any(e.get('id') == elem_id for e in elements):
-                                        if metadata.get('found'):
-                                            if not any(r.get('element_id') == elem_id for r in results_list):
-                                                results_list.append(metadata)
-                                                logger.info(
-                                                    f"   ✅ Extracted {elem_id} from step {step_idx} metadata (direct access)")
-                                                continue  # Skip string conversion for this step
-
-                        # PRIORITY 2: Convert entire step to string (fallback)
-                        step_str = str(step)
-
-                        # Check for JavaScript execution results
-                        if 'execute_js' in step_str or 'element_id' in step_str:
-                            logger.debug(
-                                f"   Step {step_idx} contains execute_js or element_id")
-
-                            for elem in elements:
-                                elem_id = elem.get('id')
-                                if f'"element_id": "{elem_id}"' in step_str:
-                                    try:
-                                        elem_data = extract_json_for_element(
-                                            step_str, elem_id)
-                                        if elem_data and elem_data.get('found'):
-                                            if not any(r.get('element_id') == elem_id for r in results_list):
-                                                results_list.append(elem_data)
-                                                logger.info(
-                                                    f"   ✅ Extracted {elem_id} from step {step_idx}")
-                                    except Exception as e:
-                                        logger.debug(
-                                            f"   Failed to extract {elem_id} from step {step_idx}: {e}")
-
-                        # Also check specific attributes if they exist
-                        if hasattr(step, 'state') and hasattr(step.state, 'tool_results'):
-                            for tool_result in step.state.tool_results:
-                                result_str = str(tool_result)
-                                for elem in elements:
-                                    elem_id = elem.get('id')
-                                    if f'"element_id": "{elem_id}"' in result_str:
-                                        try:
-                                            elem_data = extract_json_for_element(
-                                                result_str, elem_id)
-                                            if elem_data and elem_data.get('found'):
-                                                if not any(r.get('element_id') == elem_id for r in results_list):
-                                                    results_list.append(
-                                                        elem_data)
-                                                    logger.info(
-                                                        f"   ✅ Extracted {elem_id} from tool_results")
-                                        except Exception as e:
-                                            logger.debug(f"   Failed: {e}")
-
-                        if hasattr(step, 'result'):
-                            result_str = str(step.result)
-                            for elem in elements:
-                                elem_id = elem.get('id')
-                                if f'"element_id": "{elem_id}"' in result_str:
-                                    try:
-                                        elem_data = extract_json_for_element(
-                                            result_str, elem_id)
-                                        if elem_data and elem_data.get('found'):
-                                            if not any(r.get('element_id') == elem_id for r in results_list):
-                                                results_list.append(elem_data)
-                                                logger.info(
-                                                    f"   ✅ Extracted {elem_id} from step.result")
-                                    except Exception as e:
-                                        logger.debug(f"   Failed: {e}")
+                                            f"   ✅ Extracted {elem_id} from result string")
+                            except Exception as e:
+                                logger.error(
+                                    f"   ❌ Exception extracting {elem_id}: {e}")
+                else:
+                    logger.info("   ⏭️  String-based extraction skipped (all elements already found)")
 
             # If still no results, create default "not found" entries
             if not results_list:
@@ -1870,72 +1691,71 @@ def process_workflow_task(
                 # Score each locator
                 scored_locators = []
                 for loc in all_locators:
-                    score = score_locator(loc)
-                    scored_locators.append({
-                        **loc,
-                        'quality_score': score
-                    })
+                    try:
+                        score = score_locator(loc)
+                        scored_locators.append({
+                            **loc,
+                            'quality_score': score
+                        })
+                    except Exception as e:
+                        logger.warning(f"⚠️ Error scoring locator: {e}, skipping")
+
+                if not scored_locators:
+                    continue
 
                 # Sort by score (highest first)
-                scored_locators.sort(
-                    key=lambda x: x['quality_score'], reverse=True)
+                scored_locators.sort(key=lambda x: x.get('quality_score', 0), reverse=True)
 
                 # Log top 3 locators with their scores for debugging
                 element_id = result.get('element_id', 'unknown')
                 logger.info(f"📊 Locator Scores for {element_id}:")
                 for i, loc in enumerate(scored_locators[:3]):  # Show top 3
-                    locator_str = loc['locator'][:50]  # Truncate long locators
+                    locator_str = loc.get('locator', '')[:50]  # Truncate long locators
+                    quality_score = loc.get('quality_score', 0)
+                    loc_type = loc.get('type', 'unknown')
+                    
                     if i == 0:
                         # First locator is the selected best
-                        logger.info(
-                            f"   {loc['quality_score']:3d} - {loc['type']:15s} - {locator_str} ⭐ SELECTED AS BEST")
+                        logger.info(f"   {quality_score:3d} - {loc_type:15s} - {locator_str} ⭐ SELECTED AS BEST")
                         # Log warning if XPath is selected as best
-                        if loc['type'] == 'xpath' or loc['locator'].startswith('xpath=') or loc['locator'].startswith('//'):
-                            logger.warning(
-                                "   ⚠️  XPath used as fallback - no ID, data-testid, name, or aria-label available")
+                        if loc_type == 'xpath' or locator_str.startswith('xpath=') or locator_str.startswith('//'):
+                            logger.warning("   ⚠️  XPath used as fallback - no ID, data-testid, name, or aria-label available")
                     else:
-                        logger.info(
-                            f"   {loc['quality_score']:3d} - {loc['type']:15s} - {locator_str}")
+                        logger.info(f"   {quality_score:3d} - {loc_type:15s} - {locator_str}")
 
                 # Update result with re-ranked locators
                 old_best = result.get('best_locator', '')
-                new_best = scored_locators[0]['locator'] if scored_locators else old_best
+                new_best = scored_locators[0]['locator']
 
                 if old_best != new_best:
-                    logger.info(
-                        f"   ✨ {result.get('element_id')}: Upgraded locator")
-                    logger.info(
-                        f"      OLD: {old_best} (score: {score_locator({'locator': old_best})})")
-                    logger.info(
-                        f"      NEW: {new_best} (score: {scored_locators[0]['quality_score']})")
+                    logger.info(f"   ✨ {element_id}: Upgraded locator")
+                    old_score = score_locator({'locator': old_best}) if old_best else 0
+                    new_score = scored_locators[0].get('quality_score', 0)
+                    
+                    logger.info(f"      OLD: {old_best} (score: {old_score})")
+                    logger.info(f"      NEW: {new_best} (score: {new_score})")
                     re_ranked_count += 1
 
                 result['best_locator'] = new_best
                 result['all_locators'] = scored_locators
 
-            logger.info(
-                f"✅ Re-ranking complete: {re_ranked_count}/{len(results_list)} elements upgraded")
+            logger.info(f"✅ Re-ranking complete: {re_ranked_count}/{len(results_list)} elements upgraded")
 
             # ========================================
             # RESULTS VALIDATION - Verify quality_score is present
             # ========================================
             logger.info("🔍 Validating results before return...")
             for result in results_list:
-                elem_id = result.get('element_id')
-                found = result.get('found')
+                elem_id = result.get('element_id', 'unknown')
+                found = result.get('found', False)
                 best_locator = result.get('best_locator', 'N/A')
                 all_locators = result.get('all_locators', [])
 
                 if found:
-                    # Check if locators have quality_score
-                    has_scores = all(loc.get('quality_score')
-                                     is not None for loc in all_locators)
-                    logger.info(
-                        f"   ✅ {elem_id}: {best_locator} ({len(all_locators)} locators, scored={has_scores})")
-
+                    has_scores = all(loc.get('quality_score') is not None for loc in all_locators)
+                    logger.info(f"   ✅ {elem_id}: {best_locator} ({len(all_locators)} locators, scored={has_scores})")
                     if not has_scores and all_locators:
-                        logger.warning(
-                            f"   ⚠️ {elem_id}: Some locators missing quality_score!")
+                        logger.warning(f"   ⚠️ {elem_id}: Some locators missing quality_score!")
                 else:
                     error = result.get('error', 'Unknown')
                     logger.error(f"   ❌ {elem_id}: {error}")
@@ -2163,6 +1983,14 @@ def process_workflow_task(
                 }
             }
         finally:
+            # Clean up cached Playwright instance used by custom actions
+            if enable_custom_actions:
+                try:
+                    from browser_service.agent.registration import cleanup_playwright_cache
+                    await cleanup_playwright_cache()
+                except Exception as e:
+                    logger.warning(f"⚠️ Error cleaning up Playwright cache: {e}")
+            
             # Use comprehensive cleanup utility
             await cleanup_browser_resources(
                 session=session,

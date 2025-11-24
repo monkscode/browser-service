@@ -32,6 +32,11 @@ from typing import Optional
 # Get logger
 logger = logging.getLogger(__name__)
 
+# Module-level cache for Playwright instance (reuse across custom action calls)
+_playwright_instance_cache = None
+_connected_browser_cache = None
+_cache_cdp_url = None
+
 
 def register_custom_actions(agent, page=None) -> bool:
     """
@@ -118,9 +123,15 @@ def register_custom_actions(agent, page=None) -> bool:
                 # Get the page from the browser_session provided by browser-use
                 # IMPORTANT: browser-use now uses CDP (Chrome DevTools Protocol) instead of Playwright
                 # We need to connect to browser-use's browser via CDP to get a Playwright page for validation
+                #
+                # OPTIMIZATION: Reuse Playwright instance across custom action calls
+                # Instead of creating a new instance every time, check cache first
+                global _playwright_instance_cache, _connected_browser_cache, _cache_cdp_url
+                
                 active_page = None
                 playwright_instance = None
                 connected_browser = None
+                created_new_instance = False
 
                 try:
                     logger.info("🔍 Attempting to retrieve page from browser_session via CDP...")
@@ -166,33 +177,59 @@ def register_custom_actions(agent, page=None) -> bool:
 
                     # If we have CDP URL, connect Playwright to browser-use's browser
                     if cdp_url:
-                        try:
-                            from playwright.async_api import async_playwright
+                        # Check if we can reuse cached Playwright instance
+                        if (_playwright_instance_cache and 
+                            _connected_browser_cache and 
+                            _cache_cdp_url == cdp_url):
+                            logger.info("♻️  Reusing cached Playwright instance (performance optimization)")
+                            playwright_instance = _playwright_instance_cache
+                            connected_browser = _connected_browser_cache
+                        else:
+                            # Create new Playwright instance
+                            try:
+                                from playwright.async_api import async_playwright
 
-                            logger.info("🔌 Connecting Playwright to browser-use's browser via CDP...")
-                            playwright_instance = await async_playwright().start()
-                            connected_browser = await playwright_instance.chromium.connect_over_cdp(cdp_url)
+                                logger.info("🔌 Connecting Playwright to browser-use's browser via CDP...")
+                                playwright_instance = await async_playwright().start()
+                                connected_browser = await playwright_instance.chromium.connect_over_cdp(cdp_url)
+                                
+                                # Cache for reuse
+                                _playwright_instance_cache = playwright_instance
+                                _connected_browser_cache = connected_browser
+                                _cache_cdp_url = cdp_url
+                                created_new_instance = True
+                                logger.info("💾 Cached Playwright instance for reuse")
 
-                            # Get the active page from browser-use's browser
-                            if connected_browser.contexts:
-                                context = connected_browser.contexts[0]
-                                logger.info(f"✅ Found {len(connected_browser.contexts)} context(s)")
+                            except Exception as e:
+                                logger.error(f"❌ Failed to connect Playwright via CDP: {e}")
+                                import traceback
+                                logger.debug(traceback.format_exc())
 
-                                if context.pages:
-                                    active_page = context.pages[0]
-                                    page_url = await active_page.url()
-                                    logger.info("✅ Connected to browser-use's page via CDP!")
-                                    logger.info(f"   Page URL: {page_url}")
-                                    logger.info(f"   Page type: {type(active_page)}")
+                        # Get the active page from browser-use's browser
+                        if connected_browser:
+                            try:
+                                if connected_browser.contexts:
+                                    context = connected_browser.contexts[0]
+                                    if not created_new_instance:
+                                        logger.info(f"♻️  Using {len(connected_browser.contexts)} cached context(s)")
+                                    else:
+                                        logger.info(f"✅ Found {len(connected_browser.contexts)} context(s)")
+
+                                    if context.pages:
+                                        active_page = context.pages[0]
+                                        page_url = await active_page.url()
+                                        if created_new_instance:
+                                            logger.info("✅ Connected to browser-use's page via CDP!")
+                                            logger.info(f"   Page URL: {page_url}")
+                                            logger.info(f"   Page type: {type(active_page)}")
+                                        else:
+                                            logger.info(f"♻️  Reusing page at {page_url}")
+                                    else:
+                                        logger.warning("⚠️ Context has no pages")
                                 else:
-                                    logger.warning("⚠️ Context has no pages")
-                            else:
-                                logger.warning("⚠️ Browser has no contexts")
-
-                        except Exception as e:
-                            logger.error(f"❌ Failed to connect Playwright via CDP: {e}")
-                            import traceback
-                            logger.debug(traceback.format_exc())
+                                    logger.warning("⚠️ Browser has no contexts")
+                            except Exception as e:
+                                logger.error(f"❌ Error accessing browser contexts/pages: {e}")
                     else:
                         logger.warning("⚠️ Could not find CDP URL in browser_session")
                         logger.info(f"   browser_session attributes: {[attr for attr in dir(browser_session) if not attr.startswith('_')][:20]}")
@@ -421,22 +458,26 @@ def register_custom_actions(agent, page=None) -> bool:
                         is_done=False  # Let agent try again with different approach
                     )
 
-                # Cleanup: Close Playwright connection if we created one
-                if connected_browser:
+                # Cleanup: Do NOT close cached Playwright instance (reused across calls)
+                # Only clean up if we created a non-cached instance (shouldn't happen now)
+                if connected_browser and connected_browser != _connected_browser_cache:
                     try:
-                        logger.info("🧹 Cleaning up: Closing Playwright CDP connection...")
+                        logger.info("🧹 Cleaning up: Closing non-cached Playwright CDP connection...")
                         await connected_browser.close()
                         logger.info("✅ Playwright browser connection closed")
                     except Exception as e:
                         logger.warning(f"⚠️ Error closing Playwright browser: {e}")
 
-                if playwright_instance:
+                if playwright_instance and playwright_instance != _playwright_instance_cache:
                     try:
-                        logger.info("🧹 Cleaning up: Stopping Playwright instance...")
+                        logger.info("🧹 Cleaning up: Stopping non-cached Playwright instance...")
                         await playwright_instance.stop()
                         logger.info("✅ Playwright instance stopped")
                     except Exception as e:
                         logger.warning(f"⚠️ Error stopping Playwright instance: {e}")
+                
+                # Cached instances are NOT cleaned up here - they persist for reuse
+                # They will be cleaned up when workflow completes (see cleanup_playwright_cache)
 
                 return action_result
 
@@ -444,13 +485,13 @@ def register_custom_actions(agent, page=None) -> bool:
                 error_msg = f"Error in find_unique_locator custom action: {str(e)}"
                 logger.error(f"❌ {error_msg}", exc_info=True)
 
-                # Cleanup on error
-                if connected_browser:
+                # Cleanup on error - but only non-cached instances
+                if connected_browser and connected_browser != _connected_browser_cache:
                     try:
                         await connected_browser.close()
                     except Exception:
                         pass
-                if playwright_instance:
+                if playwright_instance and playwright_instance != _playwright_instance_cache:
                     try:
                         await playwright_instance.stop()
                     except Exception:
@@ -468,3 +509,45 @@ def register_custom_actions(agent, page=None) -> bool:
         logger.error("   Stack trace:", exc_info=True)
         logger.warning("⚠️ Continuing with legacy workflow (custom actions disabled)")
         return False
+
+
+async def cleanup_playwright_cache():
+    """
+    Clean up cached Playwright instance at the end of workflow.
+    
+    This should be called once after all custom actions have completed,
+    not after each individual action call.
+    
+    Returns:
+        bool: True if cleanup succeeded
+    """
+    global _playwright_instance_cache, _connected_browser_cache, _cache_cdp_url
+    
+    try:
+        if _connected_browser_cache:
+            try:
+                logger.info("🧹 Workflow cleanup: Closing cached Playwright CDP connection...")
+                await _connected_browser_cache.close()
+                logger.info("✅ Cached Playwright browser connection closed")
+            except Exception as e:
+                logger.warning(f"⚠️ Error closing cached Playwright browser: {e}")
+
+        if _playwright_instance_cache:
+            try:
+                logger.info("🧹 Workflow cleanup: Stopping cached Playwright instance...")
+                await _playwright_instance_cache.stop()
+                logger.info("✅ Cached Playwright instance stopped")
+            except Exception as e:
+                logger.warning(f"⚠️ Error stopping cached Playwright instance: {e}")
+        
+        # Clear cache
+        _playwright_instance_cache = None
+        _connected_browser_cache = None
+        _cache_cdp_url = None
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error during Playwright cache cleanup: {e}")
+        return False
+

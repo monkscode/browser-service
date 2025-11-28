@@ -217,7 +217,7 @@ def register_custom_actions(agent, page=None) -> bool:
 
                                     if context.pages:
                                         active_page = context.pages[0]
-                                        page_url = await active_page.url()
+                                        page_url = active_page.url  # Note: .url is a property, not a method
                                         if created_new_instance:
                                             logger.info("✅ Connected to browser-use's page via CDP!")
                                             logger.info(f"   Page URL: {page_url}")

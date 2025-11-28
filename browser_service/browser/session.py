@@ -78,7 +78,11 @@ class BrowserSessionManager:
                 headless=self.headless,
                 viewport=self.viewport
             )
-            logger.info("✅ Browser session created successfully")
+            
+            # browser-use 0.9.x requires explicit start() call
+            logger.info("Starting browser session (browser-use 0.9.x)...")
+            await self.session.start()
+            logger.info("✅ Browser session created and started successfully")
             return self.session
 
         except Exception as e:
@@ -91,6 +95,8 @@ class BrowserSessionManager:
 
         This method gracefully closes the browser session and cleans up resources.
         After calling this method, the session attribute will be set to None.
+        
+        browser-use 0.9.x uses kill() method for cleanup.
 
         Example:
             >>> await manager.close_session()
@@ -101,7 +107,10 @@ class BrowserSessionManager:
 
         try:
             logger.info("Closing browser session...")
-            if hasattr(self.session, 'close'):
+            # browser-use 0.9.x uses kill() method for cleanup
+            if hasattr(self.session, 'kill'):
+                await self.session.kill()
+            elif hasattr(self.session, 'close'):
                 await self.session.close()
             elif hasattr(self.session, 'browser') and self.session.browser:
                 await self.session.browser.close()

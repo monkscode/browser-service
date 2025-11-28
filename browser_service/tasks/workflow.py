@@ -98,10 +98,27 @@ def process_workflow_task(
         try:
             # Initialize browser session ONCE
             logger.info("🌐 Initializing browser session...")
+            
+            # CRITICAL: Set explicit viewport for consistent coordinates
+            # browser-use 0.9.x in headful mode (headless=False) defaults to no_viewport=True
+            # which makes content fit to window, causing coordinate misalignment.
+            # Setting explicit viewport ensures:
+            # 1. Vision AI sees page at this exact resolution
+            # 2. Coordinates from vision AI match our Playwright validation
+            # 3. document.elementFromPoint(x, y) returns the same element vision AI identified
+            VIEWPORT_WIDTH = 1920
+            VIEWPORT_HEIGHT = 1080
+            
             session = BrowserSession(
                 headless=session_config.get("headless", False),
-                viewport=None
+                viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT}
             )
+            logger.info(f"📐 Viewport set to {VIEWPORT_WIDTH}x{VIEWPORT_HEIGHT} for coordinate consistency")
+            
+            # browser-use 0.9.x requires explicit start() call
+            logger.info("🚀 Starting browser session (browser-use 0.9.x)...")
+            await session.start()
+            logger.info("✅ Browser session started successfully")
 
             # Parse user query to extract action parameters
             # Try multiple patterns to extract search term
@@ -261,17 +278,20 @@ def process_workflow_task(
             )
 
             # Create Agent with prompts based on feature flag
+            # NOTE: browser-use 0.9.x changed parameter name from browser_context to browser_session
             agent = Agent(
                 task=unified_objective,
-                browser_context=session,
+                browser_session=session,
                 llm=ChatGoogle(
                     model=config.llm.google_model,
                     api_key=config.llm.google_api_key,
-                    temperature=0.1
+                    temperature=0.1,
+                    thinking_budget=0  # Disable thinking output (no <think> tags in response)
                 ),
                 use_vision=True,
                 max_steps=dynamic_max_steps,
-                system_prompt=build_system_prompt(include_custom_action=enable_custom_actions_flag)
+                system_prompt=build_system_prompt(include_custom_action=enable_custom_actions_flag),
+                use_thinking=False  # Disable thinking process in agent output
             )
 
             # ========================================

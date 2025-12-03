@@ -52,6 +52,9 @@ def build_workflow_prompt(
     Returns:
         Formatted prompt string for the agent
 
+    Raises:
+        ValueError: If elements list is empty or URL is invalid
+
     Example:
         >>> elements = [
         ...     {"id": "elem_1", "description": "Search input box", "action": "input"},
@@ -66,12 +69,36 @@ def build_workflow_prompt(
         ... )
     """
 
-    # Build element list
+    # Input validation
+    if not elements:
+        raise ValueError("Elements list cannot be empty")
+    
+    if not url or not url.strip():
+        raise ValueError("URL cannot be empty")
+    
+    # Ensure URL has protocol
+    url = url.strip()
+    if not url.startswith(('http://', 'https://')):
+        url = f'https://{url}'
+    
+    # Sanitize user_query to prevent prompt injection
+    # Replace newlines with spaces, limit length
+    user_query = user_query.replace('\n', ' ').replace('\r', ' ').strip()
+    if len(user_query) > 500:
+        user_query = user_query[:500] + '...'
+
+    # Build element list with validation
     element_list = []
-    for elem in elements:
-        elem_id = elem.get('id')
-        elem_desc = elem.get('description')
-        elem_action = elem.get('action', 'get_text')
+    for idx, elem in enumerate(elements):
+        elem_id = elem.get('id', f'elem_unknown_{idx}')  # Default with index if missing
+        elem_desc = elem.get('description', 'No description provided')  # Default description
+        elem_action = elem.get('action', 'get_text')  # Default to get_text if missing
+        
+        # Sanitize description to prevent prompt issues
+        elem_desc = elem_desc.replace('\n', ' ').replace('\r', ' ').strip()
+        if len(elem_desc) > 200:
+            elem_desc = elem_desc[:200] + '...'
+        
         element_list.append(f"   - {elem_id}: {elem_desc} (action: {elem_action})")
 
     elements_str = "\n".join(element_list)
@@ -145,60 +172,50 @@ IMPORTANT - NO VALIDATION NEEDED FROM YOU:
 EXAMPLE WORKFLOW
 ═══════════════════════════════════════════════════════════════════
 
+Scenario: Search for shoes on Flipkart and get first product name
+Elements: elem_1 (search box, action=input), elem_2 (product name, action=get_text)
+
 Step 1: Navigate to {url}
 
-Step 2: Find first element using vision
+Step 2: Find elem_1 (search box) using vision
   → Element: "Search input box"
   → Coordinates: x=450.5, y=320.8
-  → Candidate locator identified: id=search-input
 
-Step 3: Call the action
+Step 3: Call find_unique_locator for elem_1
   find_unique_locator(
       x=450.5,
       y=320.8,
       element_id="elem_1",
       element_description="Search input box",
-      candidate_locator="id=search-input"
+      candidate_locator="name=q"
   )
+  → Result: {{"element_id": "elem_1", "best_locator": "[name='q']", "validated": true, "count": 1}}
+  (Note: name=q is automatically converted to [name='q'] for Playwright compatibility)
 
-Step 4: Receive validated result
-  {{
-    "element_id": "elem_1",
-    "found": true,
-    "best_locator": "id=search-input",
-    "validated": true,
-    "count": 1,
-    "unique": true,
-    "valid": true,
-    "validation_method": "playwright"
-  }}
+Step 4: PERFORM ACTION for elem_1 (action=input)
+  → Type "shoes" into the search box
+  → Press Enter
+  → Wait for search results to load
 
-Step 5: Store result and move to next element
+Step 5: Find elem_2 (product name) using vision on the CURRENT page (results page)
+  → Element: "First product name in search results"
+  → Coordinates: x=320.5, y=450.2
 
-Step 6: Repeat for all elements in the list
+Step 6: Call find_unique_locator for elem_2
+  find_unique_locator(
+      x=320.5,
+      y=450.2,
+      element_id="elem_2",
+      element_description="First product name in search results"
+  )
+  → Result: {{"element_id": "elem_2", "best_locator": "[data-testid='product-title']", "validated": true, "count": 1}}
 
-Step 7: Call done() with all validated results
-  {{
-    "workflow_completed": true,
-    "results": [
-      {{
-        "element_id": "elem_1",
-        "found": true,
-        "best_locator": "id=search-input",
-        "validated": true,
-        "count": 1,
-        "unique": true
-      }},
-      {{
-        "element_id": "elem_2",
-        "found": true,
-        "best_locator": "data-testid=product-card",
-        "validated": true,
-        "count": 1,
-        "unique": true
-      }}
-    ]
-  }}
+Step 7: Store result (action=get_text means extract locator only, no interaction)
+
+Step 8: Call done() with all validated results
+
+KEY POINT: Elements are processed IN ORDER. elem_1's action (input) caused a page change,
+so elem_2 is naturally found on the new page. No explicit phase separation needed.
 
 ═══════════════════════════════════════════════════════════════════
 CRITICAL INSTRUCTIONS
@@ -217,36 +234,55 @@ CRITICAL INSTRUCTIONS
   • DO NOT call execute_js with querySelector to validate locators
   • DO NOT try to count elements yourself
   • DO NOT check if locators are unique yourself
-  • DO NOT extract text content from elements - just find the locators
-  • DO NOT use querySelector after getting the locator - just return it
   • The find_unique_locator action does ALL validation for you!
 
-⚠️ IMPORTANT - YOUR ONLY JOB:
-  • Find elements and get their validated locators
-  • DO NOT extract text, click, or interact with elements
-  • DO NOT verify the locator works by using it
-  • Just call find_unique_locator and store the result
-  • The locators will be used later in Robot Framework tests
+═══════════════════════════════════════════════════════════════════
+SEQUENTIAL ELEMENT PROCESSING
+═══════════════════════════════════════════════════════════════════
+
+Process elements IN THE ORDER THEY ARE LISTED. For each element:
+
+1. Find the element using your vision
+2. Get element coordinates (x, y)
+3. Call find_unique_locator to extract and validate the locator
+4. Based on the element's action field, decide what to do next:
+
+   ACTION BEHAVIORS:
+   • action='input': Type the specified text, press Enter, wait for page updates
+   • action='click': Click the element, wait for page updates
+   • action='submit': Click the element (submits form), wait for page updates
+   • action='get_text', 'get_attribute', or any other: Just store the locator (no interaction)
+   • action is missing/null: Just store the locator (no interaction)
+
+5. Move to the NEXT element in the list
+
+⚠️ IMPORTANT:
+  • Process elements sequentially in the order given
+  • Interactive actions (input/click/submit) may change the page
+  • Subsequent elements will be found on whatever page is currently displayed
+  • Wait for page loads/updates after interactive actions before moving to next element
+  • The Step Planner has already ordered elements correctly for the workflow
 
 ⚠️ IMPORTANT - NUMERIC IDs:
   • If you find an element with ID starting with a number (e.g., id="892238219")
   • DO NOT try to use querySelector('#892238219') - this is INVALID CSS
   • INSTEAD: Call find_unique_locator with candidate_locator="id=892238219"
   • The custom action will handle numeric IDs correctly using [id="..."] syntax
-  • DO NOT try to extract text using the locator - just return the locator itself
+
+⚠️ EDGE CASE HANDLING:
+  • If an element cannot be found, record it as {{"element_id": "...", "found": false, "error": "Element not visible/not found"}}
+  • Continue processing remaining elements (don't stop the entire workflow)
+  • If an interactive element fails, still try to process result elements on the current page
+  • If all elements have same action type (all interactive or all result), still process in order
+  • Empty descriptions are handled (just use coordinates and candidate locator)
+  • Missing element IDs will be assigned default values (elem_unknown_0, elem_unknown_1, etc.)
+  • Special characters in descriptions are automatically sanitized
 
 COMPLETION CRITERIA:
-  • ALL elements must have validated results from find_unique_locator action
+  • ALL elements must have validated locators from find_unique_locator
+  • Interactive elements (input/click/submit) must have their actions performed
   • Each result must have: validated=true, count=1, unique=true, valid=true
-  • Call done() with complete JSON structure containing all results
-  • DO NOT extract text or interact with elements - just return the locators
-
-⚠️ CRITICAL - DO NOT EXTRACT TEXT:
-  • After getting the locator from find_unique_locator, DO NOT use it
-  • DO NOT call execute_js to extract text using the locator
-  • DO NOT verify the locator by using querySelector
-  • Just store the locator and move to the next element
-  • The locators will be used in Robot Framework tests, not by you
+  • Call done() with complete JSON structure containing all validated locators
 
 Your final done() call MUST include the complete JSON with all elements_found data!
 DO NOT extract text content - just return the validated locators!

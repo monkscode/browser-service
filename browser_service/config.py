@@ -105,6 +105,11 @@ class BrowserServiceConfig:
         # Robot Framework library type
         self.robot_library = os.getenv("ROBOT_LIBRARY", "browser")
 
+        # Browser headless mode
+        # When true: Browser runs without UI (faster, for CI/CD)
+        # When false: Browser UI visible (for debugging/development)
+        self.headless = os.getenv("BROWSER_HEADLESS", "true").lower() == "true"
+
         # Feature flags
         self.enable_custom_actions = os.getenv("ENABLE_CUSTOM_ACTIONS", "true").lower() == "true"
 

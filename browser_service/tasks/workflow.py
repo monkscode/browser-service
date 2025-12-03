@@ -110,10 +110,11 @@ def process_workflow_task(
             VIEWPORT_HEIGHT = 1080
             
             session = BrowserSession(
-                headless=session_config.get("headless", False),
-                viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT}
+                headless=session_config.get("headless", config.headless),
+                viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
+                no_viewport=False  # CRITICAL: Force browser-use to respect viewport (default is True when headless=False)
             )
-            logger.info(f"📐 Viewport set to {VIEWPORT_WIDTH}x{VIEWPORT_HEIGHT} for coordinate consistency")
+            logger.info(f"📐 Viewport set to {VIEWPORT_WIDTH}x{VIEWPORT_HEIGHT} for coordinate consistency (no_viewport=False)")
             
             # browser-use 0.9.x requires explicit start() call
             logger.info("🚀 Starting browser session (browser-use 0.9.x)...")
@@ -142,87 +143,17 @@ def process_workflow_task(
                 logger.warning(
                     f"⚠️ Could not extract search term from query: {user_query}")
 
-            # Build unified workflow objective
-            # SIMPLE, EXPLICIT APPROACH: Always extract locators in correct order
-            workflow_steps = []
-            workflow_steps.append(f"1. Navigate to {url}")
-
-            step_num = 2
-
-            # Separate elements by action type
-            interactive_elements = [e for e in elements if e.get('action') in [
-                'input', 'click']]
-            result_elements = [e for e in elements if e.get('action') not in [
-                'input', 'click']]
-
-            logger.info(
-                f"📊 Element breakdown: {len(interactive_elements)} interactive, {len(result_elements)} result elements")
-
             # Calculate dynamic max_steps based on workflow complexity
-            # Formula: navigate(1) + extract_locators(all_elements) + perform_actions(interactive*2) + done(1) + buffer(3)
-            dynamic_max_steps = 1 + \
-                len(elements) + (len(interactive_elements) * 2) + 1 + 3
-            logger.info(
-                "📊 Dynamic max_steps calculation:")
-            logger.info(
-                "   Navigate: 1")
-            logger.info(
-                f"   Extract locators: {len(elements)} (one per element)")
-            logger.info(
-                f"   Perform actions: {len(interactive_elements) * 2} (2 steps per interactive element)")
-            logger.info(
-                "   Done + buffer: 4")
-            logger.info(
-                f"   Total max_steps: {dynamic_max_steps}")
-
-            # PHASE 1: Extract locators for interactive elements BEFORE using them
-            if interactive_elements:
-                workflow_steps.append(
-                    f"{step_num}. BEFORE performing any actions, extract validated locators for these elements on the CURRENT page:")
-                for elem in interactive_elements:
-                    workflow_steps.append(
-                        f"   - {elem.get('id')}: {elem.get('description')}")
-                step_num += 1
-
-            # PHASE 2: Perform user actions using the extracted locators
-            if search_term:
-                for elem in interactive_elements:
-                    elem_action = elem.get('action', '')
-                    elem_id = elem.get('id')
-                    elem_desc = elem.get('description', '')
-
-                    if elem_action == 'input':
-                        workflow_steps.append(
-                            f"{step_num}. Type '{search_term}' into the element you just found ({elem_id})")
-                        workflow_steps.append(
-                            f"{step_num + 1}. Press Enter to submit the search")
-                        workflow_steps.append(
-                            f"{step_num + 2}. Wait 5 seconds for search results to load completely")
-                        step_num += 3
-                    elif elem_action == 'click':
-                        workflow_steps.append(
-                            f"{step_num}. Click on the element you just found ({elem_id}: '{elem_desc}')")
-                        workflow_steps.append(
-                            f"{step_num + 1}. Wait 3 seconds for the page to update")
-                        step_num += 2
-
-            # PHASE 3: Extract locators for result elements AFTER actions complete
-            if result_elements:
-                workflow_steps.append(
-                    f"{step_num}. AFTER all actions are complete, extract validated locators for these elements on the RESULTS page:")
-                for elem in result_elements:
-                    workflow_steps.append(
-                        f"   - {elem.get('id')}: {elem.get('description')}")
-                step_num += 1
-
-            # If no interactive elements, just extract all locators
-            if not interactive_elements and not result_elements:
-                workflow_steps.append(
-                    f"{step_num}. Extract validated locators for all elements:")
-                for elem in elements:
-                    workflow_steps.append(
-                        f"   - {elem.get('id')}: {elem.get('description')}")
-                step_num += 1
+            # Formula: navigate(1) + process_elements(elements * 3 for find+action+wait) + done(1) + buffer(5)
+            # We use a generous estimate since AI handles sequencing intelligently
+            dynamic_max_steps = 1 + (len(elements) * 3) + 1 + 5
+            logger.info(f"📊 Dynamic max_steps: {dynamic_max_steps} (for {len(elements)} elements)")
+            
+            # NOTE: Element sequencing is handled by the AI agent based on:
+            # 1. The order elements are received (from Step Planner)
+            # 2. The 'action' field on each element (input/click/submit vs get_text/get_attribute)
+            # 3. Prompt instructions that guide the AI to perform actions before reading results
+            # No manual categorization needed - the AI understands workflow semantics
 
             # ========================================
             # NEW APPROACH: Use Playwright's Built-in Methods
@@ -232,43 +163,17 @@ def process_workflow_task(
             # Then Python uses Playwright's built-in methods for locator extraction and F12-style validation.
 
             library_type = config.robot_library
-            logger.info(
-                f"🔧 Using Playwright built-in methods for {library_type} library")
-
-            # Build workflow prompt (integrated function)
-            # Default to custom action mode (smart locator strategy)
-            # Will fall back to legacy mode if custom action registration fails
-            unified_objective = build_workflow_prompt(
-                user_query=user_query,
-                url=url,
-                elements=elements,
-                library_type=library_type,
-                include_custom_action=True  # Default: use smart locator strategy
-            )
-
-            logger.info("📝 Built simplified workflow objective")
-            logger.info(f"   Elements to find: {len(elements)}")
-
-            # Skip all the old JavaScript code and validation
-            # The new approach doesn't need it - Playwright handles everything
-            logger.info("📝 Built unified workflow objective")
-            logger.info(f"   Total workflow steps: {len(workflow_steps)}")
+            logger.info(f"🔧 Using {library_type} library with Playwright validation")
 
             # ========================================
             # FEATURE FLAG: ENABLE_CUSTOM_ACTIONS
             # ========================================
-            # Use feature flag from outer scope (already resolved to config or parameter value)
-            # If False, skip custom action registration and use legacy workflow
-            # Phase: Integration and Deployment | Requirements: 10.1, 10.3
-
             if enable_custom_actions_flag:
-                logger.info("� Custom actions ENABLED")
-                logger.info("   Mode: Smart locator strategy (custom action mode)")
+                logger.info("🔧 Custom actions ENABLED - Smart locator strategy")
             else:
-                logger.info("🔧 Custom actions DISABLED")
-                logger.info("   Mode: Legacy workflow (JavaScript validation)")
+                logger.info("🔧 Custom actions DISABLED - Legacy JavaScript validation")
 
-            # Build prompts based on feature flag
+            # Build workflow prompt based on feature flag
             unified_objective = build_workflow_prompt(
                 user_query=user_query,
                 url=url,
@@ -276,6 +181,7 @@ def process_workflow_task(
                 library_type=library_type,
                 include_custom_action=enable_custom_actions_flag
             )
+            logger.info(f"📝 Built workflow prompt for {len(elements)} elements")
 
             # Create Agent with prompts based on feature flag
             # NOTE: browser-use 0.9.x changed parameter name from browser_context to browser_session
@@ -1708,9 +1614,16 @@ def process_workflow_task(
                 if not all_locators:
                     continue
 
-                # Score each locator
+                # Score each locator - ONLY score unique and valid locators
                 scored_locators = []
+                skipped_count = 0
                 for loc in all_locators:
+                    # CRITICAL FIX: Filter out non-unique or invalid locators before scoring
+                    # Only unique=True and valid=True locators should be considered for re-ranking
+                    if not (loc.get('unique') and loc.get('valid')):
+                        skipped_count += 1
+                        continue  # Skip non-unique or invalid locators
+                    
                     try:
                         score = score_locator(loc)
                         scored_locators.append({
@@ -1720,38 +1633,45 @@ def process_workflow_task(
                     except Exception as e:
                         logger.warning(f"⚠️ Error scoring locator: {e}, skipping")
 
+                # Log filtering results
+                element_id = result.get('element_id', 'unknown')
+                if skipped_count > 0:
+                    logger.info(f"🔍 {element_id}: Filtered out {skipped_count} non-unique/invalid locators (keeping {len(scored_locators)} unique locators)")
+
                 if not scored_locators:
+                    logger.warning(f"⚠️ {element_id}: No unique locators available after filtering!")
                     continue
 
                 # Sort by score (highest first)
                 scored_locators.sort(key=lambda x: x.get('quality_score', 0), reverse=True)
 
                 # Log top 3 locators with their scores for debugging
-                element_id = result.get('element_id', 'unknown')
-                logger.info(f"📊 Locator Scores for {element_id}:")
+                logger.info(f"📊 Locator Scores for {element_id} (showing UNIQUE locators only):")
                 for i, loc in enumerate(scored_locators[:3]):  # Show top 3
                     locator_str = loc.get('locator', '')[:50]  # Truncate long locators
                     quality_score = loc.get('quality_score', 0)
                     loc_type = loc.get('type', 'unknown')
+                    unique = loc.get('unique', False)
+                    valid = loc.get('valid', False)
                     
                     if i == 0:
                         # First locator is the selected best
-                        logger.info(f"   {quality_score:3d} - {loc_type:15s} - {locator_str} ⭐ SELECTED AS BEST")
+                        logger.info(f"   {quality_score:3d} - {loc_type:15s} - {locator_str} ⭐ SELECTED AS BEST (unique={unique}, valid={valid})")
                         # Log warning if XPath is selected as best
                         if loc_type == 'xpath' or locator_str.startswith('xpath=') or locator_str.startswith('//'):
                             logger.warning("   ⚠️  XPath used as fallback - no ID, data-testid, name, or aria-label available")
                     else:
-                        logger.info(f"   {quality_score:3d} - {loc_type:15s} - {locator_str}")
+                        logger.info(f"   {quality_score:3d} - {loc_type:15s} - {locator_str} (unique={unique}, valid={valid})")
 
                 # Update result with re-ranked locators
                 old_best = result.get('best_locator', '')
                 new_best = scored_locators[0]['locator']
+                new_score = scored_locators[0].get('quality_score', 0)
 
                 if old_best != new_best:
-                    logger.info(f"   ✨ {element_id}: Upgraded locator")
+                    # Calculate old score for comparison (helpful for debugging)
                     old_score = score_locator({'locator': old_best}) if old_best else 0
-                    new_score = scored_locators[0].get('quality_score', 0)
-                    
+                    logger.info(f"   ✨ {element_id}: Upgraded locator")
                     logger.info(f"      OLD: {old_best} (score: {old_score})")
                     logger.info(f"      NEW: {new_best} (score: {new_score})")
                     re_ranked_count += 1

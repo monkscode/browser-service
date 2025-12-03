@@ -9,6 +9,7 @@ Key Components:
 - generation: Generate locators from element attributes with priority ordering
 - validation: Validate locators using Playwright API (uniqueness checking)
 - extraction: Extract element attributes and validate locators in a pipeline
+- conversion: Convert various locator formats to Playwright-compatible format
 
 Priority Order (highest to lowest):
 1. id - Most stable, fastest
@@ -21,12 +22,20 @@ Priority Order (highest to lowest):
 """
 
 from .generation import generate_locators_from_attributes
-from .validation import validate_locator_playwright
+from .validation import (
+    validate_locator_playwright,
+    convert_to_playwright_locator,
+    is_already_playwright_selector,
+    PLAYWRIGHT_NATIVE_ENGINES
+)
 from .extraction import extract_element_attributes, extract_and_validate_locators
 
 __all__ = [
     'generate_locators_from_attributes',
     'validate_locator_playwright',
+    'convert_to_playwright_locator',
+    'is_already_playwright_selector',
+    'PLAYWRIGHT_NATIVE_ENGINES',
     'extract_element_attributes',
     'extract_and_validate_locators',
 ]

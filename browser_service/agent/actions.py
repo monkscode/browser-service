@@ -164,28 +164,13 @@ async def find_unique_locator_action(
                     logger.warning(f"⚠️ Invalid candidate locator format: {candidate_locator}")
                     logger.info("🔄 Continuing with smart locator finder...")
                 else:
-                    # Convert candidate locator to Playwright format if needed
-                    # Agent might provide name=q which Playwright doesn't understand
-                    playwright_locator = candidate_locator
-
-                    # Check if it's a format that needs conversion
-                    if '=' in candidate_locator:
-                        prefix, value = candidate_locator.split('=', 1)
-                        prefix = prefix.lower().strip()
-
-                        if prefix == 'name':
-                            # name=q → [name="q"] for Playwright
-                            playwright_locator = f"[name='{value.strip()}']"
-                            logger.info(f"   Converted name= to attribute selector: {playwright_locator}")
-                        elif prefix == 'link':
-                            # link=text → text=text for Playwright
-                            playwright_locator = f"text={value.strip()}"
-                            logger.info(f"   Converted link= to text selector: {playwright_locator}")
-                        elif prefix == 'tag':
-                            # tag=button → button for Playwright
-                            playwright_locator = value.strip()
-                            logger.info(f"   Converted tag= to CSS selector: {playwright_locator}")
-                        # id=, text=, css=, xpath=, data-testid= work as-is in Playwright
+                    # Use shared conversion function from browser_service.locators
+                    from browser_service.locators import convert_to_playwright_locator
+                    
+                    playwright_locator, was_converted = convert_to_playwright_locator(candidate_locator)
+                    
+                    if was_converted:
+                        logger.info(f"   Converted to Playwright format: {playwright_locator}")
 
                     # Try to validate with Playwright
                     count = await page.locator(playwright_locator).count()
@@ -204,7 +189,7 @@ async def find_unique_locator_action(
                     if count == 1:
                         # Candidate is valid and unique!
                         # Use the converted locator for Browser Library compatibility
-                        final_locator = playwright_locator if playwright_locator != candidate_locator else candidate_locator
+                        final_locator = playwright_locator
 
                         logger.info("")
                         logger.info(f"{'='*80}")
@@ -212,7 +197,7 @@ async def find_unique_locator_action(
                         logger.info(f"{'='*80}")
                         logger.info("   Skipping 21 strategies (not needed)")
                         logger.info(f"   Original: {candidate_locator}")
-                        if final_locator != candidate_locator:
+                        if was_converted:
                             logger.info(f"   Converted: {final_locator} (Browser Library compatible)")
                         logger.info("   Type: candidate")
                         logger.info("   Priority: 0 (agent-provided)")
@@ -228,7 +213,7 @@ async def find_unique_locator_action(
                                 'type': 'candidate',
                                 'locator': final_locator,  # Use converted locator
                                 'priority': 0,
-                                'strategy': 'Agent-provided candidate (converted for Browser Library)',
+                                'strategy': 'Agent-provided candidate (converted for Browser Library)' if was_converted else 'Agent-provided candidate',
                                 'count': count,
                                 'unique': True,
                                 'valid': True,

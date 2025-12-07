@@ -38,6 +38,7 @@ async def find_unique_locator_action(
     y: float,
     element_id: str,
     element_description: str,
+    expected_text: Optional[str] = None,
     candidate_locator: Optional[str] = None,
     page=None
 ) -> Dict[str, Any]:
@@ -53,12 +54,15 @@ async def find_unique_locator_action(
     - Specific exception handling (TimeoutError, CancelledError, RuntimeError, ValueError)
     - Structured error results with error_type and full context
     - Detailed logging with element_id, coordinates, and error messages
+    - SEMANTIC VALIDATION: Compares expected_text against actual element text
 
     Args:
         x: X coordinate of element center
         y: Y coordinate of element center
         element_id: Element identifier (elem_1, elem_2, etc.)
         element_description: Human-readable description
+        expected_text: The actual visible text AI sees on the element (e.g., "Submit", "Nike Air Max 270").
+                      Used for semantic validation to ensure we found the CORRECT element.
         candidate_locator: Optional locator suggested by agent (e.g., "id=search")
         page: Playwright page object
 
@@ -79,6 +83,7 @@ async def find_unique_locator_action(
             'count': int,
             'unique': bool,
             'valid': bool,
+            'semantic_match': bool,  # NEW: True if actual text matches expected_text
             'validation_method': str
         }
 
@@ -92,6 +97,8 @@ async def find_unique_locator_action(
     logger.info(f"🎯 Custom Action: find_unique_locator called for {element_id}")
     logger.info(f"   Description: {element_description}")
     logger.info(f"   Coordinates: ({x}, {y})")
+    if expected_text:
+        logger.info(f"   Expected text: \"{expected_text}\"")
     if candidate_locator:
         logger.info(f"   Candidate locator: {candidate_locator}")
 
@@ -304,6 +311,7 @@ async def find_unique_locator_action(
                     y=y,
                     element_id=element_id,
                     element_description=element_description,
+                    expected_text=expected_text,  # Pass expected_text for semantic validation
                     candidate_locator=None,  # Already validated above, so pass None
                     library_type=config.robot_library  # Use configured library type
                 ),

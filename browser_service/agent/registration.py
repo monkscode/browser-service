@@ -80,6 +80,10 @@ def register_custom_actions(agent, page=None) -> bool:
             y: float = Field(description="Y coordinate of element center")
             element_id: str = Field(description="Element identifier (elem_1, elem_2, etc.)")
             element_description: str = Field(description="Human-readable description of element")
+            expected_text: Optional[str] = Field(
+                default=None,
+                description="The ACTUAL visible text seen on the element (e.g., 'Submit', 'Nike Air Max 270'). Used for semantic validation to ensure we found the correct element."
+            )
             candidate_locator: Optional[str] = Field(
                 default=None,
                 description="Optional candidate locator to validate first (e.g., 'id=search-input')"
@@ -119,6 +123,8 @@ def register_custom_actions(agent, page=None) -> bool:
                 logger.info("🎯 Custom action 'find_unique_locator' called by agent")
                 logger.info(f"   Element: {params.element_id} - {params.element_description}")
                 logger.info(f"   Coordinates: ({params.x}, {params.y})")
+                if params.expected_text:
+                    logger.info(f"   Expected text: \"{params.expected_text}\"")
 
                 # Get the page from the browser_session provided by browser-use
                 # IMPORTANT: browser-use now uses CDP (Chrome DevTools Protocol) instead of Playwright
@@ -382,6 +388,7 @@ def register_custom_actions(agent, page=None) -> bool:
                             y=params.y,
                             element_id=params.element_id,
                             element_description=params.element_description,
+                            expected_text=params.expected_text,  # Pass expected_text for semantic validation
                             candidate_locator=params.candidate_locator,
                             page=active_page
                         ),

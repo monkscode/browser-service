@@ -130,6 +130,12 @@ PARAMETERS:
   • y (float, required): Y coordinate of element center
   • element_id (str, required): Element identifier from the list above (e.g., "elem_1")
   • element_description (str, required): Human-readable description of the element
+  • expected_text (str, optional but HIGHLY RECOMMENDED): The ACTUAL visible text you see on the element.
+    This is CRITICAL for validation - we use it to verify we found the RIGHT element.
+    Examples: "Submit", "Add to Cart", "Nike Air Max 270", "Search"
+    ⚠️ For buttons/links: Use the exact button/link text you see
+    ⚠️ For inputs: Use the placeholder or label text if visible
+    ⚠️ For product names: Use the actual product name text you see
   • candidate_locator (str, optional): Your suggested locator if you can identify one
     Examples: "id=search-input", "data-testid=login-btn", "name=username"
 
@@ -187,6 +193,7 @@ Step 3: Call find_unique_locator for elem_1
       y=320.8,
       element_id="elem_1",
       element_description="Search input box",
+      expected_text="Search for products, brands and more",  ← ACTUAL placeholder text you see!
       candidate_locator="name=q"
   )
   → Result: {{"element_id": "elem_1", "best_locator": "[name='q']", "validated": true, "count": 1}}
@@ -206,9 +213,10 @@ Step 6: Call find_unique_locator for elem_2
       x=320.5,
       y=450.2,
       element_id="elem_2",
-      element_description="First product name in search results"
+      element_description="First product name in search results",
+      expected_text="Nike Air Max 270"  ← ACTUAL product name text you see on screen!
   )
-  → Result: {{"element_id": "elem_2", "best_locator": "[data-testid='product-title']", "validated": true, "count": 1}}
+  → Result: {{"element_id": "elem_2", "best_locator": "[data-testid='product-title']", "validated": true, "count": 1, "semantic_match": true}}
 
 Step 7: Store result (action=get_text means extract locator only, no interaction)
 
@@ -223,6 +231,8 @@ CRITICAL INSTRUCTIONS
 
 ✓ MUST call find_unique_locator for EVERY element in the list
 ✓ MUST provide accurate coordinates (x, y) from your vision
+✓ MUST provide expected_text - the ACTUAL visible text you see on the element
+  (This is CRITICAL - it prevents finding the wrong element!)
 ✓ SHOULD provide candidate_locator if you can identify id, data-testid, or name
 ✓ MUST NOT validate locators yourself - the action does this
 ✓ MUST NOT execute JavaScript to check uniqueness - the action does this
@@ -235,6 +245,15 @@ CRITICAL INSTRUCTIONS
   • DO NOT try to count elements yourself
   • DO NOT check if locators are unique yourself
   • The find_unique_locator action does ALL validation for you!
+
+⛔ STRICT SCOPE - DO NOT OVER-COMPLETE THE TASK:
+  • ONLY process the elements listed in ELEMENTS TO FIND above
+  • ONLY perform actions explicitly requested in the USER'S GOAL
+  • DO NOT add extra elements not in the list (e.g., if asked to fill username, don't also fill password)
+  • DO NOT infer or guess additional steps (e.g., don't click Submit unless asked)
+  • DO NOT "complete" forms or workflows beyond what was explicitly requested
+  • If the user asks to "type X into field Y", ONLY type X into field Y - nothing more
+  • Treat the ELEMENTS TO FIND list as EXHAUSTIVE - there are no hidden elements to find
 
 ═══════════════════════════════════════════════════════════════════
 SEQUENTIAL ELEMENT PROCESSING
@@ -278,11 +297,23 @@ Process elements IN THE ORDER THEY ARE LISTED. For each element:
   • Missing element IDs will be assigned default values (elem_unknown_0, elem_unknown_1, etc.)
   • Special characters in descriptions are automatically sanitized
 
+⚠️ CHECKBOX/RADIO HANDLING:
+  • When clicking on checkboxes or radio buttons, provide the LABEL TEXT as expected_text
+  • Examples: "checkbox 1", "remember me", "agree to terms", "male", "female"
+  • The system will automatically find the actual <input> element, not the text label
+  • Do NOT click directly on checkboxes - just call find_unique_locator with correct expected_text
+  • The returned locator will point to the actual checkbox/radio input element
+  • This ensures Robot Framework can use proper keywords like "Check Checkbox"
+
 COMPLETION CRITERIA:
-  • ALL elements must have validated locators from find_unique_locator
-  • Interactive elements (input/click/submit) must have their actions performed
+  • ALL elements in ELEMENTS TO FIND must have validated locators from find_unique_locator
+  • ONLY elements in ELEMENTS TO FIND should have their actions performed
+  • DO NOT process any elements not in the ELEMENTS TO FIND list
   • Each result must have: validated=true, count=1, unique=true, valid=true
-  • Call done() with complete JSON structure containing all validated locators
+  • Call done() IMMEDIATELY after processing ALL listed elements - do not continue
+  • If the list has 1 element, process that 1 element and call done()
+  • If the list has 3 elements, process those 3 elements and call done()
+  • The number of elements you process MUST match the number in ELEMENTS TO FIND
 
 Your final done() call MUST include the complete JSON with all elements_found data!
 DO NOT extract text content - just return the validated locators!

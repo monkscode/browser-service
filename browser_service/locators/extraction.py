@@ -61,46 +61,131 @@ async def extract_element_attributes(page, coords: Dict[str, float]) -> Optional
     """
     try:
         # Minimal JavaScript to get element attributes (< 50 lines)
+        # Enhanced: Also detect nearby checkbox/radio inputs for label-adjacent scenarios
         element_info = await page.evaluate("""
             (coords) => {
-                const el = document.elementFromPoint(coords.x, coords.y);
+                let el = document.elementFromPoint(coords.x, coords.y);
                 if (!el || el.tagName === 'HTML' || el.tagName === 'BODY') {
                     return null;
                 }
 
-                // Extract all useful attributes
-                return {
+                // Helper function to extract attributes from an element
+                const extractAttrs = (element) => ({
                     // Primary identifiers (highest priority)
-                    id: el.id || null,
-                    name: el.name || null,
-                    testId: el.dataset?.testid || null,
+                    id: element.id || null,
+                    name: element.name || null,
+                    testId: element.dataset?.testid || null,
 
                     // Semantic attributes
-                    ariaLabel: el.getAttribute('aria-label') || null,
-                    role: el.getAttribute('role') || null,
-                    title: el.title || null,
-                    placeholder: el.placeholder || null,
-                    type: el.type || null,
+                    ariaLabel: element.getAttribute('aria-label') || null,
+                    role: element.getAttribute('role') || null,
+                    title: element.title || null,
+                    placeholder: element.placeholder || null,
+                    type: element.type || null,
 
                     // Structure
-                    tagName: el.tagName.toLowerCase(),
-                    className: el.className || null,
+                    tagName: element.tagName.toLowerCase(),
+                    className: element.className || null,
 
                     // Content
-                    text: el.textContent?.trim().slice(0, 100) || null,
-                    href: el.href || null,
+                    text: element.textContent?.trim().slice(0, 100) || null,
+                    href: element.href || null,
 
                     // Visibility
-                    visible: el.offsetParent !== null,
+                    visible: element.offsetParent !== null,
 
                     // Position (for verification)
                     boundingBox: {
-                        x: el.getBoundingClientRect().x,
-                        y: el.getBoundingClientRect().y,
-                        width: el.getBoundingClientRect().width,
-                        height: el.getBoundingClientRect().height
+                        x: element.getBoundingClientRect().x,
+                        y: element.getBoundingClientRect().y,
+                        width: element.getBoundingClientRect().width,
+                        height: element.getBoundingClientRect().height
                     }
-                };
+                });
+
+                // If element is already an input (checkbox/radio), return it directly
+                if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) {
+                    return extractAttrs(el);
+                }
+
+                // If element is a LABEL, find its associated input
+                if (el.tagName === 'LABEL') {
+                    const forId = el.getAttribute('for');
+                    if (forId) {
+                        const input = document.getElementById(forId);
+                        if (input && (input.type === 'checkbox' || input.type === 'radio')) {
+                            return extractAttrs(input);
+                        }
+                    }
+                    // Check for nested input
+                    const nestedInput = el.querySelector('input[type="checkbox"], input[type="radio"]');
+                    if (nestedInput) {
+                        return extractAttrs(nestedInput);
+                    }
+                }
+
+                // SMART DETECTION: If clicked on text near a checkbox/radio, find the actual input
+                // This handles cases where checkbox text is not wrapped in a <label>
+                const parent = el.parentElement;
+                if (parent) {
+                    // Look for checkbox/radio inputs in the same parent container
+                    const inputs = parent.querySelectorAll('input[type="checkbox"], input[type="radio"]');
+                    if (inputs.length > 0) {
+                        // Find the closest input to the click point
+                        let closestInput = null;
+                        let closestDistance = Infinity;
+                        
+                        inputs.forEach(input => {
+                            const rect = input.getBoundingClientRect();
+                            const inputCenterX = rect.x + rect.width / 2;
+                            const inputCenterY = rect.y + rect.height / 2;
+                            const distance = Math.sqrt(
+                                Math.pow(coords.x - inputCenterX, 2) + 
+                                Math.pow(coords.y - inputCenterY, 2)
+                            );
+                            // Only consider inputs within 200px (reasonable proximity for label-input pairs)
+                            if (distance < closestDistance && distance < 200) {
+                                closestDistance = distance;
+                                closestInput = input;
+                            }
+                        });
+                        
+                        if (closestInput) {
+                            return extractAttrs(closestInput);
+                        }
+                    }
+                    
+                    // Also check grandparent (for deeper nesting like <form><div>text<input></div></form>)
+                    const grandparent = parent.parentElement;
+                    if (grandparent) {
+                        const gpInputs = grandparent.querySelectorAll('input[type="checkbox"], input[type="radio"]');
+                        if (gpInputs.length > 0) {
+                            let closestInput = null;
+                            let closestDistance = Infinity;
+                            
+                            gpInputs.forEach(input => {
+                                const rect = input.getBoundingClientRect();
+                                const inputCenterX = rect.x + rect.width / 2;
+                                const inputCenterY = rect.y + rect.height / 2;
+                                const distance = Math.sqrt(
+                                    Math.pow(coords.x - inputCenterX, 2) + 
+                                    Math.pow(coords.y - inputCenterY, 2)
+                                );
+                                if (distance < closestDistance && distance < 200) {
+                                    closestDistance = distance;
+                                    closestInput = input;
+                                }
+                            });
+                            
+                            if (closestInput) {
+                                return extractAttrs(closestInput);
+                            }
+                        }
+                    }
+                }
+
+                // No nearby input found, return original element's attributes
+                return extractAttrs(el);
             }
         """, coords)
 

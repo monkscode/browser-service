@@ -40,6 +40,7 @@ async def find_unique_locator_action(
     element_description: str,
     expected_text: Optional[str] = None,
     candidate_locator: Optional[str] = None,
+    table_cell_info: Optional[Dict[str, Any]] = None,
     page=None
 ) -> Dict[str, Any]:
     """
@@ -99,6 +100,8 @@ async def find_unique_locator_action(
     logger.info(f"   Coordinates: ({x}, {y})")
     if expected_text:
         logger.info(f"   Expected text: \"{expected_text}\"")
+    if table_cell_info:
+        logger.info(f"   Table cell info: {table_cell_info}")
     if candidate_locator:
         logger.info(f"   Candidate locator: {candidate_locator}")
 
@@ -313,7 +316,8 @@ async def find_unique_locator_action(
                     element_description=element_description,
                     expected_text=expected_text,  # Pass expected_text for semantic validation
                     candidate_locator=None,  # Already validated above, so pass None
-                    library_type=config.robot_library  # Use configured library type
+                    library_type=config.robot_library,  # Use configured library type
+                    table_cell_info=table_cell_info  # Pass structured table cell info if provided
                 ),
                 timeout=settings.CUSTOM_ACTION_TIMEOUT
             )

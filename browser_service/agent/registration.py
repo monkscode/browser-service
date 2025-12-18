@@ -88,6 +88,10 @@ def register_custom_actions(agent, page=None) -> bool:
                 default=None,
                 description="Optional candidate locator to validate first (e.g., 'id=search-input')"
             )
+            table_cell_info: Optional[str] = Field(
+                default=None,
+                description="JSON string with structured info for table cells. Format: '{\"table_index\": 1, \"row\": 1, \"column\": 2, \"table_heading\": \"Table Name\"}'. REQUIRED when element is inside a <table>. Must be a valid JSON string, NOT an empty object."
+            )
 
         # Get or create Tools instance from agent
         if not hasattr(agent, 'tools') or agent.tools is None:
@@ -125,6 +129,8 @@ def register_custom_actions(agent, page=None) -> bool:
                 logger.info(f"   Coordinates: ({params.x}, {params.y})")
                 if params.expected_text:
                     logger.info(f"   Expected text: \"{params.expected_text}\"")
+                if params.table_cell_info:
+                    logger.info(f"   Table cell info: {params.table_cell_info}")
 
                 # Get the page from the browser_session provided by browser-use
                 # IMPORTANT: browser-use now uses CDP (Chrome DevTools Protocol) instead of Playwright
@@ -382,6 +388,17 @@ def register_custom_actions(agent, page=None) -> bool:
                 # Call the actual implementation with the active page
                 # Wrap in timeout protection using CUSTOM_ACTION_TIMEOUT from config
                 try:
+                    # Parse table_cell_info JSON string if provided
+                    table_cell_info_dict = None
+                    if params.table_cell_info:
+                        try:
+                            import json
+                            table_cell_info_dict = json.loads(params.table_cell_info)
+                            logger.info(f"   Parsed table_cell_info: {table_cell_info_dict}")
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"   ⚠️ Failed to parse table_cell_info JSON: {e}")
+                            logger.warning(f"   Raw value: {params.table_cell_info}")
+                    
                     result = await asyncio.wait_for(
                         find_unique_locator_action(
                             x=params.x,
@@ -390,6 +407,7 @@ def register_custom_actions(agent, page=None) -> bool:
                             element_description=params.element_description,
                             expected_text=params.expected_text,  # Pass expected_text for semantic validation
                             candidate_locator=params.candidate_locator,
+                            table_cell_info=table_cell_info_dict,  # Pass parsed dict
                             page=active_page
                         ),
                         timeout=settings.CUSTOM_ACTION_TIMEOUT

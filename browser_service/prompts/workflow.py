@@ -138,6 +138,17 @@ PARAMETERS:
     ⚠️ For product names: Use the actual product name text you see
   • candidate_locator (str, optional): Your suggested locator if you can identify one
     Examples: "id=search-input", "data-testid=login-btn", "name=username"
+  • table_cell_info (str, optional BUT REQUIRED for table cells): JSON string with structured info when element is a table cell
+    ⚠️ WHEN TO PROVIDE: If the element is inside a <table> (td/th element), you MUST provide this!
+    Format: '{{"table_index": 1, "row": 1, "column": 2, "table_heading": "Table Name"}}'
+    ⚠️ MUST be a valid JSON string with double quotes around keys!
+      - table_index (int): Which table on the page (1 = first table, 2 = second table, etc.)
+      - row (int): Row number within the table (1-indexed, data rows only - NOT header row)
+      - column (int): Column number within the table (1-indexed)
+      - table_heading (str, optional): Text in heading/caption above/near the table (e.g., "Example 1", "User Data")
+    Examples:
+      - First row, second column of first table: '{{"table_index": 1, "row": 1, "column": 2}}'
+      - Third row, first column of "User Data" table: '{{"table_index": 1, "row": 3, "column": 1, "table_heading": "User Data"}}'
 
 ⚠️ CRITICAL - YOU MUST CALL THIS ACTION:
   • You MUST call find_unique_locator for EVERY element in the list above
@@ -226,6 +237,35 @@ KEY POINT: Elements are processed IN ORDER. elem_1's action (input) caused a pag
 so elem_2 is naturally found on the new page. No explicit phase separation needed.
 
 ═══════════════════════════════════════════════════════════════════
+TABLE CELL EXAMPLE
+═══════════════════════════════════════════════════════════════════
+
+Scenario: Get text from first row, second column of Table 1
+Elements: elem_1 (table cell, action=get_text)
+
+Step 1: Navigate to the page with tables
+
+Step 2: Find elem_1 (the table cell) using vision
+  → Identify the table on the page (it may have a heading like "Example 1" or "Table 1")
+  → Identify which row (1st, 2nd, etc.) and column (1st, 2nd, etc.)
+  → Element: "Cell in row 1, column 2 of Table 1"
+  → Coordinates: x=400.5, y=290.8
+
+Step 3: Call find_unique_locator for elem_1 WITH table_cell_info
+  find_unique_locator(
+      x=400.5,
+      y=290.8,
+      element_id="elem_1",
+      element_description="First row, second column of Table 1",
+      expected_text="John",  ← ACTUAL text content you see in the cell!
+      table_cell_info='{{"table_index": 1, "row": 1, "column": 2, "table_heading": "Example 1"}}'  ← JSON STRING, REQUIRED for table cells!
+  )
+  → Result: {{"element_id": "elem_1", "best_locator": "table:nth-of-type(1) tbody tr:nth-child(1) td:nth-child(2)", "validated": true, "count": 1}}
+
+⚠️ CRITICAL FOR TABLES: You MUST provide table_cell_info as a JSON STRING when the element is a table cell!
+   Without it, the coordinate-based approach may not find the correct locator.
+
+═══════════════════════════════════════════════════════════════════
 CRITICAL INSTRUCTIONS
 ═══════════════════════════════════════════════════════════════════
 
@@ -233,6 +273,8 @@ CRITICAL INSTRUCTIONS
 ✓ MUST provide accurate coordinates (x, y) from your vision
 ✓ MUST provide expected_text - the ACTUAL visible text you see on the element
   (This is CRITICAL - it prevents finding the wrong element!)
+✓ MUST provide table_cell_info when element is inside a <table> (td/th element)
+  (This is REQUIRED for table cells - without it, locator finding may fail!)
 ✓ SHOULD provide candidate_locator if you can identify id, data-testid, or name
 ✓ MUST NOT validate locators yourself - the action does this
 ✓ MUST NOT execute JavaScript to check uniqueness - the action does this

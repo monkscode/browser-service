@@ -73,6 +73,11 @@ def build_workflow_prompt(
     if not elements:
         raise ValueError("Elements list cannot be empty")
     
+    # Element limit safeguard - prevents LLM context overflow and excessively long workflows
+    MAX_ELEMENTS = 50
+    if len(elements) > MAX_ELEMENTS:
+        raise ValueError(f"Too many elements ({len(elements)}). Maximum allowed is {MAX_ELEMENTS}.")
+    
     if not url or not url.strip():
         raise ValueError("URL cannot be empty")
     

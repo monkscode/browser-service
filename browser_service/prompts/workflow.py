@@ -141,6 +141,12 @@ PARAMETERS:
     ⚠️ For buttons/links: Use the exact button/link text you see
     ⚠️ For inputs: Use the placeholder or label text if visible
     ⚠️ For product names: Use the actual product name text you see
+  • element_index (int, optional but HIGHLY RECOMMENDED): The element INDEX from the DOM state.
+    When you see elements labeled like [23] Services in the DOM, provide 23 as element_index.
+    This ensures we get the EXACT element you identified, avoiding coordinate inaccuracies.
+    ⚠️ Look at the numbered labels on elements in the screenshot/DOM state
+    ⚠️ Example: If you see [19] Services, set element_index=19
+    ⚠️ This is the MOST ACCURATE way to identify elements
   • candidate_locator (str, optional): Your suggested locator if you can identify one
     Examples: "id=search-input", "data-testid=login-btn", "name=username"
   • table_cell_info (str, optional BUT REQUIRED for table cells): JSON string with structured info when element is a table cell

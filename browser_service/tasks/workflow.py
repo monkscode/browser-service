@@ -185,6 +185,17 @@ def process_workflow_task(
 
             # Create Agent with prompts based on feature flag
             # NOTE: browser-use 0.9.x changed parameter name from browser_context to browser_session
+            # 
+            # NOTE: We do NOT manually set session._original_viewport_size here.
+            # browser-use's DOM watchdog automatically sets this based on the actual page viewport
+            # (see browser_use/browser/watchdogs/dom_watchdog.py line ~495).
+            # Our coordinate scaling code in registration.py reads this value dynamically.
+            
+            # LLM Screenshot Size for coordinate scaling (from config)
+            # Gemini provides coordinates in the resized screenshot space
+            # We must scale these coordinates to the actual viewport (set automatically by browser-use)
+            LLM_SCREENSHOT_SIZE = (config.llm.llm_screenshot_width, config.llm.llm_screenshot_height)
+            
             agent = Agent(
                 task=unified_objective,
                 browser_session=session,
@@ -198,7 +209,18 @@ def process_workflow_task(
                 max_steps=dynamic_max_steps,
                 system_prompt=build_system_prompt(include_custom_action=enable_custom_actions_flag),
                 use_thinking=False  # Disable thinking process in agent output
+                # NOTE: Don't pass llm_screenshot_size to Agent - browser-use 0.9.7 has a bug
+                # where it uses self.logger before self.browser_session is set.
             )
+            
+            # CRITICAL: Set llm_screenshot_size on session AFTER Agent creation
+            # browser-use 0.9.7 has two bugs:
+            # 1. If we pass llm_screenshot_size to Agent, it crashes (uses self.logger before self.browser_session is set)
+            # 2. If we don't pass it, the library sets session.llm_screenshot_size = None (overwriting any preexisting value)
+            # Solution: Set it AFTER Agent creation to ensure it persists
+            session.llm_screenshot_size = LLM_SCREENSHOT_SIZE
+            logger.info(f"🖼️  LLM screenshot resizing enabled: {LLM_SCREENSHOT_SIZE[0]}x{LLM_SCREENSHOT_SIZE[1]} (viewport: {VIEWPORT_WIDTH}x{VIEWPORT_HEIGHT})")
+
 
             # ========================================
             # REGISTER CUSTOM ACTIONS (if enabled)

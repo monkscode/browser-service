@@ -7,6 +7,8 @@ bypassing the need for LLM calls for specific operations like locator validation
 
 Key Functions:
 - register_custom_actions: Register custom actions with browser-use agent
+- cleanup_playwright_cache: Clean up cached Playwright resources (call at workflow end)
+- invalidate_playwright_cache: Force-invalidate cache (call when CDP URL changes)
 
 The registration process:
 1. Creates or retrieves the Tools instance from the agent
@@ -15,27 +17,122 @@ The registration process:
 4. Handles page object retrieval from browser_session via CDP
 5. Converts results to ActionResult format for the agent
 
+Playwright Cache Lifecycle:
+- Cache is created on first custom action call per workflow
+- Cache is reused across multiple custom action calls (performance optimization)
+- Cache is invalidated if CDP URL changes (browser restart detection)
+- Cache MUST be cleaned up at workflow end via cleanup_playwright_cache()
+- Emergency cleanup via atexit handler prevents orphaned resources
+
 Usage:
-    from browser_service.agent.registration import register_custom_actions
+    from browser_service.agent.registration import register_custom_actions, cleanup_playwright_cache
 
     # Register custom actions with agent
     success = register_custom_actions(agent, page=None)
     if success:
         # Agent can now call find_unique_locator action
         pass
+    
+    # IMPORTANT: Always clean up at workflow end
+    await cleanup_playwright_cache()
 """
 
 import asyncio
+import atexit
 import logging
 from typing import Optional
 
 # Get logger
 logger = logging.getLogger(__name__)
 
+# ========================================
+# PLAYWRIGHT INSTANCE CACHE
+# ========================================
 # Module-level cache for Playwright instance (reuse across custom action calls)
+# This significantly improves performance by avoiding repeated Playwright startup.
+#
+# IMPORTANT: This cache MUST be cleaned up when workflow completes.
+# See cleanup_playwright_cache() for proper cleanup.
+
 _playwright_instance_cache = None
 _connected_browser_cache = None
 _cache_cdp_url = None
+_cache_initialized = False  # Track if cache has ever been used
+
+
+def _sync_cleanup_playwright_cache():
+    """
+    Synchronous cleanup wrapper for atexit handler.
+    
+    This is registered with atexit to ensure cleanup happens even if
+    the async cleanup_playwright_cache() is never called (e.g., crash/interrupt).
+    
+    Note: This is a best-effort cleanup. Some async resources may not be
+    fully released in a sync context.
+    """
+    global _playwright_instance_cache, _connected_browser_cache, _cache_cdp_url, _cache_initialized
+    
+    if not _cache_initialized:
+        return  # Nothing to clean up
+    
+    logger.info("🧹 ATEXIT: Running emergency Playwright cache cleanup...")
+    
+    try:
+        # Note: We can't properly await async cleanup in atexit,
+        # but we can at least clear the references to help GC
+        if _connected_browser_cache:
+            logger.info("   Clearing browser cache reference...")
+            # Try to close if there's a sync close method
+            if hasattr(_connected_browser_cache, 'close') and not asyncio.iscoroutinefunction(_connected_browser_cache.close):
+                try:
+                    _connected_browser_cache.close()
+                except Exception:
+                    pass
+        
+        if _playwright_instance_cache:
+            logger.info("   Clearing Playwright cache reference...")
+            # Playwright stop() is async, so we can't call it here
+            # But clearing reference helps GC
+        
+        _playwright_instance_cache = None
+        _connected_browser_cache = None
+        _cache_cdp_url = None
+        _cache_initialized = False
+        
+        logger.info("✅ ATEXIT: Cache references cleared")
+    except Exception as e:
+        logger.warning(f"⚠️ ATEXIT: Error during emergency cleanup: {e}")
+
+
+# Register the sync cleanup with atexit (runs on normal Python exit)
+atexit.register(_sync_cleanup_playwright_cache)
+
+
+def invalidate_playwright_cache():
+    """
+    Force-invalidate the Playwright cache without closing resources.
+    
+    Call this when you detect that the cached CDP URL is stale (browser restarted)
+    or when you want to force a fresh connection on the next custom action.
+    
+    Note: This does NOT close the existing resources - it just marks the cache
+    as invalid so a new connection will be created. For proper cleanup,
+    use cleanup_playwright_cache() instead.
+    
+    Returns:
+        bool: True if cache was invalidated, False if cache was already empty
+    """
+    global _playwright_instance_cache, _connected_browser_cache, _cache_cdp_url
+    
+    had_cache = _playwright_instance_cache is not None or _connected_browser_cache is not None
+    
+    if had_cache:
+        logger.info("🔄 Invalidating Playwright cache (forcing fresh connection on next use)")
+        _playwright_instance_cache = None
+        _connected_browser_cache = None
+        _cache_cdp_url = None
+    
+    return had_cache
 
 
 def register_custom_actions(agent, page=None) -> bool:
@@ -92,6 +189,10 @@ def register_custom_actions(agent, page=None) -> bool:
                 default=None,
                 description="JSON string with structured info for table cells. Format: '{\"table_index\": 1, \"row\": 1, \"column\": 2, \"table_heading\": \"Table Name\"}'. REQUIRED when element is inside a <table>. Must be a valid JSON string, NOT an empty object."
             )
+            element_index: Optional[int] = Field(
+                default=None,
+                description="Element index from browser state (e.g., 23 from '[23] Services'). When provided, we get the exact element from browser-use's DOM, ensuring precise locator generation. HIGHLY RECOMMENDED for accuracy."
+            )
 
         # Get or create Tools instance from agent
         if not hasattr(agent, 'tools') or agent.tools is None:
@@ -131,6 +232,112 @@ def register_custom_actions(agent, page=None) -> bool:
                     logger.info(f"   Expected text: \"{params.expected_text}\"")
                 if params.table_cell_info:
                     logger.info(f"   Table cell info: {params.table_cell_info}")
+                if params.element_index is not None:
+                    logger.info(f"   Element index: [{params.element_index}]")
+
+                # ========================================
+                # ELEMENT INDEX: Get element directly from browser-use DOM
+                # ========================================
+                # When element_index is provided, we can get the exact element from
+                # browser-use's DOM state. This gives us:
+                # 1. Accurate element attributes (id, class, text, aria-label, etc.)
+                # 2. Confirmed bounding box coordinates (actual position, not LLM guess)
+                # 3. Much higher accuracy for locator generation
+                
+                element_data_from_index = None
+                confirmed_coords = None
+                
+                if params.element_index is not None and browser_session:
+                    try:
+                        logger.info(f"📋 Getting element [{params.element_index}] from browser-use DOM...")
+                        
+                        # Get element by index from browser-use's selector map
+                        dom_node = await browser_session.get_element_by_index(params.element_index)
+                        
+                        if dom_node:
+                            logger.info(f"   ✅ Found element [{params.element_index}] in DOM")
+                            
+                            # Extract element attributes for locator generation
+                            element_data_from_index = {
+                                'tagName': dom_node.node_name.lower() if hasattr(dom_node, 'node_name') else '',
+                                'id': dom_node.attributes.get('id', '') if hasattr(dom_node, 'attributes') else '',
+                                'name': dom_node.attributes.get('name', '') if hasattr(dom_node, 'attributes') else '',
+                                'className': dom_node.attributes.get('class', '') if hasattr(dom_node, 'attributes') else '',
+                                'ariaLabel': dom_node.attributes.get('aria-label', '') if hasattr(dom_node, 'attributes') else '',
+                                'placeholder': dom_node.attributes.get('placeholder', '') if hasattr(dom_node, 'attributes') else '',
+                                'title': dom_node.attributes.get('title', '') if hasattr(dom_node, 'attributes') else '',
+                                'href': dom_node.attributes.get('href', '') if hasattr(dom_node, 'attributes') else '',
+                                'role': dom_node.attributes.get('role', '') if hasattr(dom_node, 'attributes') else '',
+                                'dataTestId': dom_node.attributes.get('data-testid', '') or dom_node.attributes.get('data-test', '') if hasattr(dom_node, 'attributes') else '',
+                                'xpath': dom_node.xpath if hasattr(dom_node, 'xpath') else '',
+                            }
+                            
+                            # Get text content from the element
+                            if hasattr(dom_node, 'get_meaningful_text_for_llm'):
+                                element_data_from_index['textContent'] = dom_node.get_meaningful_text_for_llm()
+                            elif hasattr(dom_node, 'get_all_children_text'):
+                                element_data_from_index['textContent'] = dom_node.get_all_children_text()
+                            
+                            # Get confirmed coordinates from bounding box
+                            if hasattr(dom_node, 'absolute_position') and dom_node.absolute_position:
+                                pos = dom_node.absolute_position
+                                confirmed_coords = (
+                                    int(pos.x + pos.width / 2),
+                                    int(pos.y + pos.height / 2)
+                                )
+                                logger.info(f"   📍 Confirmed coordinates: {confirmed_coords} (from DOM bounding box)")
+                            
+                            logger.info(f"   📝 Element tag: <{element_data_from_index['tagName']}>")
+                            if element_data_from_index.get('id'):
+                                logger.info(f"   📝 Element id: {element_data_from_index['id']}")
+                            if element_data_from_index.get('textContent'):
+                                text_preview = element_data_from_index['textContent'][:50]
+                                logger.info(f"   📝 Element text: \"{text_preview}...\"" if len(element_data_from_index.get('textContent', '')) > 50 else f"   📝 Element text: \"{element_data_from_index['textContent']}\"")
+                        else:
+                            logger.warning(f"   ⚠️ Element [{params.element_index}] not found in DOM - falling back to coordinates")
+                    except Exception as e:
+                        logger.warning(f"   ⚠️ Could not get element by index: {e}")
+                        logger.debug(f"   Full error: ", exc_info=True)
+
+                # ========================================
+                # COORDINATE SCALING: LLM Screenshot → Viewport
+                # ========================================
+                # When llm_screenshot_size is set, browser-use resizes screenshots before
+                # sending to the LLM. The LLM returns coordinates in the resized image space.
+                # 
+                # Built-in actions (like click) use _convert_llm_coordinates_to_viewport()
+                # internally, but custom actions receive RAW coordinates from the LLM.
+                # We must apply the same conversion here for our custom action.
+                #
+                # Example: If viewport is 1920x1080 and llm_screenshot_size is 1400x850
+                # - LLM sees Solutions link at x=440 (in 1400px wide image)
+                # - We scale: (440/1400) * 1920 = 604 (actual viewport x)
+                
+                scaled_x, scaled_y = params.x, params.y  # Default: no scaling
+                
+                # Debug: Check what attributes browser_session has
+                has_llm_size = hasattr(browser_session, 'llm_screenshot_size') and browser_session.llm_screenshot_size
+                has_viewport = hasattr(browser_session, '_original_viewport_size') and browser_session._original_viewport_size
+                logger.info(f"   📊 browser_session.llm_screenshot_size: {getattr(browser_session, 'llm_screenshot_size', 'NOT SET')}")
+                logger.info(f"   📊 browser_session._original_viewport_size: {getattr(browser_session, '_original_viewport_size', 'NOT SET')}")
+                
+                if has_llm_size:
+                    if has_viewport:
+                        original_width, original_height = browser_session._original_viewport_size
+                        llm_width, llm_height = browser_session.llm_screenshot_size
+                        
+                        # Apply the same conversion as _convert_llm_coordinates_to_viewport
+                        scaled_x = int((params.x / llm_width) * original_width)
+                        scaled_y = int((params.y / llm_height) * original_height)
+                        
+                        logger.info(f"📐 COORDINATE SCALING applied:")
+                        logger.info(f"   LLM screenshot: {llm_width}x{llm_height}")
+                        logger.info(f"   Viewport: {original_width}x{original_height}")
+                        logger.info(f"   Original: ({params.x}, {params.y}) → Scaled: ({scaled_x}, {scaled_y})")
+                    else:
+                        logger.info("   ⚠️ No _original_viewport_size - using coordinates as-is")
+                else:
+                    logger.info("   ⚠️ No llm_screenshot_size - using coordinates as-is")
 
                 # Get the page from the browser_session provided by browser-use
                 # IMPORTANT: browser-use now uses CDP (Chrome DevTools Protocol) instead of Playwright
@@ -138,7 +345,7 @@ def register_custom_actions(agent, page=None) -> bool:
                 #
                 # OPTIMIZATION: Reuse Playwright instance across custom action calls
                 # Instead of creating a new instance every time, check cache first
-                global _playwright_instance_cache, _connected_browser_cache, _cache_cdp_url
+                global _playwright_instance_cache, _connected_browser_cache, _cache_cdp_url, _cache_initialized
                 
                 active_page = None
                 playwright_instance = None
@@ -209,6 +416,7 @@ def register_custom_actions(agent, page=None) -> bool:
                                 _playwright_instance_cache = playwright_instance
                                 _connected_browser_cache = connected_browser
                                 _cache_cdp_url = cdp_url
+                                _cache_initialized = True  # Mark cache as used for atexit cleanup
                                 created_new_instance = True
                                 logger.info("💾 Cached Playwright instance for reuse")
 
@@ -399,15 +607,26 @@ def register_custom_actions(agent, page=None) -> bool:
                             logger.warning(f"   ⚠️ Failed to parse table_cell_info JSON: {e}")
                             logger.warning(f"   Raw value: {params.table_cell_info}")
                     
+                    # Determine final coordinates to use:
+                    # Priority 1: confirmed_coords from element_index (most accurate)
+                    # Priority 2: scaled coordinates from LLM (fallback)
+                    final_x, final_y = scaled_x, scaled_y
+                    if confirmed_coords:
+                        final_x, final_y = confirmed_coords
+                        logger.info(f"📍 Using CONFIRMED coordinates: ({final_x}, {final_y})")
+                    else:
+                        logger.info(f"📍 Using SCALED coordinates: ({final_x}, {final_y})")
+                    
                     result = await asyncio.wait_for(
                         find_unique_locator_action(
-                            x=params.x,
-                            y=params.y,
+                            x=final_x,  # Use confirmed or scaled coordinates
+                            y=final_y,  # Use confirmed or scaled coordinates
                             element_id=params.element_id,
                             element_description=params.element_description,
                             expected_text=params.expected_text,  # Pass expected_text for semantic validation
                             candidate_locator=params.candidate_locator,
                             table_cell_info=table_cell_info_dict,  # Pass parsed dict
+                            element_data=element_data_from_index,  # Pass element attributes from DOM (NEW)
                             page=active_page
                         ),
                         timeout=settings.CUSTOM_ACTION_TIMEOUT
@@ -546,7 +765,7 @@ async def cleanup_playwright_cache():
     Returns:
         bool: True if cleanup succeeded
     """
-    global _playwright_instance_cache, _connected_browser_cache, _cache_cdp_url
+    global _playwright_instance_cache, _connected_browser_cache, _cache_cdp_url, _cache_initialized
     
     try:
         if _connected_browser_cache:
@@ -565,10 +784,11 @@ async def cleanup_playwright_cache():
             except Exception as e:
                 logger.warning(f"⚠️ Error stopping cached Playwright instance: {e}")
         
-        # Clear cache
+        # Clear cache and reset initialized flag
         _playwright_instance_cache = None
         _connected_browser_cache = None
         _cache_cdp_url = None
+        _cache_initialized = False
         
         return True
         

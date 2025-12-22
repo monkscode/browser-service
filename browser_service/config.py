@@ -68,6 +68,13 @@ class LLMConfig:
 
     # Google model name (without "gemini/" prefix)
     google_model: str = "gemini-2.5-flash"
+    
+    # LLM Screenshot Size for coordinate scaling
+    # Screenshots are resized to this size before sending to the LLM
+    # LLM returns coordinates in this space, which are then scaled to actual viewport
+    # Default: 1400x850 (good balance between quality and speed for Gemini)
+    llm_screenshot_width: int = 1400
+    llm_screenshot_height: int = 850
 
 
 class BrowserServiceConfig:
@@ -99,7 +106,9 @@ class BrowserServiceConfig:
         # LLM configuration
         self.llm = LLMConfig(
             google_api_key=os.getenv("GEMINI_API_KEY", ""),
-            google_model=self._get_google_model()
+            google_model=self._get_google_model(),
+            llm_screenshot_width=int(os.getenv("LLM_SCREENSHOT_WIDTH", "1400")),
+            llm_screenshot_height=int(os.getenv("LLM_SCREENSHOT_HEIGHT", "850"))
         )
 
         # Robot Framework library type

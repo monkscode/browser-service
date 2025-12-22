@@ -60,11 +60,25 @@ async def extract_element_attributes(page, coords: Dict[str, float]) -> Optional
         'submit-btn'
     """
     try:
-        # Minimal JavaScript to get element attributes (< 50 lines)
-        # Enhanced: Also detect nearby checkbox/radio inputs for label-adjacent scenarios
+        # Minimal JavaScript to get element attributes
+        # Enhanced: 
+        # 1. Shadow DOM support - pierces through shadow roots for modern web apps
+        # 2. Checkbox/radio input detection for label-adjacent scenarios
         element_info = await page.evaluate("""
             (coords) => {
-                let el = document.elementFromPoint(coords.x, coords.y);
+                // Shadow DOM piercing function - for Material UI, Salesforce Lightning, etc.
+                function elementFromPointDeep(x, y, root = document) {
+                    let element = root.elementFromPoint(x, y);
+                    if (!element) return null;
+                    while (element && element.shadowRoot) {
+                        const innerElement = element.shadowRoot.elementFromPoint(x, y);
+                        if (!innerElement || innerElement === element) break;
+                        element = innerElement;
+                    }
+                    return element;
+                }
+                
+                let el = elementFromPointDeep(coords.x, coords.y);
                 if (!el || el.tagName === 'HTML' || el.tagName === 'BODY') {
                     return null;
                 }

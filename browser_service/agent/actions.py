@@ -94,6 +94,7 @@ async def find_unique_locator_action(
     expected_text: Optional[str] = None,
     candidate_locator: Optional[str] = None,
     table_cell_info: Optional[Dict[str, Any]] = None,
+    element_data: Optional[Dict[str, Any]] = None,  # NEW: Element attributes from browser-use DOM
     page=None
 ) -> Dict[str, Any]:
     """
@@ -155,6 +156,8 @@ async def find_unique_locator_action(
         logger.info(f"   Expected text: \"{expected_text}\"")
     if table_cell_info:
         logger.info(f"   Table cell info: {table_cell_info}")
+    if element_data:
+        logger.info(f"   Element data from index: tag=<{element_data.get('tagName', '?')}>, text=\"{element_data.get('textContent', '')[:30]}...\"")
     if candidate_locator:
         logger.info(f"   Candidate locator: {candidate_locator}")
 
@@ -370,7 +373,8 @@ async def find_unique_locator_action(
                     expected_text=expected_text,  # Pass expected_text for semantic validation
                     candidate_locator=None,  # Already validated above, so pass None
                     library_type=config.robot_library,  # Use configured library type
-                    table_cell_info=table_cell_info  # Pass structured table cell info if provided
+                    table_cell_info=table_cell_info,  # Pass structured table cell info if provided
+                    element_data=element_data  # Pass element attributes from browser-use DOM (NEW)
                 ),
                 timeout=settings.CUSTOM_ACTION_TIMEOUT
             )

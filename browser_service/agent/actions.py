@@ -357,14 +357,14 @@ async def find_unique_locator_action(
 
         logger.info("🔍 Calling smart_locator_finder with 21 strategies...")
 
-        # Import smart_locator_finder
+        # Import smart_locator_finder from browser_service.locators
         try:
-            from tools.smart_locator_finder import find_unique_locator_at_coordinates
+            from browser_service.locators import find_unique_locator_at_coordinates
         except ImportError as e:
-            error_msg = f"Failed to import smart_locator_finder: {e}"
+            error_msg = f"Failed to import smart_locator from browser_service.locators: {e}"
             logger.error(f"❌ {error_msg}")
             logger.error(f"   Element ID: {element_id}")
-            logger.error("   This is a critical error - smart_locator_finder module is required")
+            logger.error("   This is a critical error - smart_locator module is required")
             return create_error_result('ImportError', error_msg)
 
         # Call smart locator finder with timeout protection

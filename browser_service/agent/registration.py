@@ -53,11 +53,44 @@ logger = logging.getLogger(__name__)
 #
 # IMPORTANT: This cache MUST be cleaned up when workflow completes.
 # See cleanup_playwright_cache() for proper cleanup.
+#
+# THREAD SAFETY: _cache_lock protects concurrent access to cache variables.
+# This prevents race conditions when multiple workflows run simultaneously.
 
 _playwright_instance_cache = None
 _connected_browser_cache = None
 _cache_cdp_url = None
 _cache_initialized = False  # Track if cache has ever been used
+_cache_lock = asyncio.Lock()  # Thread-safe access to cache
+
+
+def _extract_dom_node_attributes(dom_node) -> dict:
+    """
+    Extract standard attributes from a browser-use DOM node.
+    
+    This helper prevents code duplication across multiple locations
+    where element attributes need to be extracted for locator generation.
+    
+    Args:
+        dom_node: EnhancedDOMTreeNode from browser-use
+        
+    Returns:
+        Dictionary with standard element attributes
+    """
+    attrs = dom_node.attributes if hasattr(dom_node, 'attributes') else {}
+    return {
+        'tagName': dom_node.node_name.lower() if hasattr(dom_node, 'node_name') else '',
+        'id': attrs.get('id', ''),
+        'name': attrs.get('name', ''),
+        'className': attrs.get('class', ''),
+        'ariaLabel': attrs.get('aria-label', ''),
+        'placeholder': attrs.get('placeholder', ''),
+        'title': attrs.get('title', ''),
+        'href': attrs.get('href', ''),
+        'role': attrs.get('role', ''),
+        'dataTestId': attrs.get('data-testid', '') or attrs.get('data-test', ''),
+        'xpath': dom_node.xpath if hasattr(dom_node, 'xpath') else '',
+    }
 
 
 def _sync_cleanup_playwright_cache():
@@ -185,10 +218,6 @@ def register_custom_actions(agent, page=None) -> bool:
                 default=None,
                 description="Optional candidate locator to validate first (e.g., 'id=search-input')"
             )
-            table_cell_info: Optional[str] = Field(
-                default=None,
-                description="JSON string with structured info for table cells. Format: '{\"table_index\": 1, \"row\": 1, \"column\": 2, \"table_heading\": \"Table Name\"}'. REQUIRED when element is inside a <table>. Must be a valid JSON string, NOT an empty object."
-            )
             element_index: Optional[int] = Field(
                 default=None,
                 description="Element index from browser state (e.g., 23 from '[23] Services'). When provided, we get the exact element from browser-use's DOM, ensuring precise locator generation. HIGHLY RECOMMENDED for accuracy."
@@ -230,10 +259,9 @@ def register_custom_actions(agent, page=None) -> bool:
                 logger.info(f"   Coordinates: ({params.x}, {params.y})")
                 if params.expected_text:
                     logger.info(f"   Expected text: \"{params.expected_text}\"")
-                if params.table_cell_info:
-                    logger.info(f"   Table cell info: {params.table_cell_info}")
-                if params.element_index is not None:
-                    logger.info(f"   Element index: [{params.element_index}]")
+                
+                # ALWAYS log element_index to debug what LLM is passing
+                logger.info(f"   Element index: {params.element_index} (None means LLM did not provide it)")
 
                 # ========================================
                 # ELEMENT INDEX: Get element directly from browser-use DOM
@@ -251,26 +279,26 @@ def register_custom_actions(agent, page=None) -> bool:
                     try:
                         logger.info(f"📋 Getting element [{params.element_index}] from browser-use DOM...")
                         
-                        # Get element by index from browser-use's selector map
+                        # Debug: Log selector_map to verify table cells are indexed
+                        selector_map = await browser_session.get_selector_map()
+                        if selector_map:
+                            available_indices = sorted(selector_map.keys())
+                            logger.info(f"   📊 Selector map has {len(selector_map)} elements")
+                            # Log sample elements to verify table cells (td/th) are indexed
+                            sample_types = {}
+                            for idx in available_indices[:50]:
+                                tag = selector_map[idx].node_name.upper() if hasattr(selector_map[idx], 'node_name') else '?'
+                                sample_types[tag] = sample_types.get(tag, 0) + 1
+                            logger.info(f"   📊 Element types in sample: {dict(sorted(sample_types.items(), key=lambda x: -x[1]))}")
+                        
+                        # Use browser-use's get_element_by_index method (returns EnhancedDOMTreeNode | None)
                         dom_node = await browser_session.get_element_by_index(params.element_index)
                         
                         if dom_node:
                             logger.info(f"   ✅ Found element [{params.element_index}] in DOM")
                             
                             # Extract element attributes for locator generation
-                            element_data_from_index = {
-                                'tagName': dom_node.node_name.lower() if hasattr(dom_node, 'node_name') else '',
-                                'id': dom_node.attributes.get('id', '') if hasattr(dom_node, 'attributes') else '',
-                                'name': dom_node.attributes.get('name', '') if hasattr(dom_node, 'attributes') else '',
-                                'className': dom_node.attributes.get('class', '') if hasattr(dom_node, 'attributes') else '',
-                                'ariaLabel': dom_node.attributes.get('aria-label', '') if hasattr(dom_node, 'attributes') else '',
-                                'placeholder': dom_node.attributes.get('placeholder', '') if hasattr(dom_node, 'attributes') else '',
-                                'title': dom_node.attributes.get('title', '') if hasattr(dom_node, 'attributes') else '',
-                                'href': dom_node.attributes.get('href', '') if hasattr(dom_node, 'attributes') else '',
-                                'role': dom_node.attributes.get('role', '') if hasattr(dom_node, 'attributes') else '',
-                                'dataTestId': dom_node.attributes.get('data-testid', '') or dom_node.attributes.get('data-test', '') if hasattr(dom_node, 'attributes') else '',
-                                'xpath': dom_node.xpath if hasattr(dom_node, 'xpath') else '',
-                            }
+                            element_data_from_index = _extract_dom_node_attributes(dom_node)
                             
                             # Get text content from the element
                             if hasattr(dom_node, 'get_meaningful_text_for_llm'):
@@ -290,11 +318,13 @@ def register_custom_actions(agent, page=None) -> bool:
                             logger.info(f"   📝 Element tag: <{element_data_from_index['tagName']}>")
                             if element_data_from_index.get('id'):
                                 logger.info(f"   📝 Element id: {element_data_from_index['id']}")
+                            if element_data_from_index.get('xpath'):
+                                logger.info(f"   📝 Element xpath: {element_data_from_index['xpath']}")
                             if element_data_from_index.get('textContent'):
                                 text_preview = element_data_from_index['textContent'][:50]
                                 logger.info(f"   📝 Element text: \"{text_preview}...\"" if len(element_data_from_index.get('textContent', '')) > 50 else f"   📝 Element text: \"{element_data_from_index['textContent']}\"")
                         else:
-                            logger.warning(f"   ⚠️ Element [{params.element_index}] not found in DOM - falling back to coordinates")
+                            logger.warning(f"   ⚠️ Element [{params.element_index}] not found in selector_map (available indices: {sorted(selector_map.keys()) if selector_map else 'none'})")
                     except Exception as e:
                         logger.warning(f"   ⚠️ Could not get element by index: {e}")
                         logger.debug(f"   Full error: ", exc_info=True)
@@ -339,7 +369,254 @@ def register_custom_actions(agent, page=None) -> bool:
                 else:
                     logger.info("   ⚠️ No llm_screenshot_size - using coordinates as-is")
 
-                # Get the page from the browser_session provided by browser-use
+                # ========================================
+                # FALLBACK: Find element from selector_map using coordinates
+                # ========================================
+                # When element_index is NOT provided (which is typical for custom actions),
+                # we can still get element_data by finding which element's bounding box
+                # contains the given coordinates. This is more accurate than coordinate-based
+                # JavaScript extraction.
+                if element_data_from_index is None and browser_session:
+                    try:
+                        logger.info(f"🔍 STEP A: Finding element at ({scaled_x}, {scaled_y}) from selector_map...")
+                        selector_map = await browser_session.get_selector_map()
+                        
+                        if selector_map:
+                            # Log element types to verify what's indexed
+                            sample_types = {}
+                            for idx, elem in list(selector_map.items())[:100]:
+                                tag = elem.node_name.upper() if hasattr(elem, 'node_name') else '?'
+                                sample_types[tag] = sample_types.get(tag, 0) + 1
+                            logger.info(f"   📊 Selector map has {len(selector_map)} interactive elements")
+                            logger.info(f"   📊 Types: {dict(sorted(sample_types.items(), key=lambda x: -x[1])[:8])}")
+                            
+                            # Find element whose bounding box contains the coordinates
+                            best_match = None
+                            best_area = float('inf')  # Prefer smaller (more specific) elements
+                            
+                            for idx, elem in selector_map.items():
+                                if hasattr(elem, 'absolute_position') and elem.absolute_position:
+                                    pos = elem.absolute_position
+                                    # Check if coordinates are within bounding box
+                                    if (pos.x <= scaled_x <= pos.x + pos.width and
+                                        pos.y <= scaled_y <= pos.y + pos.height):
+                                        area = pos.width * pos.height
+                                        if area < best_area and area > 0:
+                                            best_area = area
+                                            best_match = (idx, elem)
+                            
+                            if best_match:
+                                idx, dom_node = best_match
+                                logger.info(f"   ✅ Found element [{idx}] in selector_map!")
+                                
+                                # Extract element attributes
+                                element_data_from_index = _extract_dom_node_attributes(dom_node)
+                                
+                                # Get text content
+                                if hasattr(dom_node, 'get_meaningful_text_for_llm'):
+                                    element_data_from_index['textContent'] = dom_node.get_meaningful_text_for_llm()
+                                elif hasattr(dom_node, 'get_all_children_text'):
+                                    element_data_from_index['textContent'] = dom_node.get_all_children_text()
+                                
+                                # Extract confirmed_coords from bounding box
+                                if hasattr(dom_node, 'absolute_position') and dom_node.absolute_position:
+                                    pos = dom_node.absolute_position
+                                    confirmed_coords = (
+                                        int(pos.x + pos.width / 2),
+                                        int(pos.y + pos.height / 2)
+                                    )
+                                    logger.info(f"   📍 Confirmed coordinates: {confirmed_coords}")
+                                
+                                logger.info(f"   📝 Found: <{element_data_from_index['tagName']}> xpath: {element_data_from_index.get('xpath', 'N/A')[:60]}")
+                        
+                        # ========================================
+                        # STEP B: If not found in selector_map, search FULL DOM tree
+                        # This finds ALL elements including non-interactive ones (table cells, etc.)
+                        # 
+                        # IMPORTANT: Browser validation showed that for fixed-position content (like tables),
+                        # LLM coordinates often map DIRECTLY to viewport coords without scaling.
+                        # We try RAW coords first, then SCALED as fallback.
+                        # ========================================
+                        if element_data_from_index is None:
+                            try:
+                                # Get full browser state with DOM tree
+                                state = await browser_session.get_browser_state_summary(include_screenshot=False)
+
+                                if state and state.dom_state and hasattr(state.dom_state, '_root') and state.dom_state._root:
+                                    root = state.dom_state._root
+                                    
+                                    # Debug: count table nodes with bounds
+                                    nodes_with_bounds = []
+                                    def count_bounds(node, depth=0):
+                                        if hasattr(node, 'original_node') and node.original_node:
+                                            orig = node.original_node
+                                            tag = orig.node_name if hasattr(orig, 'node_name') else '?'
+                                            has_bounds = hasattr(orig, 'snapshot_node') and orig.snapshot_node and hasattr(orig.snapshot_node, 'bounds') and orig.snapshot_node.bounds
+                                            if has_bounds and tag.lower() in ['td', 'th', 'tr', 'table']:
+                                                b = orig.snapshot_node.bounds
+                                                nodes_with_bounds.append(f"{tag}@({b.x:.0f},{b.y:.0f} {b.width:.0f}x{b.height:.0f})")
+                                        if hasattr(node, 'children'):
+                                            for child in node.children:
+                                                count_bounds(child, depth + 1)
+                                    count_bounds(root)
+                                    if nodes_with_bounds:
+                                        logger.info(f"   📊 Table elements with bounds: {nodes_with_bounds[:10]}")
+                                    
+                                    # Recursive function to find element at coordinates in full DOM tree
+                                    def find_element_at_coords(node, x, y, depth=0):
+                                        """
+                                        Recursively search DOM tree for SMALLEST element containing coordinates.
+                                        Returns tuple of (element, area) or (None, inf).
+                                        """
+                                        best = None
+                                        best_area = float('inf')
+                                        
+                                        if hasattr(node, 'original_node') and node.original_node:
+                                            orig = node.original_node
+                                            if hasattr(orig, 'snapshot_node') and orig.snapshot_node:
+                                                bounds = getattr(orig.snapshot_node, 'bounds', None)
+                                                if bounds and hasattr(bounds, 'x') and bounds.width > 0 and bounds.height > 0:
+                                                    if (bounds.x <= x <= bounds.x + bounds.width and
+                                                        bounds.y <= y <= bounds.y + bounds.height):
+                                                        area = bounds.width * bounds.height
+                                                        if area > 0:
+                                                            best = orig
+                                                            best_area = area
+                                        
+                                        if hasattr(node, 'children') and node.children:
+                                            for child in node.children:
+                                                child_result, child_area = find_element_at_coords(child, x, y, depth + 1)
+                                                if child_result and child_area < best_area:
+                                                    best = child_result
+                                                    best_area = child_area
+                                        
+                                        return best, best_area
+                                    
+                                    # Try ALL coordinate strategies and collect candidates
+                                    candidates = []
+                                    
+                                    # Strategy 1: RAW LLM coordinates
+                                    raw_x, raw_y = params.x, params.y
+                                    logger.info(f"🔍 STEP B.1: Trying RAW LLM coords ({raw_x}, {raw_y})...")
+                                    node1, area1 = find_element_at_coords(root, raw_x, raw_y)
+                                    if node1 and hasattr(node1, 'node_name') and node1.node_name.lower() not in ['html', 'body']:
+                                        candidates.append(('RAW', node1, area1, raw_x, raw_y))
+                                    
+                                    # Strategy 2: SCALED viewport coordinates
+                                    logger.info(f"🔍 STEP B.2: Trying SCALED coords ({scaled_x}, {scaled_y})...")
+                                    node2, area2 = find_element_at_coords(root, scaled_x, scaled_y)
+                                    if node2 and hasattr(node2, 'node_name') and node2.node_name.lower() not in ['html', 'body']:
+                                        candidates.append(('SCALED', node2, area2, scaled_x, scaled_y))
+                                    
+                                    # Strategy 3: OFFSET-based for CENTERED content
+                                    if has_llm_size and has_viewport:
+                                        llm_width, llm_height = browser_session.llm_screenshot_size
+                                        viewport_width, viewport_height = browser_session._original_viewport_size
+                                        offset_x = (viewport_width - llm_width) / 2
+                                        offset_result_x = params.x + offset_x
+                                        offset_result_y = params.y  # Keep Y raw
+                                        logger.info(f"🔍 STEP B.3: Trying OFFSET coords ({offset_result_x:.0f}, {offset_result_y:.0f})...")
+                                        node3, area3 = find_element_at_coords(root, offset_result_x, offset_result_y)
+                                        if node3 and hasattr(node3, 'node_name') and node3.node_name.lower() not in ['html', 'body']:
+                                            candidates.append(('OFFSET', node3, area3, offset_result_x, offset_result_y))
+                                    
+                                    # Pick best candidate: prefer SMALLEST element whose text matches expected_text
+                                    # (Parent divs may also contain the text, so we need the smallest/most specific match)
+                                    found_node = None
+                                    found_area = float('inf')
+                                    best_strategy = None
+                                    text_match_found = False
+                                    text_match_area = float('inf')
+                                    
+                                    for strategy, node, area, x, y in candidates:
+                                        # Check if text matches expected_text
+                                        node_text = ''
+                                        if hasattr(node, 'get_meaningful_text_for_llm'):
+                                            node_text = node.get_meaningful_text_for_llm() or ''
+                                        elif hasattr(node, 'get_all_children_text'):
+                                            node_text = node.get_all_children_text() or ''
+                                        
+                                        text_matches = params.expected_text and params.expected_text.lower() in node_text.lower()
+                                        tag = node.node_name.lower() if hasattr(node, 'node_name') else 'unknown'
+                                        
+                                        if text_matches:
+                                            logger.info(f"   📝 {strategy} at ({x:.0f}, {y:.0f}): <{tag}> area={area:.0f} - text contains '{params.expected_text}'")
+                                            # Pick SMALLEST element that matches (most specific)
+                                            if area < text_match_area:
+                                                text_match_area = area
+                                                found_node = node
+                                                found_area = area
+                                                best_strategy = strategy
+                                                text_match_found = True
+                                        elif not text_match_found:
+                                            # No text match yet, track smallest element as fallback
+                                            if area < found_area:
+                                                found_node = node
+                                                found_area = area
+                                                best_strategy = strategy
+                                    
+                                    if best_strategy:
+                                        logger.info(f"   🎯 Using {best_strategy} strategy (area={found_area:.0f})")
+                                    
+                                    if found_node:
+                                        tag_name = found_node.node_name.lower() if hasattr(found_node, 'node_name') else ''
+                                        logger.info(f"   ✅ Found <{tag_name}> in full DOM tree!")
+                                        
+                                        # Extract element attributes from full DOM node
+                                        element_data_from_index = {
+                                            'tagName': tag_name,
+                                            'id': found_node.attributes.get('id', '') if hasattr(found_node, 'attributes') and found_node.attributes else '',
+                                            'name': found_node.attributes.get('name', '') if hasattr(found_node, 'attributes') and found_node.attributes else '',
+                                            'className': found_node.attributes.get('class', '') if hasattr(found_node, 'attributes') and found_node.attributes else '',
+                                            'ariaLabel': found_node.attributes.get('aria-label', '') if hasattr(found_node, 'attributes') and found_node.attributes else '',
+                                            'placeholder': found_node.attributes.get('placeholder', '') if hasattr(found_node, 'attributes') and found_node.attributes else '',
+                                            'title': found_node.attributes.get('title', '') if hasattr(found_node, 'attributes') and found_node.attributes else '',
+                                            'href': found_node.attributes.get('href', '') if hasattr(found_node, 'attributes') and found_node.attributes else '',
+                                            'role': found_node.attributes.get('role', '') if hasattr(found_node, 'attributes') and found_node.attributes else '',
+                                            'dataTestId': (found_node.attributes.get('data-testid', '') or found_node.attributes.get('data-test', '')) if hasattr(found_node, 'attributes') and found_node.attributes else '',
+                                            'xpath': found_node.xpath if hasattr(found_node, 'xpath') else '',
+                                        }
+                                        
+                                        # Get text content
+                                        if hasattr(found_node, 'get_meaningful_text_for_llm'):
+                                            element_data_from_index['textContent'] = found_node.get_meaningful_text_for_llm()
+                                        elif hasattr(found_node, 'get_all_children_text'):
+                                            element_data_from_index['textContent'] = found_node.get_all_children_text()
+                                        
+                                        # Extract confirmed_coords from snapshot bounds
+                                        if hasattr(found_node, 'snapshot_node') and found_node.snapshot_node:
+                                            bounds = getattr(found_node.snapshot_node, 'bounds', None)
+                                            if bounds and hasattr(bounds, 'x'):
+                                                confirmed_coords = (
+                                                    int(bounds.x + bounds.width / 2),
+                                                    int(bounds.y + bounds.height / 2)
+                                                )
+                                                logger.info(f"   📍 Confirmed coordinates: {confirmed_coords}")
+                                        
+                                        if element_data_from_index.get('xpath'):
+                                            logger.info(f"   📝 XPath: {element_data_from_index['xpath'][:80]}")
+                                        if element_data_from_index.get('textContent'):
+                                            text = element_data_from_index['textContent'][:40]
+                                            logger.info(f"   📝 Text: \"{text}\"")
+                                    else:
+                                        logger.warning(f"   ⚠️ No element found in full DOM tree at SCALED coords ({scaled_x}, {scaled_y})")
+                                else:
+                                    logger.warning(f"   ⚠️ Could not access full DOM tree (_root is not available)")
+                            except Exception as e:
+                                logger.warning(f"   ⚠️ Full DOM tree search failed: {e}")
+                        
+                        # Log final status
+                        if element_data_from_index is None:
+                            logger.warning(f"   ⚠️ No element found at coordinates ({scaled_x}, {scaled_y}) in either selector_map or full DOM")
+                            
+                    except Exception as e:
+                        logger.warning(f"   ⚠️ DOM-based element search failed: {e}")
+                        import traceback
+                        logger.debug(traceback.format_exc())
+
+
+
+
                 # IMPORTANT: browser-use now uses CDP (Chrome DevTools Protocol) instead of Playwright
                 # We need to connect to browser-use's browser via CDP to get a Playwright page for validation
                 #
@@ -366,6 +643,12 @@ def register_custom_actions(agent, page=None) -> bool:
                             cdp_url = browser_session.cdp_url
                             if cdp_url:
                                 logger.info(f"✅ Found CDP URL from browser_session.cdp_url: {cdp_url}")
+                                # Store CDP port for cleanup (it may be None at cleanup time)
+                                try:
+                                    from browser_service.browser.cleanup import store_cdp_port
+                                    store_cdp_port(cdp_url)
+                                except Exception as store_err:
+                                    logger.warning(f"Failed to store CDP port: {store_err}")
                         except Exception as e:
                             logger.debug(f"Error accessing browser_session.cdp_url: {e}")
 
@@ -396,38 +679,54 @@ def register_custom_actions(agent, page=None) -> bool:
 
                     # If we have CDP URL, connect Playwright to browser-use's browser
                     if cdp_url:
-                        # Check if we can reuse cached Playwright instance
-                        if (_playwright_instance_cache and 
-                            _connected_browser_cache and 
-                            _cache_cdp_url == cdp_url):
-                            logger.info("♻️  Reusing cached Playwright instance (performance optimization)")
-                            playwright_instance = _playwright_instance_cache
-                            connected_browser = _connected_browser_cache
-                        else:
-                            # Create new Playwright instance
-                            try:
-                                from playwright.async_api import async_playwright
+                        # Thread-safe cache access using lock
+                        async with _cache_lock:
+                            # Global declaration must come first in Python
+                            global _playwright_instance_cache, _connected_browser_cache, _cache_cdp_url, _cache_initialized
+                            
+                            # Check if we can reuse cached Playwright instance
+                            if (_playwright_instance_cache and 
+                                _connected_browser_cache and 
+                                _cache_cdp_url == cdp_url):
+                                logger.info("♻️  Reusing cached Playwright instance (performance optimization)")
+                                playwright_instance = _playwright_instance_cache
+                                connected_browser = _connected_browser_cache
+                            else:
+                                # Create new Playwright instance
+                                try:
+                                    from playwright.async_api import async_playwright
 
-                                logger.info("🔌 Connecting Playwright to browser-use's browser via CDP...")
-                                playwright_instance = await async_playwright().start()
-                                connected_browser = await playwright_instance.chromium.connect_over_cdp(cdp_url)
-                                
-                                # Cache for reuse
-                                _playwright_instance_cache = playwright_instance
-                                _connected_browser_cache = connected_browser
-                                _cache_cdp_url = cdp_url
-                                _cache_initialized = True  # Mark cache as used for atexit cleanup
-                                created_new_instance = True
-                                logger.info("💾 Cached Playwright instance for reuse")
+                                    logger.info("🔌 Connecting Playwright to browser-use's browser via CDP...")
+                                    playwright_instance = await async_playwright().start()
+                                    connected_browser = await playwright_instance.chromium.connect_over_cdp(cdp_url)
+                                    
+                                    # Cache for reuse (protected by lock)
+                                    _playwright_instance_cache = playwright_instance
+                                    _connected_browser_cache = connected_browser
+                                    _cache_cdp_url = cdp_url
+                                    _cache_initialized = True  # Mark cache as used for atexit cleanup
+                                    created_new_instance = True
+                                    logger.info("💾 Cached Playwright instance for reuse")
 
-                            except Exception as e:
-                                logger.error(f"❌ Failed to connect Playwright via CDP: {e}")
-                                import traceback
-                                logger.debug(traceback.format_exc())
+                                except Exception as e:
+                                    logger.error(f"❌ Failed to connect Playwright via CDP: {e}")
+                                    import traceback
+                                    logger.debug(traceback.format_exc())
 
                         # Get the active page from browser-use's browser
                         if connected_browser:
                             try:
+                                # DEBUG: Log all available contexts and pages
+                                logger.info(f"   DEBUG: connected_browser has {len(connected_browser.contexts)} context(s)")
+                                for idx, ctx in enumerate(connected_browser.contexts):
+                                    logger.info(f"   DEBUG: Context[{idx}] has {len(ctx.pages)} page(s)")
+                                    for pidx, pg in enumerate(ctx.pages):
+                                        try:
+                                            pg_url = pg.url
+                                            logger.info(f"   DEBUG:   Page[{pidx}] URL: {pg_url}")
+                                        except Exception as pe:
+                                            logger.info(f"   DEBUG:   Page[{pidx}] URL error: {pe}")
+
                                 if connected_browser.contexts:
                                     context = connected_browser.contexts[0]
                                     if not created_new_instance:
@@ -438,6 +737,18 @@ def register_custom_actions(agent, page=None) -> bool:
                                     if context.pages:
                                         active_page = context.pages[0]
                                         page_url = active_page.url  # Note: .url is a property, not a method
+                                        
+                                        # CRITICAL: Wait for page to be ready before using it for locator queries
+                                        # This prevents stale page issues where the DOM isn't yet accessible
+                                        if created_new_instance:
+                                            try:
+                                                # Wait for DOM to be accessible (commit = first paint, fastest)
+                                                await active_page.wait_for_load_state('domcontentloaded', timeout=5000)
+                                                logger.info("✅ Page DOM is ready for locator queries")
+                                            except Exception as load_wait_err:
+                                                logger.warning(f"⚠️ Page load state wait timed out: {load_wait_err}")
+                                                # Continue anyway - may still work
+                                        
                                         if created_new_instance:
                                             logger.info("✅ Connected to browser-use's page via CDP!")
                                             logger.info(f"   Page URL: {page_url}")
@@ -592,21 +903,25 @@ def register_custom_actions(agent, page=None) -> bool:
                     else:
                         logger.info(f"✅ Page object has all required methods: {required_methods}")
                         logger.info(f"   Page type: {type(active_page)}")
+                        
+                        # CRITICAL: Test page connectivity by running a simple evaluation
+                        # This detects stale connections where the CDP page is no longer responsive
+                        try:
+                            test_result = await active_page.evaluate("() => document.body ? 'connected' : null")
+                            if test_result != 'connected':
+                                logger.warning("⚠️ Page connectivity test returned unexpected result, may be stale")
+                        except Exception as connectivity_err:
+                            logger.error(f"❌ Page connectivity test FAILED: {connectivity_err}")
+                            logger.info("🔄 Invalidating stale cache and will retry with fresh connection...")
+                            # Invalidate cache so next call creates fresh connection
+                            _playwright_instance_cache = None
+                            _connected_browser_cache = None
+                            _cache_cdp_url = None
+                            active_page = None  # Force retry
 
                 # Call the actual implementation with the active page
                 # Wrap in timeout protection using CUSTOM_ACTION_TIMEOUT from config
                 try:
-                    # Parse table_cell_info JSON string if provided
-                    table_cell_info_dict = None
-                    if params.table_cell_info:
-                        try:
-                            import json
-                            table_cell_info_dict = json.loads(params.table_cell_info)
-                            logger.info(f"   Parsed table_cell_info: {table_cell_info_dict}")
-                        except json.JSONDecodeError as e:
-                            logger.warning(f"   ⚠️ Failed to parse table_cell_info JSON: {e}")
-                            logger.warning(f"   Raw value: {params.table_cell_info}")
-                    
                     # Determine final coordinates to use:
                     # Priority 1: confirmed_coords from element_index (most accurate)
                     # Priority 2: scaled coordinates from LLM (fallback)
@@ -625,8 +940,7 @@ def register_custom_actions(agent, page=None) -> bool:
                             element_description=params.element_description,
                             expected_text=params.expected_text,  # Pass expected_text for semantic validation
                             candidate_locator=params.candidate_locator,
-                            table_cell_info=table_cell_info_dict,  # Pass parsed dict
-                            element_data=element_data_from_index,  # Pass element attributes from DOM (NEW)
+                            element_data=element_data_from_index,  # Pass element attributes from DOM
                             page=active_page
                         ),
                         timeout=settings.CUSTOM_ACTION_TIMEOUT

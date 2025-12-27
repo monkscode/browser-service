@@ -104,8 +104,17 @@ class BrowserServiceConfig:
         )
 
         # LLM configuration
+        # Try to get API key from environment first, then from settings
+        google_api_key = os.getenv("GEMINI_API_KEY", "")
+        if not google_api_key:
+            try:
+                from src.backend.core.config import settings
+                google_api_key = settings.GEMINI_API_KEY or ""
+            except (ImportError, AttributeError):
+                pass
+        
         self.llm = LLMConfig(
-            google_api_key=os.getenv("GEMINI_API_KEY", ""),
+            google_api_key=google_api_key,
             google_model=self._get_google_model(),
             llm_screenshot_width=int(os.getenv("LLM_SCREENSHOT_WIDTH", "1400")),
             llm_screenshot_height=int(os.getenv("LLM_SCREENSHOT_HEIGHT", "850"))

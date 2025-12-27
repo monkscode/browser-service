@@ -31,6 +31,131 @@ from src.backend.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+# ========================================
+# JSON EXTRACTION HELPERS (Module Level)
+# ========================================
+# These functions are used to extract element JSON data from agent results.
+# Defined at module level for testability and to avoid redefinition on each call.
+
+def _extract_from_result_lines(text: str) -> List[str]:
+    """
+    Extract JSON from 'Result:' lines printed by browser_use.
+    
+    This is the MOST RELIABLE method because:
+    1. Always printed by browser_use after JS execution
+    2. Contains complete, valid JSON
+    3. Has best_locator already selected (first unique locator)
+    4. No double-escaping issues
+    
+    Args:
+        text: Full text output from the agent
+        
+    Returns:
+        List of JSON strings extracted from Result: lines
+    """
+    results = []
+    # Find all Result: lines
+    lines = text.split('\n')
+    for line in lines:
+        if 'Result:' in line and 'element_id' in line:
+            # Extract everything after "Result:"
+            result_start = line.find('Result:')
+            if result_start != -1:
+                json_part = line[result_start + 7:].strip()
+
+                # Find complete JSON using brace matching
+                if json_part.startswith('{'):
+                    brace_count = 0
+                    in_string = False
+                    escape_next = False
+
+                    for i, char in enumerate(json_part):
+                        if escape_next:
+                            escape_next = False
+                            continue
+                        if char == '\\':
+                            escape_next = True
+                            continue
+                        if char == '"':
+                            in_string = not in_string
+                            continue
+                        if in_string:
+                            continue
+
+                        if char == '{':
+                            brace_count += 1
+                        elif char == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                json_str = json_part[:i+1]
+                                results.append(json_str)
+                                break
+
+    return results
+
+
+def _extract_all_element_jsons(text: str) -> List[str]:
+    """
+    Extract all JSON objects containing element_id from text.
+    
+    This is a FALLBACK method when Result: lines are not available.
+    
+    Args:
+        text: Full text to search for JSON objects
+        
+    Returns:
+        List of unique JSON strings containing element_id
+    """
+    found_jsons = []
+    # Look for {"element_id": patterns
+    for pattern in ['"element_id":', "'element_id':"]:
+        pos = 0
+        while True:
+            pos = text.find(pattern, pos)
+            if pos == -1:
+                break
+
+            # Find the opening brace
+            brace_pos = text.rfind('{', max(0, pos - 50), pos + 20)
+            if brace_pos == -1:
+                pos += 1
+                continue
+
+            # Match braces to find complete JSON
+            brace_count = 0
+            in_string = False
+            escape_next = False
+
+            for i in range(brace_pos, min(len(text), brace_pos + 10000)):
+                char = text[i]
+
+                if escape_next:
+                    escape_next = False
+                    continue
+                if char == '\\':
+                    escape_next = True
+                    continue
+                if char == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        json_str = text[brace_pos:i+1]
+                        if json_str not in found_jsons:
+                            found_jsons.append(json_str)
+                        break
+
+            pos += 1
+
+    return found_jsons
+
+
 def process_workflow_task(
     task_id: str,
     elements: List[Dict[str, Any]],
@@ -120,28 +245,6 @@ def process_workflow_task(
             logger.info("🚀 Starting browser session (browser-use 0.9.x)...")
             await session.start()
             logger.info("✅ Browser session started successfully")
-
-            # Parse user query to extract action parameters
-            # Try multiple patterns to extract search term
-            search_patterns = [
-                r'search for ["\'](.*?)["\']',  # "search for 'shoes'"
-                r'type ["\'](.*?)["\']',  # "type 'shoes'"
-                r'input ["\'](.*?)["\']',  # "input 'shoes'"
-                r'enter ["\'](.*?)["\']',  # "enter 'shoes'"
-            ]
-
-            search_term = None
-            for pattern in search_patterns:
-                search_match = re.search(pattern, user_query, re.IGNORECASE)
-                if search_match:
-                    search_term = search_match.group(1)
-                    logger.info(
-                        f"📝 Extracted search term: '{search_term}' using pattern: {pattern}")
-                    break
-
-            if not search_term:
-                logger.warning(
-                    f"⚠️ Could not extract search term from query: {user_query}")
 
             # Calculate dynamic max_steps based on workflow complexity
             # Formula: navigate(1) + process_elements(elements * 3 for find+action+wait) + done(1) + buffer(5)
@@ -603,7 +706,8 @@ def process_workflow_task(
                         logger.debug(f"Error accessing session.cdp_url: {e}")
 
                 # Try cdp_client.url
-                if not cdp_url and hasattr(session, 'cdp_client'):
+                # Guard: Check if CDP client is still initialized before accessing
+                if not cdp_url and hasattr(session, '_cdp_client_root') and session._cdp_client_root is not None:
                     try:
                         cdp_client = session.cdp_client
                         if hasattr(cdp_client, 'url'):
@@ -611,8 +715,13 @@ def process_workflow_task(
                             if cdp_url:
                                 logger.info(
                                     f"✅ Found CDP URL from cdp_client.url: {cdp_url}")
+                    except (AssertionError, AttributeError) as e:
+                        logger.debug(f"CDP client access failed (session may be reset): {e}")
                     except Exception as e:
                         logger.debug(f"Error accessing cdp_client.url: {e}")
+                elif not cdp_url:
+                    logger.debug("   CDP client already reset, skipping cdp_client.url check")
+
 
                 # Search all attributes
                 if not cdp_url:
@@ -1017,120 +1126,18 @@ def process_workflow_task(
                         "   🎯 Strategy: Extract from 'Result:' lines (most reliable)")
 
                     # STRATEGY 1: Extract from "Result:" lines (MOST RELIABLE)
-                    # Pattern: "Result: {complete JSON object}"
-                    # The browser_use library prints this after every JavaScript execution
-                    def extract_from_result_lines(text):
-                        """
-                        Extract JSON from 'Result:' lines printed by browser_use.
-                        This is the MOST RELIABLE method because:
-                        1. Always printed by browser_use after JS execution
-                        2. Contains complete, valid JSON
-                        3. Has best_locator already selected (first unique locator)
-                        4. No double-escaping issues
-                        """
-                        results = []
-                        # Look for "Result: {" followed by JSON
-                        # Find all Result: lines
-                        lines = text.split('\n')
-                        for line in lines:
-                            if 'Result:' in line and 'element_id' in line:
-                                # Extract everything after "Result:"
-                                result_start = line.find('Result:')
-                                if result_start != -1:
-                                    json_part = line[result_start + 7:].strip()
-
-                                    # Find complete JSON using brace matching
-                                    if json_part.startswith('{'):
-                                        brace_count = 0
-                                        in_string = False
-                                        escape_next = False
-
-                                        for i, char in enumerate(json_part):
-                                            if escape_next:
-                                                escape_next = False
-                                                continue
-                                            if char == '\\':
-                                                escape_next = True
-                                                continue
-                                            if char == '"':
-                                                in_string = not in_string
-                                                continue
-                                            if in_string:
-                                                continue
-
-                                            if char == '{':
-                                                brace_count += 1
-                                            elif char == '}':
-                                                brace_count -= 1
-                                                if brace_count == 0:
-                                                    json_str = json_part[:i+1]
-                                                    results.append(json_str)
-                                                    break
-
-                        return results
-
                     # STRATEGY 2: Extract any JSON with element_id (FALLBACK)
-                    def extract_all_element_jsons(text):
-                        """Extract all JSON objects containing element_id from text."""
-                        found_jsons = []
-                        # Look for {"element_id": patterns
-                        for pattern in ['"element_id":', "'element_id':"]:
-                            pos = 0
-                            while True:
-                                pos = text.find(pattern, pos)
-                                if pos == -1:
-                                    break
-
-                                # Find the opening brace
-                                brace_pos = text.rfind(
-                                    '{', max(0, pos - 50), pos + 20)
-                                if brace_pos == -1:
-                                    pos += 1
-                                    continue
-
-                                # Match braces to find complete JSON
-                                brace_count = 0
-                                in_string = False
-                                escape_next = False
-
-                                for i in range(brace_pos, min(len(text), brace_pos + 10000)):
-                                    char = text[i]
-
-                                    if escape_next:
-                                        escape_next = False
-                                        continue
-                                    if char == '\\':
-                                        escape_next = True
-                                        continue
-                                    if char == '"':
-                                        in_string = not in_string
-                                        continue
-                                    if in_string:
-                                        continue
-
-                                    if char == '{':
-                                        brace_count += 1
-                                    elif char == '}':
-                                        brace_count -= 1
-                                        if brace_count == 0:
-                                            json_str = text[brace_pos:i+1]
-                                            if json_str not in found_jsons:
-                                                found_jsons.append(json_str)
-                                            break
-
-                                pos += 1
-
-                        return found_jsons
+                    # (Functions defined at module level: _extract_from_result_lines, _extract_all_element_jsons)
 
                     # Try Strategy 1 first (Result: lines)
-                    result_line_jsons = extract_from_result_lines(full_result_str)
+                    result_line_jsons = _extract_from_result_lines(full_result_str)
                     if result_line_jsons:
                         logger.info(
                             f"   ✅ Extracted {len(result_line_jsons)} JSON blocks from 'Result:' lines")
                         extracted_jsons = result_line_jsons
                     else:
                         # Try Strategy 2 (any JSON with element_id)
-                        extracted_jsons = extract_all_element_jsons(
+                        extracted_jsons = _extract_all_element_jsons(
                             full_result_str)
                         if extracted_jsons:
                             logger.info(
@@ -1482,21 +1489,21 @@ def process_workflow_task(
                             logger.warning(f"   ⚠️  '{elem_id}' not found in result string")
                             continue
 
-                        if found:
-                            try:
-                                elem_data = extract_json_for_element(
-                                    full_result_str, elem_id)
-                                if elem_data and elem_data.get('found'):
-                                    existing_idx = next(
-                                        (i for i, r in enumerate(results_list) if r.get('element_id') == elem_id), None)
-                                    if existing_idx is None:
-                                        # First occurrence, add it
-                                        results_list.append(elem_data)
-                                        logger.info(
-                                            f"   ✅ Extracted {elem_id} from result string")
-                            except Exception as e:
-                                logger.error(
-                                    f"   ❌ Exception extracting {elem_id}: {e}")
+                        # Element found in result string - extract JSON data
+                        try:
+                            elem_data = extract_json_for_element(
+                                full_result_str, elem_id)
+                            if elem_data and elem_data.get('found'):
+                                existing_idx = next(
+                                    (i for i, r in enumerate(results_list) if r.get('element_id') == elem_id), None)
+                                if existing_idx is None:
+                                    # First occurrence, add it
+                                    results_list.append(elem_data)
+                                    logger.info(
+                                        f"   ✅ Extracted {elem_id} from result string")
+                        except Exception as e:
+                            logger.error(
+                                f"   ❌ Exception extracting {elem_id}: {e}")
                 else:
                     logger.info("   ⏭️  String-based extraction skipped (all elements already found)")
 
@@ -1707,36 +1714,48 @@ def process_workflow_task(
                 # Score each locator - ONLY score unique and valid locators
                 scored_locators = []
                 skipped_count = 0
+                
+                # Check if this is a collection element (collections have unique=False by design)
+                element_type = result.get('element_type', 'single')
+                is_collection = (element_type == 'collection')
+                
                 for loc in all_locators:
                     # CRITICAL FIX: Filter out non-unique or invalid locators before scoring
-                    # Only unique=True and valid=True locators should be considered for re-ranking
-                    if not (loc.get('unique') and loc.get('valid')):
+                    # EXCEPTION: Collections are allowed to have unique=False (they match multiple elements)
+                    if not is_collection and not (loc.get('unique') and loc.get('valid')):
                         skipped_count += 1
-                        continue  # Skip non-unique or invalid locators
+                        continue  # Skip non-unique or invalid locators (but not collections)
                     
                     try:
-                        score = score_locator(loc)
-                        scored_locators.append({
-                            **loc,
-                            'quality_score': score
-                        })
+                        # Collections already have quality_score from smart_locator_finder, preserve it
+                        if is_collection and 'quality_score' in loc:
+                            scored_locators.append(loc)
+                        else:
+                            score = score_locator(loc)
+                            scored_locators.append({
+                                **loc,
+                                'quality_score': score
+                            })
                     except Exception as e:
                         logger.warning(f"⚠️ Error scoring locator: {e}, skipping")
 
                 # Log filtering results
                 element_id = result.get('element_id', 'unknown')
-                if skipped_count > 0:
+                if is_collection:
+                    logger.info(f"🔍 {element_id}: COLLECTION element - keeping {len(scored_locators)} locator(s) (unique=False expected)")
+                elif skipped_count > 0:
                     logger.info(f"🔍 {element_id}: Filtered out {skipped_count} non-unique/invalid locators (keeping {len(scored_locators)} unique locators)")
 
                 if not scored_locators:
-                    logger.warning(f"⚠️ {element_id}: No unique locators available after filtering!")
+                    logger.warning(f"⚠️ {element_id}: No locators available after filtering!")
                     continue
 
                 # Sort by score (highest first)
                 scored_locators.sort(key=lambda x: x.get('quality_score', 0), reverse=True)
 
                 # Log top 3 locators with their scores for debugging
-                logger.info(f"📊 Locator Scores for {element_id} (showing UNIQUE locators only):")
+                locator_type_label = "COLLECTION" if is_collection else "UNIQUE"
+                logger.info(f"📊 Locator Scores for {element_id} (showing {locator_type_label} locators only):")
                 for i, loc in enumerate(scored_locators[:3]):  # Show top 3
                     locator_str = loc.get('locator', '')[:50]  # Truncate long locators
                     quality_score = loc.get('quality_score', 0)
@@ -1920,14 +1939,28 @@ def process_workflow_task(
                     count = result.get('count', 0)
                     unique = result.get('unique', False)
                     valid = result.get('valid', False)
+                    element_type = result.get('element_type', 'single')
 
-                    if count != 1 or not unique:
-                        validation_issues.append(f"{elem_id}: count={count}, unique={unique} (expected count=1, unique=True)")
-                        elements_not_unique.append(elem_id)
+                    # Collections are EXPECTED to have count > 1 and unique=False
+                    if element_type == 'collection':
+                        # For collections, check if count > 1 and valid=True
+                        if count > 1 and valid:
+                            logger.debug(f"   ✅ {elem_id}: Collection with {count} elements (expected)")
+                        else:
+                            validation_issues.append(f"{elem_id}: Invalid collection (count={count}, valid={valid})")
+                            if not valid:
+                                elements_not_valid.append(elem_id)
+                            if count <= 1:
+                                elements_not_unique.append(elem_id)
+                    else:
+                        # For single elements, require count=1 and unique=True
+                        if count != 1 or not unique:
+                            validation_issues.append(f"{elem_id}: count={count}, unique={unique} (expected count=1, unique=True)")
+                            elements_not_unique.append(elem_id)
 
-                    if not valid:
-                        validation_issues.append(f"{elem_id}: valid={valid} (expected valid=True)")
-                        elements_not_valid.append(elem_id)
+                        if not valid:
+                            validation_issues.append(f"{elem_id}: valid={valid} (expected valid=True)")
+                            elements_not_valid.append(elem_id)
 
             # Log validation summary
             if validation_issues:

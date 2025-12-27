@@ -101,13 +101,12 @@ def convert_to_playwright_locator(locator: str) -> Tuple[str, bool]:
     - aria-label=value → [aria-label='value']
     - data-testid=value → [data-testid='value']
     - title=value → [title='value']
-    - id=123 (numeric) → [id='123']
     - link=text → text=text
     - tag=button → button
     - All other attr=value → [attr='value']
     
-    Playwright-native engines (id, text, css, xpath, role) are preserved as-is,
-    except for numeric IDs which need special handling.
+    Playwright-native engines (id, text, css, xpath, role) are preserved as-is.
+    Note: id= is now a native Playwright engine and handles numeric IDs correctly.
     
     Args:
         locator: The locator string to convert
@@ -121,9 +120,9 @@ def convert_to_playwright_locator(locator: str) -> Tuple[str, bool]:
         >>> convert_to_playwright_locator("name=q")
         ("[name='q']", True)
         >>> convert_to_playwright_locator("id=search")
-        ("id=search", False)
+        ("id=search", False)  # Playwright native engine - no conversion
         >>> convert_to_playwright_locator("id=123")
-        ("[id='123']", True)
+        ("id=123", False)  # Playwright id= handles numeric IDs natively
         >>> convert_to_playwright_locator("[name='q']")
         ("[name='q']", False)
         >>> convert_to_playwright_locator("placeholder=Search products")
@@ -172,12 +171,7 @@ def convert_to_playwright_locator(locator: str) -> Tuple[str, bool]:
     # Check if it's a Playwright-native engine
     if prefix_lower in PLAYWRIGHT_NATIVE_ENGINES:
         # These work natively in Playwright - don't convert
-        # But handle numeric IDs specially (CSS doesn't allow #123)
-        if prefix_lower == 'id' and value and value[0].isdigit():
-            return (f"[id='{value_escaped}']", True)
-        else:
-            # Return original locator (preserve original format)
-            return (locator, False)
+        return (locator, False)
     
     # Special conversions
     if prefix_lower == 'link':

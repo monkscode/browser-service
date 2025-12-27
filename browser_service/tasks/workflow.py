@@ -1294,7 +1294,7 @@ def process_workflow_task(
                                             logger.info(
                                                 f"   🎯 Attempting smart locator finder at coordinates ({coords['x']}, {coords['y']})")
                                             try:
-                                                from tools.smart_locator_finder import find_unique_locator_at_coordinates
+                                                from browser_service.locators import find_unique_locator_at_coordinates
 
                                                 elem_desc = next(
                                                     (e.get('description') for e in elements if e.get('id') == elem_id),

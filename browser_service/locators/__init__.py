@@ -10,6 +10,7 @@ Key Components:
 - validation: Validate locators using Playwright API (uniqueness checking)
 - extraction: Extract element attributes and validate locators in a pipeline
 - conversion: Convert various locator formats to Playwright-compatible format
+- smart_locator: Advanced locator finding with 21+ strategies (core IP)
 
 Priority Order (highest to lowest):
 1. id - Most stable, fastest
@@ -29,6 +30,7 @@ from .validation import (
     PLAYWRIGHT_NATIVE_ENGINES
 )
 from .extraction import extract_element_attributes, extract_and_validate_locators
+from .smart_locator import find_unique_locator_at_coordinates
 
 __all__ = [
     'generate_locators_from_attributes',
@@ -38,4 +40,6 @@ __all__ = [
     'PLAYWRIGHT_NATIVE_ENGINES',
     'extract_element_attributes',
     'extract_and_validate_locators',
+    'find_unique_locator_at_coordinates',
 ]
+

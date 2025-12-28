@@ -98,13 +98,18 @@ def build_workflow_prompt(
         elem_id = elem.get('id', f'elem_unknown_{idx}')  # Default with index if missing
         elem_desc = elem.get('description', 'No description provided')  # Default description
         elem_action = elem.get('action', 'get_text')  # Default to get_text if missing
+        elem_value = elem.get('value', '')  # NEW: Get value for input actions
         
         # Sanitize description to prevent prompt issues
         elem_desc = elem_desc.replace('\n', ' ').replace('\r', ' ').strip()
         if len(elem_desc) > 200:
             elem_desc = elem_desc[:200] + '...'
         
-        element_list.append(f"   - {elem_id}: {elem_desc} (action: {elem_action})")
+        # Include value in element list for input actions (CRITICAL for credentials/search terms)
+        if elem_value and elem_action in ['input', 'type']:
+            element_list.append(f"   - {elem_id}: {elem_desc} (action: {elem_action}, value: \"{elem_value}\")")
+        else:
+            element_list.append(f"   - {elem_id}: {elem_desc} (action: {elem_action})")
 
     elements_str = "\n".join(element_list)
 
@@ -214,8 +219,8 @@ Step 3: Call find_unique_locator for elem_1
   → Result: {{"element_id": "elem_1", "best_locator": "[name='q']", "validated": true, "count": 1}}
   (Note: name=q is automatically converted to [name='q'] for Playwright compatibility)
 
-Step 4: PERFORM ACTION for elem_1 (action=input)
-  → Type "shoes" into the search box
+Step 4: PERFORM ACTION for elem_1 (action=input, value="shoes")
+  → Type "shoes" (the VALUE from elem_1's spec) into the search box
   → Press Enter
   → Wait for search results to load
 
@@ -282,7 +287,10 @@ Process elements IN THE ORDER THEY ARE LISTED. For each element:
 4. Based on the element's action field, decide what to do next:
 
    ACTION BEHAVIORS:
-   • action='input': Type the specified text, press Enter, wait for page updates
+   • action='input': Type the VALUE shown in the element spec into the field, then press Enter
+     ⚠️ CRITICAL: Use the EXACT 'value' from ELEMENTS TO FIND (e.g., "bob@example.com", "password123")
+     ⚠️ DO NOT use test credentials like "test@example.com" or "password" - use the PROVIDED value!
+     ⚠️ The user specified these values in their query - you MUST use them exactly!
    • action='click': Click the element, wait for page updates
    • action='submit': Click the element (submits form), wait for page updates
    • action='get_text', 'get_attribute', or any other: Just store the locator (no interaction)

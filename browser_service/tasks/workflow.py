@@ -312,8 +312,7 @@ def process_workflow_task(
                 max_steps=dynamic_max_steps,
                 system_prompt=build_system_prompt(include_custom_action=enable_custom_actions_flag),
                 use_thinking=False,  # Disable thinking process in agent output
-                calculate_cost=True,  # Enable cost calculation for token tracking
-                include_cost=True  # DEPRECATED: Legacy parameter, use calculate_cost instead
+                calculate_cost=True  # Enable cost calculation for token tracking
                 # NOTE: Don't pass llm_screenshot_size to Agent - browser-use 0.9.7 has a bug
                 # where it uses self.logger before self.browser_session is set.
             )
@@ -1898,6 +1897,9 @@ def process_workflow_task(
 
             # Only log cost metrics if TRACK_LLM_COSTS is enabled
             if settings.TRACK_LLM_COSTS:
+                # Calculate average metrics
+                avg_llm_calls_per_element = llm_call_count / len(elements) if len(elements) > 0 else 0
+                
                 logger.info("=" * 80)
                 logger.info("📊 WORKFLOW COST METRICS")
                 logger.info("="* 80)

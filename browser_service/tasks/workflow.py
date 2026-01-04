@@ -311,7 +311,8 @@ def process_workflow_task(
                 use_vision=True,
                 max_steps=dynamic_max_steps,
                 system_prompt=build_system_prompt(include_custom_action=enable_custom_actions_flag),
-                use_thinking=False  # Disable thinking process in agent output
+                use_thinking=False,  # Disable thinking process in agent output
+                calculate_cost=True  # Enable cost calculation for token tracking
                 # NOTE: Don't pass llm_screenshot_size to Agent - browser-use 0.9.7 has a bug
                 # where it uses self.logger before self.browser_session is set.
             )
@@ -383,6 +384,72 @@ def process_workflow_task(
             execution_time = time.time() - start_time
 
             logger.info(f"✅ Agent completed in {execution_time:.1f}s")
+
+            # ========================================
+            # TOKEN USAGE EXTRACTION from browser-use 0.9.7
+            # ========================================
+            # Extract actual token usage from AgentHistoryList.usage (UsageSummary)
+            token_usage = {
+                'input_tokens': 0,
+                'output_tokens': 0,
+                'total_tokens': 0,
+                'cached_tokens': 0,
+                'actual_cost': 0.0
+            }
+
+            # Debug: Log agent_result structure
+            logger.info(f"🔍 DEBUG: agent_result type = {type(agent_result)}")
+            logger.info(f"🔍 DEBUG: hasattr(agent_result, 'usage') = {hasattr(agent_result, 'usage')}")
+
+            if hasattr(agent_result, 'usage') and agent_result.usage:
+                usage = agent_result.usage
+                logger.info(f"🔍 DEBUG: usage type = {type(usage)}")
+                
+                # Try to dump the usage object for full visibility
+                try:
+                    if hasattr(usage, 'model_dump'):
+                        logger.info(f"🔍 DEBUG: usage.model_dump() = {usage.model_dump()}")
+                    elif hasattr(usage, '__dict__'):
+                        logger.info(f"🔍 DEBUG: usage.__dict__ = {usage.__dict__}")
+                except Exception as e:
+                    logger.warning(f"🔍 DEBUG: Could not dump usage object: {e}")
+
+                # Extract token counts from UsageSummary (browser-use 0.9.7 structure)
+                token_usage = {
+                    'input_tokens': getattr(usage, 'total_prompt_tokens', 0) or 0,
+                    'output_tokens': getattr(usage, 'total_completion_tokens', 0) or 0,
+                    'total_tokens': getattr(usage, 'total_tokens', 0) or 0,
+                    'cached_tokens': getattr(usage, 'total_prompt_cached_tokens', 0) or 0,
+                    'actual_cost': getattr(usage, 'total_cost', 0.0) or 0.0
+                }
+
+                logger.info(f"📊 ACTUAL TOKEN USAGE from browser-use:")
+                logger.info(f"   Input tokens (prompt): {token_usage['input_tokens']}")
+                logger.info(f"   Output tokens (completion): {token_usage['output_tokens']}")
+                logger.info(f"   Total tokens: {token_usage['total_tokens']}")
+                logger.info(f"   Cached tokens: {token_usage['cached_tokens']}")
+                logger.info(f"   Actual cost: ${token_usage['actual_cost']:.6f}")
+            else:
+                logger.warning("⚠️ No token usage data available from agent_result.usage")
+                
+                # Fallback: Try agent.token_cost_service if available
+                if hasattr(agent, 'token_cost_service'):
+                    logger.info("🔍 DEBUG: Trying fallback via agent.token_cost_service...")
+                    try:
+                        usage_summary = await agent.token_cost_service.get_usage_summary()
+                        if usage_summary:
+                            logger.info(f"🔍 DEBUG: Fallback usage_summary = {usage_summary}")
+                            token_usage = {
+                                'input_tokens': getattr(usage_summary, 'total_prompt_tokens', 0) or 0,
+                                'output_tokens': getattr(usage_summary, 'total_completion_tokens', 0) or 0,
+                                'total_tokens': getattr(usage_summary, 'total_tokens', 0) or 0,
+                                'cached_tokens': getattr(usage_summary, 'total_prompt_cached_tokens', 0) or 0,
+                                'actual_cost': getattr(usage_summary, 'total_cost', 0.0) or 0.0
+                            }
+                            logger.info(f"📊 TOKEN USAGE from fallback (token_cost_service):")
+                            logger.info(f"   Total tokens: {token_usage['total_tokens']}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not get usage from token_cost_service: {e}")
 
             # Check if agent actually used the custom action
             if custom_actions_enabled and hasattr(agent_result, 'history'):
@@ -1825,35 +1892,29 @@ def process_workflow_task(
             # ========================================
             # METRICS LOGGING: Cost Calculation
             # ========================================
-            # Calculate estimated LLM costs based on call count
+            # Actual cost is calculated by browser-use's TokenCostService
             # Phase: Error Handling and Logging | Requirements: 6.1, 6.2, 6.3, 9.5
-
-            # Gemini 2.5 Flash pricing (as of design document):
-            # Input: $0.00015 per 1K tokens
-            # Output: $0.0006 per 1K tokens
-            # Estimated average: ~1000 tokens per call (input + output)
-            # Average cost per call: ~$0.0003
-
-            avg_tokens_per_call = 1000  # Estimated average tokens per LLM call
-            cost_per_1k_tokens = 0.00015  # Gemini 2.5 Flash input cost
-            estimated_cost_per_call = (avg_tokens_per_call / 1000) * cost_per_1k_tokens
-
-            total_estimated_cost = llm_call_count * estimated_cost_per_call
-            avg_llm_calls_per_element = llm_call_count / len(elements) if len(elements) > 0 else 0
-            avg_cost_per_element = total_estimated_cost / len(elements) if len(elements) > 0 else 0
 
             # Only log cost metrics if TRACK_LLM_COSTS is enabled
             if settings.TRACK_LLM_COSTS:
+                # Calculate average metrics
+                avg_llm_calls_per_element = llm_call_count / len(elements) if len(elements) > 0 else 0
+                
                 logger.info("=" * 80)
                 logger.info("📊 WORKFLOW COST METRICS")
-                logger.info("=" * 80)
+                logger.info("="* 80)
                 logger.info(f"Total LLM calls: {llm_call_count}")
                 logger.info(f"Average LLM calls per element: {avg_llm_calls_per_element:.1f}")
-                logger.info(f"Estimated total cost: ${total_estimated_cost:.6f}")
-                logger.info(f"Estimated cost per element: ${avg_cost_per_element:.6f}")
+                logger.info(f"Actual cost (from browser-use): ${token_usage['actual_cost']:.6f}")
+                logger.info(f"Cost per element: ${token_usage['actual_cost'] / len(elements):.6f}" if len(elements) > 0 else "N/A")
                 logger.info(f"Custom actions enabled: {custom_actions_enabled}")
                 logger.info(f"Total execution time: {execution_time:.2f}s")
                 logger.info(f"Average time per element: {execution_time / len(elements):.2f}s" if len(elements) > 0 else "N/A")
+                logger.info("--- TOKEN METRICS ---")
+                logger.info(f"Total tokens: {token_usage['total_tokens']}")
+                logger.info(f"Input tokens (prompt): {token_usage['input_tokens']}")
+                logger.info(f"Output tokens (completion): {token_usage['output_tokens']}")
+                logger.info(f"Cached tokens: {token_usage['cached_tokens']}")
                 logger.info("=" * 80)
 
             # ========================================
@@ -1953,10 +2014,14 @@ def process_workflow_task(
                     'success_rate': successful / len(elements) if len(elements) > 0 else 0,
                     # Cost tracking metrics
                     'total_llm_calls': llm_call_count,
-                    'avg_llm_calls_per_element': avg_llm_calls_per_element,
-                    'estimated_total_cost': total_estimated_cost,
-                    'estimated_cost_per_element': avg_cost_per_element,
-                    'custom_actions_enabled': custom_actions_enabled
+                    'avg_llm_calls_per_element': llm_call_count / len(elements) if len(elements) > 0 else 0,
+                    'custom_actions_enabled': custom_actions_enabled,
+                    # Actual token usage from browser-use
+                    'total_tokens': token_usage['total_tokens'],
+                    'input_tokens': token_usage['input_tokens'],
+                    'output_tokens': token_usage['output_tokens'],
+                    'cached_tokens': token_usage['cached_tokens'],
+                    'actual_cost': token_usage['actual_cost']
                 },
                 'validation_summary': validation_summary,  # Add validation summary to results
                 'execution_time': execution_time,

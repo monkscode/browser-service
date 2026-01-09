@@ -63,18 +63,9 @@ class LocatorConfig:
 class LLMConfig:
     """LLM (Language Model) configuration settings."""
 
-    # Google Gemini API key
     google_api_key: str = ""
-
-    # Google model name (without "gemini/" prefix)
     google_model: str = "gemini-2.5-flash"
-    
-    # LLM Screenshot Size for coordinate scaling
-    # Screenshots are resized to this size before sending to the LLM
-    # LLM returns coordinates in this space, which are then scaled to actual viewport
-    # Default: 1400x850 (good balance between quality and speed for Gemini)
-    llm_screenshot_width: int = 1400
-    llm_screenshot_height: int = 850
+
 
 
 class BrowserServiceConfig:
@@ -115,9 +106,7 @@ class BrowserServiceConfig:
         
         self.llm = LLMConfig(
             google_api_key=google_api_key,
-            google_model=self._get_google_model(),
-            llm_screenshot_width=int(os.getenv("LLM_SCREENSHOT_WIDTH", "1400")),
-            llm_screenshot_height=int(os.getenv("LLM_SCREENSHOT_HEIGHT", "850"))
+            google_model=self._get_google_model()
         )
 
         # Robot Framework library type

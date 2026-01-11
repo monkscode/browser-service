@@ -87,7 +87,7 @@ def _escape_css_selector(value: str) -> str:
 
 def is_dropdown_element(
     element_data: dict,
-    element_description: str = None
+    element_description: Optional[str] = None
 ) -> bool:
     """
     Multi-layered dropdown detection using all available signals.
@@ -1670,7 +1670,7 @@ async def _find_table_cell_by_structured_info(
 
 
 async def _generate_locators_from_element_data(
-    page,
+    search_context,  # Can be page or frame_locator when in iframe context
     element_data: dict[str, Any],
     element_id: str,
     element_description: str,
@@ -1697,7 +1697,7 @@ async def _generate_locators_from_element_data(
     - e.g., /html/body/.../table/tbody/tr[1]/td[2]
     
     Args:
-        page: Playwright page object
+        search_context: Playwright page or frame_locator object (for iframe elements)
         element_data: Dict with element attributes from browser-use DOM:
                      {tagName, id, name, className, ariaLabel, placeholder, 
                       title, role, dataTestId, xpath, textContent}
@@ -2051,7 +2051,7 @@ async def _generate_locators_from_element_data(
     for candidate in locator_candidates:
         locator = candidate['locator']
         try:
-            count = await page.locator(locator).count()
+            count = await search_context.locator(locator).count()
             
             if count == 1:
                 # SEMANTIC VALIDATION: Verify we found the RIGHT element
@@ -2060,7 +2060,7 @@ async def _generate_locators_from_element_data(
                 validation_method = "text"
                 
                 if expected_text:
-                    semantic_match, actual_text = await _validate_semantic_match(page, locator, expected_text)
+                    semantic_match, actual_text = await _validate_semantic_match(search_context, locator, expected_text)
                     
                     if not semantic_match:
                         # For DROPDOWNS: Use coordinate-based validation instead of text
@@ -2070,7 +2070,7 @@ async def _generate_locators_from_element_data(
                         if is_dropdown and confirmed_coords:
                             logger.info(f"   🔽 Dropdown detected - trying coordinate validation instead of text")
                             coord_match, coord_reason = await _validate_by_coordinates(
-                                page, locator, confirmed_coords
+                                search_context, locator, confirmed_coords
                             )
                             if coord_match:
                                 # Accept locator based on coordinates - trust browser-use vision
@@ -2372,7 +2372,7 @@ async def find_unique_locator_at_coordinates(
         result = await _generate_locators_from_element_data(
             search_context, element_data, element_id, element_description, expected_text,
             iframe_context=iframe_context,  # Pass iframe context for proper xpath/CSS handling
-            confirmed_coords=(x, y) if x and y else None  # NEW: Pass coords for dropdown validation
+            confirmed_coords=(x, y) if x is not None and y is not None else None  # Use explicit None checks (0 is valid coord)
         )
         if result:
             # Add iframe prefix to best_locator AND all_locators
@@ -2445,7 +2445,7 @@ async def find_unique_locator_at_coordinates(
                         'priority': 0,
                         'strategy': 'Collection via text-traversal',
                         'count': count,
-                        'unique': count == 1,
+                        'unique': False,  # Collections are never unique (even if count==1)
                         'valid': True,
                         'validated': True,
                         'semantic_match': True,
@@ -2460,7 +2460,7 @@ async def find_unique_locator_at_coordinates(
                     'validation_summary': {
                         'total_generated': 1,
                         'valid': 1,
-                        'unique': 1 if count == 1 else 0,
+                        'unique': 0,  # Collections are never unique
                         'validated': 1,
                         'best_type': 'collection',
                         'best_strategy': 'Text-traversal collection finder',
@@ -2468,7 +2468,7 @@ async def find_unique_locator_at_coordinates(
                     },
                     'validated': True,
                     'count': count,
-                    'unique': count == 1,
+                    'unique': False,  # Collections are never unique (even if count==1)
                     'valid': True,
                     'semantic_match': True,
                     'validation_method': 'playwright'

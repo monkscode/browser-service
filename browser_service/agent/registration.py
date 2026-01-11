@@ -130,10 +130,14 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
                     iframe_name = attrs.get('name', '')
                     
                     # Generate locator for the iframe using attribute selectors
+                    # Escape special characters to prevent selector injection
                     if iframe_id:
-                        iframe_locator = f'iframe[id="{iframe_id}"]'
+                        # Escape \ and " for CSS attribute selector
+                        iframe_id_escaped = iframe_id.replace('\\', '\\\\').replace('"', '\\"')
+                        iframe_locator = f'iframe[id="{iframe_id_escaped}"]'
                     elif iframe_name:
-                        iframe_locator = f'iframe[name="{iframe_name}"]'
+                        iframe_name_escaped = iframe_name.replace('\\', '\\\\').replace('"', '\\"')
+                        iframe_locator = f'iframe[name="{iframe_name_escaped}"]'
                     else:
                         # Fallback: use ordinal-based selector (0-indexed count of iframes)
                         iframe_locator = f"iframe >> nth={iframe_ordinal}"
@@ -225,9 +229,10 @@ def invalidate_playwright_cache():
 # These helper functions consolidate the fallback strategy chains into
 # maintainable, testable units. Each strategy is tried in priority order.
 
-# CDP URL pattern: ws://HOST:PORT/devtools/browser/UUID
+# CDP URL pattern: ws[s]://HOST:PORT/devtools/browser/UUID
+# Supports: ws://, wss://, IPv4, IPv6, hostnames
 import re
-_CDP_URL_PATTERN = re.compile(r'^ws://[^:/]+:\d+/devtools/browser/')
+_CDP_URL_PATTERN = re.compile(r'^wss?://[^\s/]+/devtools/browser/')
 
 
 def _extract_cdp_host_port(cdp_url: str) -> str:

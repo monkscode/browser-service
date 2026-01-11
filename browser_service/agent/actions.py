@@ -121,7 +121,7 @@ async def find_unique_locator_action(
                       Used for semantic validation to ensure we found the CORRECT element.
         candidate_locator: Optional locator suggested by agent (e.g., "id=search")
         page: Playwright page object
-        iframe_context: Optional iframe locator (e.g., "#iframeMain") if element is inside an iframe.
+        iframe_context: Optional iframe locator (e.g., 'iframe[id=\"main\"]') if element is inside an iframe.
                        When provided, locator searches will be performed inside the iframe context.
 
     Returns:

@@ -109,14 +109,14 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
         
     Returns:
         Tuple of (iframe_locator, iframe_id) if inside iframe, (None, None) otherwise.
-        iframe_locator is the selector (e.g., "#iframeMain" or "[name='content']")
+        iframe_locator is the selector (e.g., 'iframe[id="main"]' or 'iframe[name="content"]')
     """
     if not selector_map or not coords:
         return None, None
     
     x, y = coords
+    iframe_ordinal = 0
     
-    # Find all iframes and check if coords are inside
     for idx, elem in selector_map.items():
         if hasattr(elem, 'node_name') and elem.node_name.lower() == 'iframe':
             if hasattr(elem, 'absolute_position') and elem.absolute_position:
@@ -129,17 +129,18 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
                     iframe_id = attrs.get('id', '')
                     iframe_name = attrs.get('name', '')
                     
-                    # Generate locator for the iframe
+                    # Generate locator for the iframe using attribute selectors
                     if iframe_id:
-                        iframe_locator = f"#{iframe_id}"
+                        iframe_locator = f'iframe[id="{iframe_id}"]'
                     elif iframe_name:
-                        iframe_locator = f"[name='{iframe_name}']"
+                        iframe_locator = f'iframe[name="{iframe_name}"]'
                     else:
-                        # Fallback: use index-based selector
-                        iframe_locator = f"iframe >> nth={idx}"
+                        # Fallback: use ordinal-based selector (0-indexed count of iframes)
+                        iframe_locator = f"iframe >> nth={iframe_ordinal}"
                     
                     logger.info(f"🖼️ IFRAME DETECTED: Element at ({x}, {y}) is inside {iframe_locator}")
-                    return iframe_locator, iframe_id or iframe_name or str(idx)
+                    return iframe_locator, iframe_id or iframe_name or str(iframe_ordinal)
+            iframe_ordinal += 1
     
     return None, None
 
@@ -224,6 +225,18 @@ def invalidate_playwright_cache():
 # These helper functions consolidate the fallback strategy chains into
 # maintainable, testable units. Each strategy is tried in priority order.
 
+# CDP URL pattern: ws://HOST:PORT/devtools/browser/UUID
+import re
+_CDP_URL_PATTERN = re.compile(r'^ws://[^:/]+:\d+/devtools/browser/')
+
+
+def _extract_cdp_host_port(cdp_url: str) -> str:
+    """Extract host:port from CDP URL for cleaner logging."""
+    if '/devtools/' in cdp_url:
+        return cdp_url.split('/devtools/')[0]
+    return cdp_url
+
+
 def _get_cdp_url_from_session(browser_session) -> Optional[str]:
     """
     Get CDP URL from browser_session using multiple fallback strategies.
@@ -246,8 +259,8 @@ def _get_cdp_url_from_session(browser_session) -> Optional[str]:
     if hasattr(browser_session, 'cdp_url'):
         try:
             cdp_url = browser_session.cdp_url
-            if cdp_url:
-                logger.info(f"✅ CDP URL from browser_session.cdp_url: {cdp_url}")
+            if cdp_url and _CDP_URL_PATTERN.match(cdp_url):
+                logger.info(f"✅ CDP URL from browser_session.cdp_url: {_extract_cdp_host_port(cdp_url)}")
                 _store_cdp_port_for_cleanup(cdp_url)
                 return cdp_url
         except Exception as e:
@@ -259,8 +272,8 @@ def _get_cdp_url_from_session(browser_session) -> Optional[str]:
             cdp_client = browser_session.cdp_client
             if hasattr(cdp_client, 'url'):
                 cdp_url = cdp_client.url
-                if cdp_url:
-                    logger.info(f"✅ CDP URL from cdp_client.url: {cdp_url}")
+                if cdp_url and _CDP_URL_PATTERN.match(cdp_url):
+                    logger.info(f"✅ CDP URL from cdp_client.url: {_extract_cdp_host_port(cdp_url)}")
                     _store_cdp_port_for_cleanup(cdp_url)
                     return cdp_url
         except Exception as e:
@@ -273,8 +286,8 @@ def _get_cdp_url_from_session(browser_session) -> Optional[str]:
             continue
         try:
             value = getattr(browser_session, attr, None)
-            if value and isinstance(value, str) and 'ws://' in value and 'devtools' in value:
-                logger.info(f"✅ CDP URL found in attribute '{attr}': {value}")
+            if value and isinstance(value, str) and _CDP_URL_PATTERN.match(value):
+                logger.info(f"✅ CDP URL found in attribute '{attr}': {_extract_cdp_host_port(value)}")
                 _store_cdp_port_for_cleanup(value)
                 return value
         except Exception:
@@ -608,6 +621,25 @@ def register_custom_actions(agent, page=None) -> bool:
                         logger.debug("   Full error:", exc_info=True)
 
 
+                # ========================================
+                # COORDINATE SCALING: Vision AI → Viewport Pixels
+                # ========================================
+                # Vision AI (Gemini) uses a normalized coordinate space [0-1000]
+                # when identifying element positions from screenshots. This is
+                # different from actual CSS pixel coordinates used by the DOM.
+                #
+                # WHY THIS IS NEEDED:
+                # - element_index is only available for INTERACTABLE elements
+                # - For non-interactable elements (table cells, text spans, labels),
+                #   we rely on coordinate-based lookup using Vision AI coords
+                # - Without scaling, coordinate lookups fail for table extraction
+                #   (e.g., "get text from first row, second column")
+                #
+                # COORDINATE SOURCES:
+                # - Vision AI (Gemini): Normalized [0-1000] space → NEEDS SCALING
+                # - DOM element_index: CSS pixel coords → NO SCALING (handled above)
+                #
+                # Scaling formula: pixel_coord = (normalized_coord / 1000) * viewport_size
                 GEMINI_COORD_SPACE = 1000
                 DEFAULT_VIEWPORT = (1920, 1080)
                 
@@ -617,7 +649,7 @@ def register_custom_actions(agent, page=None) -> bool:
                 scaled_x = int((params.x / GEMINI_COORD_SPACE) * viewport_w)
                 scaled_y = int((params.y / GEMINI_COORD_SPACE) * viewport_h)
                 
-                logger.info(f"Coordinate scaling: ({params.x}, {params.y}) -> ({scaled_x}, {scaled_y}) [0-1000 to {viewport_w}x{viewport_h}]")
+                logger.info(f"Coordinate scaling: ({params.x}, {params.y}) → ({scaled_x}, {scaled_y}) [0-1000 to {viewport_w}x{viewport_h}]")
 
 
                 # ========================================
@@ -893,22 +925,30 @@ def register_custom_actions(agent, page=None) -> bool:
                     # ========================================
                     iframe_context = None
                     if selector_map:
-                        iframe_context, iframe_id = _detect_iframe_context(
+                        # Note: _iframe_id unpacked but unused (only iframe_context needed for locator)
+                        iframe_context, _iframe_id = _detect_iframe_context(
                             selector_map, (final_x, final_y)
                         )
                         if iframe_context:
                             logger.info(f"   Element will be searched inside iframe: {iframe_context}")
                             
                             # ========================================
-                            # IFRAME ELEMENT HANDLING
+                            # IFRAME ELEMENT HANDLING (Optional Refinement)
                             # ========================================
-                            # NOTE: DO NOT call get_browser_state_summary() here!
-                            # It would OVERWRITE the good selector_map from browser-use.
-                            # Browser-use already has the iframe content indexed in _dom_watchdog.selector_map.
-                            # We just need to find the element by coordinates using the existing data.
+                            # COORDINATE ASSUMPTION: Browser-use provides page-absolute coordinates
+                            # via `absolute_position` which includes accumulated `total_frame_offset`
+                            # from parent iframes (see browser_use/dom/service.py lines 530-535).
+                            #
+                            # EDGE CASES where this may fail silently:
+                            # - Cross-origin iframes (may have iframe-relative coords)
+                            # - Dynamically loaded content (not yet indexed)
+                            #
+                            # GRACEFUL FALLBACK: If bbox matching fails, find_unique_locator_action
+                            # handles iframe_context properly with coordinate translation.
+                            # This override is an OPTIMIZATION, not required for correctness.
                             
-                            logger.info(f"🖼️ Iframe detected - using browser-use's DOM for element lookup")
-                            logger.info(f"   📊 Selector map has {len(selector_map)} elements (from _dom_watchdog)")
+                            logger.info(f"🖼️ Iframe detected - attempting element lookup from selector_map")
+                            logger.info(f"   📊 Selector map has {len(selector_map)} elements")
                             
                             try:
                                 # Use existing selector_map (no refresh needed!)
@@ -950,11 +990,12 @@ def register_custom_actions(agent, page=None) -> bool:
                                         
                                         logger.info(f"   📝 Element id: {element_data_from_index.get('id', 'N/A')}")
                                     else:
-                                        logger.warning(f"   ⚠️ Could not find element by coords in refreshed selector_map")
+                                        logger.info(f"   ℹ️ No bbox match found - will use find_unique_locator_action fallback")
+                                        logger.debug(f"   (This is normal for cross-origin iframes or coord system mismatch)")
                                 else:
-                                    logger.info(f"   ℹ️ No selector_map available for iframe element lookup")
+                                    logger.info(f"   ℹ️ No selector_map available - will use find_unique_locator_action fallback")
                             except Exception as e:
-                                logger.warning(f"   ⚠️ DOM refresh failed: {e}")
+                                logger.warning(f"   ⚠️ Element lookup failed: {e}")
                                 logger.debug("   Full error:", exc_info=True)
                     
                     result = await asyncio.wait_for(

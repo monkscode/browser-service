@@ -21,7 +21,7 @@ Prompt Structure:
 - Critical rules and completion criteria
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 # Import reusable prompt templates
 from browser_service.prompts.templates import (
@@ -47,7 +47,7 @@ def build_workflow_prompt(
     elements: List[Dict[str, Any]],
     library_type: str = "browser",
     include_custom_action: bool = True,
-    client_hints: List[str] = None
+    client_hints: Optional[List[str]] = None
 ) -> str:
     """
     Build workflow prompt for browser-use agent.

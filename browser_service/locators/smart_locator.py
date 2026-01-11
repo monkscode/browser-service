@@ -275,7 +275,9 @@ def _generate_attribute_css(element_data: dict) -> list[dict]:
         semantic_patterns = ['input', 'select', 'dropdown', 'combo', 'multiselect', 'picker']
         for cls in classes.split():
             if any(p in cls.lower() for p in semantic_patterns):
-                escaped_cls = cls.replace(':', '\\:').replace('.', '\\.')
+                escaped_cls = _escape_css_selector(cls)
+                if not escaped_cls:
+                    continue  # Skip invalid class names
                 locator = f".{escaped_cls}"
                 candidates.append({
                     'locator': locator,
@@ -2116,7 +2118,7 @@ async def _generate_locators_from_element_data(
                         'valid': True,
                         'validated': True,
                         'semantic_match': semantic_match,
-                        'validation_method': 'playwright'
+                        'validation_method': validation_method
                     }],
                     'element_info': {
                         'tagName': element_data.get('tagName', ''),
@@ -2133,7 +2135,7 @@ async def _generate_locators_from_element_data(
                         'validated': 1,
                         'best_type': candidate['type'],
                         'best_strategy': candidate['strategy'],
-                        'validation_method': 'playwright'
+                        'validation_method': validation_method
                     },
                     'validated': True,
                     'count': count,
@@ -2257,7 +2259,7 @@ async def find_unique_locator_at_coordinates(
     library_type: str = "browser",
     element_data: Optional[dict] = None,  # Element attributes from browser-use DOM (id, class, text, etc.)
     search_context=None,  # Either page or frame_locator for iframe context
-    iframe_context: Optional[str] = None,  # Iframe locator (e.g., "#iframeMain") for composite locators
+    iframe_context: Optional[str] = None,  # Iframe locator (e.g., 'iframe[id="main"]') for composite locators
     is_collection: Optional[bool] = None  # Collection flag for multi-element detection
 ) -> dict:
     """
@@ -2281,7 +2283,7 @@ async def find_unique_locator_at_coordinates(
     - This prevents "unique but wrong element" bugs where coordinates land on wrong element
     
     IFRAME SUPPORT:
-    - If iframe_context is provided (e.g., "#iframeMain"), the element is inside an iframe
+    - If iframe_context is provided (e.g., 'iframe[id="main"]'), the element is inside an iframe
     - search_context will be frame_locator instead of page for correct DOM searches
     - Returned locator will be composite format: "iframe_context >>> locator"
 
@@ -2299,7 +2301,7 @@ async def find_unique_locator_at_coordinates(
                      {"tagName": "a", "id": "", "textContent": "Services", "href": "/services", ...}
         search_context: The context to use for locator searches (page or frame_locator).
                        If None, defaults to page. Use frame_locator for iframe elements.
-        iframe_context: Optional iframe locator (e.g., "#iframeMain") for composite locator generation.
+        iframe_context: Optional iframe locator (e.g., 'iframe[id="main"]') for composite locator generation.
 
     Returns:
         Dict with best_locator, all_locators, validation_summary, validation_method, semantic_match

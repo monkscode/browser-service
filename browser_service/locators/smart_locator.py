@@ -47,6 +47,248 @@ PRIORITY_XPATH_CLASS_POSITION = 16  # XPath with class and position
 PRIORITY_XPATH_MULTI_ATTR = 17  # XPath with multiple attributes
 PRIORITY_XPATH_FIRST_OF_CLASS = 18  # XPath - first element with class
 
+# Dropdown detection patterns for coordinate-based validation
+DROPDOWN_CSS_PATTERNS = [
+    'k-multiselect', 'k-dropdown', 'k-combobox',  # Kendo UI
+    'select2', 'chosen',  # jQuery plugins
+    'MuiSelect', 'MuiAutocomplete',  # Material-UI
+    'react-select', 'ng-select'  # React/Angular
+]
+
+DROPDOWN_KEYWORDS = ['dropdown', 'select', 'combobox', 'multiselect', 'picker', 'chooser']
+
+
+def _escape_css_selector(value: str) -> str:
+    """
+    Escape special characters in CSS selectors.
+    
+    Handles characters that have special meaning in CSS selectors
+    (like :, ., [, ], etc.) by escaping them with backslash.
+    
+    Args:
+        value: The CSS selector value to escape (e.g., class name, id)
+        
+    Returns:
+        Escaped string safe for use in CSS selectors, or empty string if invalid
+    """
+    if not value or not value.strip():
+        return ''
+    # CSS escape special characters: : . [ ] ( ) etc
+    result = ''
+    for char in value:
+        if char.isalnum() or char in '-_':
+            result += char
+        elif char == ' ':
+            return ''  # Multi-word classes should be handled separately
+        else:
+            result += f'\\{char}'  # CSS escape
+    return result
+
+
+def is_dropdown_element(
+    element_data: dict,
+    element_description: Optional[str] = None
+) -> bool:
+    """
+    Multi-layered dropdown detection using all available signals.
+    
+    Priority order (most reliable first):
+    1. Keyword from Test Planner (e.g., "Select Options By")
+    2. Element description contains dropdown keywords
+    3. ARIA role (combobox, listbox)
+    4. Native <select> tag
+    5. CSS class patterns (framework-specific)
+    
+    Args:
+        element_data: Dict with element attributes from browser-use DOM
+        element_description: Human-readable description of the element
+        
+    Returns:
+        True if element appears to be a dropdown/select component
+    """
+    # Priority 1: Element description contains dropdown keywords
+    if element_description:
+        desc = element_description.lower()
+        if any(kw in desc for kw in DROPDOWN_KEYWORDS):
+            logger.debug(f"🔽 Dropdown detected via description: '{element_description}'")
+            return True
+    
+    # Priority 2: ARIA role (accessibility standard)
+    role = element_data.get('role', '').lower() if element_data else ''
+    if role in ('combobox', 'listbox'):
+        logger.debug(f"🔽 Dropdown detected via ARIA role: '{role}'")
+        return True
+    
+    # Priority 3: Native <select> tag
+    tag = element_data.get('tagName', '').lower() if element_data else ''
+    if tag == 'select':
+        logger.debug("🔽 Dropdown detected via <select> tag")
+        return True
+    
+    # Priority 4: CSS class patterns (framework-specific)
+    classes = element_data.get('className', '').lower() if element_data else ''
+    for pattern in DROPDOWN_CSS_PATTERNS:
+        if pattern.lower() in classes:
+            logger.debug(f"🔽 Dropdown detected via CSS class pattern: '{pattern}'")
+            return True
+    
+    return False
+
+
+async def _validate_by_coordinates(
+    page,
+    locator: str,
+    expected_coords: tuple,
+    tolerance: int = 50
+) -> tuple[bool, str]:
+    """
+    Validate locator by checking if element is at expected coordinates.
+    
+    This is used as an alternative to text-based validation for dropdowns
+    where the visible text may not be in the input element itself.
+    
+    Args:
+        page: Playwright page object (can be page or frame)
+        locator: The locator string to validate
+        expected_coords: Tuple of (x, y) coordinates from browser-use
+        tolerance: Maximum pixel distance for coordinate match (default 50px)
+        
+    Returns:
+        Tuple of (is_match: bool, reason: str)
+    """
+    try:
+        element = page.locator(locator)
+        count = await element.count()
+        
+        if count != 1:
+            return False, f"not_unique (count={count})"
+        
+        box = await element.bounding_box()
+        if not box:
+            return False, "no_bounding_box"
+        
+        # Calculate center of element
+        center_x = box['x'] + box['width'] / 2
+        center_y = box['y'] + box['height'] / 2
+        
+        # Calculate distance from expected coordinates
+        dx = abs(center_x - expected_coords[0])
+        dy = abs(center_y - expected_coords[1])
+        
+        if dx < tolerance and dy < tolerance:
+            logger.info(f"   ✅ Coordinate validation PASSED: locator at ({center_x:.0f}, {center_y:.0f}), expected {expected_coords}, delta=({dx:.0f}, {dy:.0f})")
+            return True, "coordinate_match"
+        else:
+            logger.warning(f"   ⚠️ Coordinate validation FAILED: locator at ({center_x:.0f}, {center_y:.0f}), expected {expected_coords}, delta=({dx:.0f}, {dy:.0f})")
+            return False, f"coord_mismatch: delta=({dx:.0f}, {dy:.0f})"
+            
+    except Exception as e:
+        logger.warning(f"   ⚠️ Coordinate validation error: {e}")
+        return False, f"error: {e}"
+
+
+async def _shorten_xpath(page, full_xpath: str) -> tuple[str, bool]:
+    """
+    Find shortest unique suffix of xpath.
+    
+    Progressively shortens the xpath from left to right until finding
+    the shortest suffix that still uniquely identifies the element.
+    
+    Args:
+        page: Playwright page or frame_locator context
+        full_xpath: Full xpath string (with or without 'xpath=' prefix)
+        
+    Returns:
+        Tuple of (shortened_xpath, was_shortened)
+    """
+    # Remove leading 'xpath=' if present and normalize
+    xpath = full_xpath.replace('xpath=', '')
+    if xpath.startswith('/html'):
+        xpath = xpath[1:]  # Remove leading /
+    
+    parts = xpath.split('/')
+    
+    # Need at least 2 parts to shorten
+    if len(parts) < 3:
+        return full_xpath, False
+    
+    # Try progressively shorter suffixes (right to left)
+    # Start from 2nd-to-last segment and work backwards
+    for start in range(len(parts) - 2, 0, -1):
+        suffix = '//' + '/'.join(parts[start:])
+        try:
+            count = await page.locator(f"xpath={suffix}").count()
+            if count == 1:
+                logger.info(f"   ✂️ Shortened xpath: {full_xpath} → {suffix}")
+                return f"xpath={suffix}", True
+        except Exception:
+            continue
+    
+    logger.debug("   ⚠️ Could not shorten xpath (no unique suffix found)")
+    return full_xpath if full_xpath.startswith('xpath=') else f"xpath={full_xpath}", False
+
+
+def _generate_attribute_css(element_data: dict) -> list[dict]:
+    """
+    Generate CSS locators from element attributes when no direct locators are available.
+    
+    This is used as an alternative to long xpaths - tries to create stable
+    CSS locators using role, type, and class attributes.
+    
+    Args:
+        element_data: Dict with element attributes from browser-use DOM
+        
+    Returns:
+        List of candidate locator dicts with 'locator', 'priority', 'strategy' keys
+    """
+    candidates = []
+    tag = element_data.get('tagName', '').lower()
+    role = element_data.get('role', '')
+    classes = element_data.get('className', '')
+    input_type = element_data.get('type', '')
+    
+    # Priority A: role attribute (very stable for accessibility)
+    if role:
+        locator = f"{tag}[role=\"{role}\"]" if tag else f"[role=\"{role}\"]"
+        candidates.append({
+            'locator': locator,
+            'type': 'role-css',
+            'priority': 12,  # New priority slot
+            'strategy': f'Role-based CSS ({role})'
+        })
+        logger.debug(f"   📋 Generated role-based CSS: {locator}")
+    
+    # Priority B: type attribute for inputs
+    if tag == 'input' and input_type:
+        locator = f"input[type=\"{input_type}\"]"
+        candidates.append({
+            'locator': locator,
+            'type': 'type-css',
+            'priority': 13,
+            'strategy': f'Input type CSS ({input_type})'
+        })
+        logger.debug(f"   📋 Generated type-based CSS: {locator}")
+    
+    # Priority C: Semantic class (if class contains meaningful patterns)
+    if classes:
+        semantic_patterns = ['input', 'select', 'dropdown', 'combo', 'multiselect', 'picker']
+        for cls in classes.split():
+            if any(p in cls.lower() for p in semantic_patterns):
+                escaped_cls = _escape_css_selector(cls)
+                if not escaped_cls:
+                    continue  # Skip invalid class names
+                locator = f".{escaped_cls}"
+                candidates.append({
+                    'locator': locator,
+                    'type': 'class-css',
+                    'priority': 14,
+                    'strategy': f'Semantic class CSS (.{cls})'
+                })
+                logger.debug(f"   📋 Generated semantic class CSS: {locator}")
+                break  # Use only the first semantic class
+    
+    return candidates
+
 
 # ========================================
 # SHADOW DOM SUPPORT
@@ -528,8 +770,10 @@ async def _find_collection_by_text_traversal(page, expected_text: str) -> Option
             # Validate the locator
             try:
                 count = await page.locator(locator).count()
-                if count > 1:
-                    logger.info(f"   ✅ Collection locator: '{locator}' matches {count} elements")
+                # Return when count >= 1 (even single element for explicit collections)
+                # STEP 0.5 will decide whether to use it based on explicit_collection flag
+                if count >= 1:
+                    logger.info(f"   ✅ Collection locator: '{locator}' matches {count} element(s)")
                     return {
                         'locator': locator,
                         'count': count,
@@ -538,7 +782,7 @@ async def _find_collection_by_text_traversal(page, expected_text: str) -> Option
                         'source': 'text_traversal'
                     }
                 else:
-                    logger.info(f"   Locator '{locator}' only matched {count} element(s)")
+                    logger.info(f"   Locator '{locator}' matched 0 elements")
             except Exception as e:
                 logger.info(f"   Locator validation failed: {e}")
         else:
@@ -819,7 +1063,7 @@ async def _disambiguate_by_coordinates(page, selector: str, x: float, y: float) 
         # ========================================
         min_distance = float('inf')
         closest_idx = -1
-        DISTANCE_THRESHOLD = 50  # 50px tolerance
+        DISTANCE_THRESHOLD = 100
         
         for i in range(count):
             try:
@@ -1425,11 +1669,13 @@ async def _find_table_cell_by_structured_info(
 
 
 async def _generate_locators_from_element_data(
-    page,
+    search_context,  # Can be page or frame_locator when in iframe context
     element_data: dict[str, Any],
     element_id: str,
     element_description: str,
-    expected_text: Optional[str] = None
+    expected_text: Optional[str] = None,
+    iframe_context: Optional[str] = None,  # Pass iframe context to allow xpath for iframe elements
+    confirmed_coords: Optional[tuple] = None  # (x, y) from browser-use for coordinate validation
 ) -> Optional[dict]:
     """
     Generate and validate locators from element_data extracted from browser-use DOM.
@@ -1450,7 +1696,7 @@ async def _generate_locators_from_element_data(
     - e.g., /html/body/.../table/tbody/tr[1]/td[2]
     
     Args:
-        page: Playwright page object
+        search_context: Playwright page or frame_locator object (for iframe elements)
         element_data: Dict with element attributes from browser-use DOM:
                      {tagName, id, name, className, ariaLabel, placeholder, 
                       title, role, dataTestId, xpath, textContent}
@@ -1498,7 +1744,7 @@ async def _generate_locators_from_element_data(
         # PRIMARY METHOD: Use expected_text as a beacon to find the actual row container
         # This works even when element_data is from a wrong parent container
         if expected_text:
-            text_result = await _find_collection_by_text_traversal(page, expected_text)
+            text_result = await _find_collection_by_text_traversal(search_context, expected_text)
             
             if text_result and text_result.get('locator'):
                 collection_locator = text_result['locator']
@@ -1557,11 +1803,11 @@ async def _generate_locators_from_element_data(
         if collection_class:
             logger.info(f"   📦 Collection class from element_data: '{collection_class}'")
             
-            collection_locator = await _find_collection_locator(page, element_data, collection_class)
+            collection_locator = await _find_collection_locator(search_context, element_data, collection_class)
             
             if collection_locator:
                 try:
-                    count = await page.locator(collection_locator).count()
+                    count = await search_context.locator(collection_locator).count()
                     
                     if count > 1:
                         # VALIDATION: Check if matched elements contain expected_text
@@ -1569,7 +1815,7 @@ async def _generate_locators_from_element_data(
                             text_found = False
                             try:
                                 for i in range(min(count, 3)):
-                                    el_text = await page.locator(collection_locator).nth(i).text_content() or ""
+                                    el_text = await search_context.locator(collection_locator).nth(i).text_content() or ""
                                     if expected_text.lower() in el_text.lower():
                                         text_found = True
                                         break
@@ -1700,48 +1946,147 @@ async def _generate_locators_from_element_data(
             'strategy': 'Placeholder attribute from element_data'
         })
     
-    # Priority 6: xpath (from browser-use DOM) - ONLY AS LAST RESORT
-    # XPath is powerful but fragile (breaks when page structure changes)
-    # 
-    # IMPORTANT: If expected_text is available and no better locators were found,
-    # we should NOT use xpath. Instead, return None and let TEXT-FIRST (STEP 1)
-    # handle it with disambiguation logic. TEXT-FIRST can create stable locators
-    # like text="Solutions" >> nth=0 which are much more maintainable.
-    #
+    # Priority 5.5: Parent-context CSS locators (for elements without id/name)
+    # When element lacks direct id/name but has parent with id/class, generate
+    # stable CSS selectors like "#parentId input" or ".parentClass input"
+    # This is MORE STABLE than xpath because it uses semantic anchors
+    if not element_data.get('id') and not element_data.get('name'):
+        tag_name = element_data.get('tagName', '')
+        parent_id = element_data.get('parentId', '')
+        parent_class = element_data.get('parentClass', '')
+        input_type = element_data.get('type', '')
+        
+        # Build CSS selector using parent context
+        escaped_parent_id = _escape_css_selector(parent_id)
+        if escaped_parent_id and tag_name:
+            # Use parent id + tag name (e.g., "#formContainer input")
+            css_locator = f'#{escaped_parent_id} {tag_name}'
+            if input_type:
+                # Be more specific for inputs (e.g., "#formContainer input[type='text']")
+                css_locator = f'#{escaped_parent_id} {tag_name}[type="{input_type}"]'
+            locator_candidates.append({
+                'locator': css_locator,
+                'type': 'parent-id-css',
+                'priority': PRIORITY_CSS_PARENT_ID,
+                'strategy': f'Parent ID context + tag (#{parent_id} {tag_name})'
+            })
+            logger.info(f"   📋 Added parent-context CSS: {css_locator}")
+        
+        elif parent_class and tag_name:
+            # Use first significant class from parent (escape special chars)
+            first_class = parent_class.split()[0] if ' ' in parent_class else parent_class
+            escaped_class = _escape_css_selector(first_class)
+            if escaped_class:
+                css_locator = f'.{escaped_class} {tag_name}'
+                if input_type:
+                    css_locator = f'.{escaped_class} {tag_name}[type="{input_type}"]'
+                locator_candidates.append({
+                    'locator': css_locator,
+                    'type': 'parent-class-css',
+                    'priority': PRIORITY_CSS_CLASS,
+                    'strategy': f'Parent class context + tag (.{first_class} {tag_name})'
+                })
+                logger.info(f"   📋 Added parent-context CSS: {css_locator}")
+    
+    # ========================================
+    # SMART LOCATOR FALLBACK (when no id/name/aria-label available)
+    # ========================================
+    # Priority order:
+    # 1. Attribute-based CSS (role, type, semantic class) - stable
+    # 2. Shortened xpath (unique suffix) - more stable than full xpath
+    # 3. Full xpath - last resort, fragile
+    
     has_semantic_locators = len(locator_candidates) > 0  # id, name, aria-label, etc.
     
+    # STEP A: Try attribute-based CSS from element data (role, type, class)
+    # These are more stable than xpath and work even when element has no id
+    attr_css_candidates = _generate_attribute_css(element_data)
+    if attr_css_candidates:
+        logger.info(f"   📋 Generated {len(attr_css_candidates)} attribute-based CSS candidates")
+        locator_candidates.extend(attr_css_candidates)
+    
+    # STEP B: Handle xpath - shorten if possible, use full as last resort
     if element_data.get('xpath'):
+        in_iframe = iframe_context is not None
+        
         # Only use xpath if:
         # 1. No expected_text provided (can't use TEXT-FIRST), OR
-        # 2. We have better locators to try first (id, name, etc.)
-        if not expected_text or has_semantic_locators:
-            xpath = element_data['xpath']
+        # 2. We have better locators to try first (id, name, etc.), OR
+        # 3. We're inside an iframe
+        should_use_xpath = not expected_text or has_semantic_locators or in_iframe
+        
+        if should_use_xpath:
+            full_xpath = element_data['xpath']
+            
+            # Add shortened xpath with higher priority (more stable)
+            shortened_xpath, was_shortened = await _shorten_xpath(search_context, full_xpath)
+            if was_shortened:
+                locator_candidates.append({
+                    'locator': shortened_xpath,
+                    'type': 'shortened-xpath',
+                    'priority': 15,  # Before full xpath
+                    'strategy': 'Shortened XPath (unique suffix)'
+                })
+            
+            # Add full xpath as last resort with lowest priority
+            strategy_note = 'Full XPath' + (' (iframe element)' if in_iframe else ' (last resort)')
             locator_candidates.append({
-                'locator': f'xpath={xpath}',
-                'type': 'xpath',
-                'priority': PRIORITY_XPATH_PARENT_ID,
-                'strategy': 'XPath from browser-use DOM (fallback)'
+                'locator': f'xpath={full_xpath}',
+                'type': 'full-xpath',
+                'priority': 19,  # Demoted to last resort
+                'strategy': strategy_note
             })
+            
+            if in_iframe:
+                logger.info(f"   📋 Using xpath for iframe element (attribute CSS or shortened preferred)")
         else:
             # Skip xpath - let TEXT-FIRST (STEP 1) handle with disambiguation
             logger.info(f"   ⏭️ Skipping xpath - expected_text available, will use TEXT-FIRST strategy")
     
-    # Try each candidate locator
+    # Sort candidates by priority (lower number = higher priority)
+    locator_candidates.sort(key=lambda c: c.get('priority', 100))
+    
+    # Try each candidate locator in priority order
     for candidate in locator_candidates:
         locator = candidate['locator']
         try:
-            count = await page.locator(locator).count()
+            count = await search_context.locator(locator).count()
             
             if count == 1:
                 # SEMANTIC VALIDATION: Verify we found the RIGHT element
                 semantic_match = True
                 actual_text = ""
+                validation_method = "text"
+                
                 if expected_text:
-                    semantic_match, actual_text = await _validate_semantic_match(page, locator, expected_text)
+                    semantic_match, actual_text = await _validate_semantic_match(search_context, locator, expected_text)
+                    
                     if not semantic_match:
-                        logger.info(f"   ⚠️ {candidate['type']}: unique but text mismatch (trying next)")
-                        logger.info(f"      Expected: '{expected_text}', Actual: '{actual_text}'")
-                        continue  # Try next locator
+                        # For DROPDOWNS: Use coordinate-based validation instead of text
+                        # Dropdowns often have placeholder text in sibling elements, not the input itself
+                        is_dropdown = is_dropdown_element(element_data, element_description)
+                        
+                        if is_dropdown and confirmed_coords:
+                            logger.info(f"   🔽 Dropdown detected - trying coordinate validation instead of text")
+                            coord_match, coord_reason = await _validate_by_coordinates(
+                                search_context, locator, confirmed_coords
+                            )
+                            if coord_match:
+                                # Accept locator based on coordinates - trust browser-use vision
+                                semantic_match = True
+                                validation_method = "coordinates"
+                                logger.info(f"   ✅ Dropdown validated via coordinates at {confirmed_coords}")
+                            else:
+                                logger.info(f"   ⚠️ {candidate['type']}: coordinate validation also failed ({coord_reason})")
+                                logger.info(f"      Accepting unique locator anyway (trusting browser-use vision)")
+                                # For dropdowns, still accept unique locator even if coords don't match exactly
+                                semantic_match = True
+                                validation_method = "trust_unique"
+                        else:
+                            # Not a dropdown - standard text mismatch handling
+                            logger.info(f"   ⚠️ {candidate['type']}: unique but text mismatch (trying next)")
+                            logger.info(f"      Expected: '{expected_text}', Actual: '{actual_text}'")
+                            continue  # Try next locator
                 
                 logger.info(f"   ✅ ELEMENT-DATA locator found: {locator}")
                 logger.info(f"      Strategy: {candidate['strategy']}")
@@ -1772,7 +2117,7 @@ async def _generate_locators_from_element_data(
                         'valid': True,
                         'validated': True,
                         'semantic_match': semantic_match,
-                        'validation_method': 'playwright'
+                        'validation_method': validation_method
                     }],
                     'element_info': {
                         'tagName': element_data.get('tagName', ''),
@@ -1789,7 +2134,7 @@ async def _generate_locators_from_element_data(
                         'validated': 1,
                         'best_type': candidate['type'],
                         'best_strategy': candidate['strategy'],
-                        'validation_method': 'playwright'
+                        'validation_method': validation_method
                     },
                     'validated': True,
                     'count': count,
@@ -1911,7 +2256,10 @@ async def find_unique_locator_at_coordinates(
     expected_text: Optional[str] = None,
     candidate_locator: Optional[str] = None,
     library_type: str = "browser",
-    element_data: Optional[dict] = None  # Element attributes from browser-use DOM (id, class, text, etc.)
+    element_data: Optional[dict] = None,  # Element attributes from browser-use DOM (id, class, text, etc.)
+    search_context=None,  # Either page or frame_locator for iframe context
+    iframe_context: Optional[str] = None,  # Iframe locator (e.g., 'iframe[id="main"]') for composite locators
+    is_collection: Optional[bool] = None  # Collection flag for multi-element detection
 ) -> dict:
     """
     Find a unique locator for an element using a semantic-first approach.
@@ -1932,9 +2280,14 @@ async def find_unique_locator_at_coordinates(
     - If expected_text is provided, we validate that the found element's actual text
       matches the expected text (case-insensitive, substring match)
     - This prevents "unique but wrong element" bugs where coordinates land on wrong element
+    
+    IFRAME SUPPORT:
+    - If iframe_context is provided (e.g., 'iframe[id="main"]'), the element is inside an iframe
+    - search_context will be frame_locator instead of page for correct DOM searches
+    - Returned locator will be composite format: "iframe_context >>> locator"
 
     Args:
-        page: Playwright page object
+        page: Playwright page object (for coordinate-based fallback JavaScript)
         x: X coordinate of element center (used as fallback)
         y: Y coordinate of element center (used as fallback)
         element_id: Element identifier (elem_1, elem_2, etc.)
@@ -1945,6 +2298,9 @@ async def find_unique_locator_at_coordinates(
         library_type: "browser" or "selenium" - determines locator format
         element_data: Optional dict with element attributes from browser-use DOM:
                      {"tagName": "a", "id": "", "textContent": "Services", "href": "/services", ...}
+        search_context: The context to use for locator searches (page or frame_locator).
+                       If None, defaults to page. Use frame_locator for iframe elements.
+        iframe_context: Optional iframe locator (e.g., 'iframe[id="main"]') for composite locator generation.
 
     Returns:
         Dict with best_locator, all_locators, validation_summary, validation_method, semantic_match
@@ -1956,7 +2312,55 @@ async def find_unique_locator_at_coordinates(
         logger.info(f"   Expected text: '{expected_text}'")
     if element_data:
         logger.info(f"   Element data from index: <{element_data.get('tagName', '?')}> id='{element_data.get('id', '')}' text='{element_data.get('textContent', '')[:30]}...'")
+    if iframe_context:
+        logger.info(f"   🖼️ Iframe context: {iframe_context}")
     logger.info(f"   Coordinates: ({x}, {y}) [fallback]")
+    
+    # ========================================
+    # SEARCH CONTEXT: Use iframe context if provided
+    # ========================================
+    # search_context is either page (for main page elements) or 
+    # frame_locator (for elements inside iframes)
+    if search_context is None:
+        search_context = page
+    
+    # Helper function to create composite locator for iframe elements
+    def _make_composite_locator(locator: str) -> str:
+        """Prefix locator with iframe context if element is inside iframe."""
+        if iframe_context and not locator.startswith(iframe_context):
+            return f"{iframe_context} >>> {locator}"
+        return locator
+    
+    # Helper function to apply iframe prefix to entire result
+    def _apply_iframe_prefix_to_result(result: dict) -> dict:
+        """Apply iframe prefix to best_locator and all entries in all_locators."""
+        if not iframe_context:
+            return result
+        
+        # Apply to best_locator
+        if result.get('best_locator'):
+            result['best_locator'] = _make_composite_locator(result['best_locator'])
+        
+        # Apply to ALL locators in all_locators array
+        for loc in result.get('all_locators', []):
+            if loc.get('locator') and not loc['locator'].startswith(iframe_context):
+                loc['locator'] = _make_composite_locator(loc['locator'])
+        
+        result['iframe_context'] = iframe_context
+        return result
+    
+    # ========================================
+    # PRE-CHECK: Reset element_data if it's the iframe container
+    # ========================================
+    # When browser-use provides element_data for an iframe but the user wants
+    # an element INSIDE the iframe, we must reset element_data so STEP 1/2/3
+    # will search inside the iframe for the actual target element.
+    if element_data and iframe_context:
+        element_tag = element_data.get('tagName', '').lower()
+        if element_tag == 'iframe':
+            logger.info(f"⚠️ element_data is the iframe container (tagName={element_tag})")
+            logger.info(f"   Resetting element_data - will search inside {iframe_context} for actual element")
+            element_data = None  # Force STEP 1/2/3 to find element inside iframe
     
     # ========================================
     # STEP 0: ELEMENT-DATA approach (highest priority - FASTEST)
@@ -1965,21 +2369,113 @@ async def find_unique_locator_at_coordinates(
     # This is the FASTEST approach - no coordinate-based JavaScript needed.
     if element_data:
         result = await _generate_locators_from_element_data(
-            page, element_data, element_id, element_description, expected_text
+            search_context, element_data, element_id, element_description, expected_text,
+            iframe_context=iframe_context,  # Pass iframe context for proper xpath/CSS handling
+            confirmed_coords=(x, y) if x is not None and y is not None else None  # Use explicit None checks (0 is valid coord)
         )
         if result:
-            return result
+            # Add iframe prefix to best_locator AND all_locators
+            return _apply_iframe_prefix_to_result(result)
+
+
+
     
     # ========================================
     # STEP 0.1: Validate candidate locator (if provided)
     # ========================================
     if candidate_locator:
         result = await _validate_candidate_locator(
-            page, candidate_locator, element_id, element_description, 
+            search_context, candidate_locator, element_id, element_description, 
             expected_text, x, y
         )
         if result:
-            return result
+            # Add iframe prefix to best_locator AND all_locators
+            return _apply_iframe_prefix_to_result(result)
+    
+    # ========================================
+    # STEP 0.5: Collection detection (hybrid: is_collection flag + keyword fallback)
+    # ========================================
+    # Priority 1: Explicit is_collection=True from custom action (most reliable)
+    # Priority 2: Fallback keyword detection in description (backup)
+    #
+    # DESIGN: If CrewAI determined this is a collection, trust that decision
+    # and return a multi-element locator even if only 1 element is currently visible.
+    
+    explicit_collection = is_collection is True
+    keyword_collection = _is_collection_element({}, element_description) if element_description else False
+    
+    is_collection_request = explicit_collection or keyword_collection
+    
+    if is_collection_request and expected_text:
+        logger.info(f"🔍 Step 0.5: Collection detected - trying multi-element approach")
+        if explicit_collection:
+            logger.info(f"   Detection method: is_collection=True (from custom action)")
+        else:
+            logger.info(f"   Detection method: collection keywords in description (fallback)")
+        
+        # Try text-traversal to find collection (works even without element_data)
+        collection_result = await _find_collection_by_text_traversal(search_context, expected_text)
+        
+        if collection_result:
+            locator = collection_result.get('locator')
+            count = collection_result.get('count', 0)
+            
+            # DESIGN DECISION: If collection is explicit, return collection locator regardless of count
+            # This handles filtered results (search returns 1 row) correctly
+            should_return_collection = explicit_collection or count > 1
+            
+            if should_return_collection:
+                logger.info(f"   ✅ COLLECTION locator found: {locator} (count={count})")
+                
+                # Apply iframe prefix if needed
+                if iframe_context:
+                    locator = _make_composite_locator(locator)
+                
+                return {
+                    'element_id': element_id,
+                    'description': element_description,
+                    'found': True,
+                    'best_locator': locator,
+                    'is_collection': True,
+                    'element_type': 'collection',
+                    'all_locators': [{
+                        'type': 'collection',
+                        'locator': locator,
+                        'priority': 0,
+                        'strategy': 'Collection via text-traversal',
+                        'count': count,
+                        'unique': False,  # Collections are never unique (even if count==1)
+                        'valid': True,
+                        'validated': True,
+                        'semantic_match': True,
+                        'validation_method': 'playwright'
+                    }],
+                    'element_info': {
+                        'expected_text': expected_text,
+                        'row_class': collection_result.get('row_class', ''),
+                        'explicit_collection': explicit_collection
+                    },
+                    'coordinates': {'x': x, 'y': y, 'note': 'Collection found - coordinates used as hint only'},
+                    'validation_summary': {
+                        'total_generated': 1,
+                        'valid': 1,
+                        'unique': 0,  # Collections are never unique
+                        'validated': 1,
+                        'best_type': 'collection',
+                        'best_strategy': 'Text-traversal collection finder',
+                        'validation_method': 'playwright'
+                    },
+                    'validated': True,
+                    'count': count,
+                    'unique': False,  # Collections are never unique (even if count==1)
+                    'valid': True,
+                    'semantic_match': True,
+                    'validation_method': 'playwright'
+                }
+            else:
+                logger.info(f"   ⚠️ Collection found but count={count}, no explicit flag, falling through to single-element")
+        else:
+            logger.info(f"   ⚠️ Collection text-traversal failed, falling through to single-element approaches")
     
     # ========================================
     # STEP 1: Try TEXT-FIRST approach (using expected_text)
@@ -1989,12 +2485,16 @@ async def find_unique_locator_at_coordinates(
     if expected_text and expected_text.strip():
         logger.info(f"🔍 Step 1: Trying TEXT-FIRST locators from expected_text: '{expected_text}'")
         
-        text_result = await _find_element_by_expected_text(page, expected_text, element_description, x, y)
+        text_result = await _find_element_by_expected_text(search_context, expected_text, element_description, x, y)
         
         if text_result:
             # text_result is now a dict with 'locator' and optionally 'element_type'
             text_locator = text_result.get('locator')
             element_type = text_result.get('element_type')  # 'checkbox', 'radio', or None
+            
+            # Add iframe prefix if needed
+            if iframe_context:
+                text_locator = _make_composite_locator(text_locator)
             
             logger.info(f"✅ TEXT-FIRST locator found: {text_locator}" + (f" (element_type={element_type})" if element_type else ""))
             
@@ -2014,7 +2514,7 @@ async def find_unique_locator_at_coordinates(
                 'element_type': element_type,  # NEW: Pass element_type to caller
                 'all_locators': [{
                     'type': locator_type,
-                    'locator': text_locator,
+                    'locator': text_locator,  # Already has iframe prefix from line 2400
                     'priority': 0,
                     'strategy': strategy_name,
                     'count': 1,
@@ -2055,14 +2555,18 @@ async def find_unique_locator_at_coordinates(
     if element_description and element_description.strip():
         logger.info(f"🔍 Step 2: Trying SEMANTIC locators from description: '{element_description}'")
         
-        semantic_locator = await _find_element_by_description(page, element_description)
+        semantic_locator = await _find_element_by_description(search_context, element_description)
         
         if semantic_locator:
+            # Add iframe prefix if needed
+            if iframe_context:
+                semantic_locator = _make_composite_locator(semantic_locator)
+            
             # If expected_text provided, validate that we found the right element
             semantic_match = True
             actual_text = ""
             if expected_text:
-                semantic_match, actual_text = await _validate_semantic_match(page, semantic_locator, expected_text)
+                semantic_match, actual_text = await _validate_semantic_match(search_context, semantic_locator, expected_text)
                 if not semantic_match:
                     logger.warning(f"⚠️ Description-based locator found BUT text doesn't match!")
                     logger.warning(f"   Expected: '{expected_text}'")
@@ -2120,12 +2624,53 @@ async def find_unique_locator_at_coordinates(
     # ========================================
     logger.info(f"🔍 Step 3: Using COORDINATE-based approach at ({x}, {y})")
     
+    # For iframe elements, we need to run JavaScript INSIDE the iframe
+    # using relative coordinates (subtracting iframe position)
+    eval_context = page  # Default: run JS on main page
+    eval_x, eval_y = x, y  # Default: use original coordinates
+    
+    if iframe_context:
+        logger.info(f"🖼️ Element is inside iframe {iframe_context} - switching to iframe context")
+        try:
+            # Get the iframe's Frame object for JavaScript execution
+            iframe_locator = page.locator(iframe_context)
+            iframe_box = await iframe_locator.bounding_box()
+            
+            if iframe_box:
+                # Calculate relative coordinates inside iframe
+                eval_x = x - iframe_box['x']
+                eval_y = y - iframe_box['y']
+                logger.info(f"   📐 Relative coordinates: ({eval_x:.1f}, {eval_y:.1f})")
+                
+                # Get the iframe's content frame for JS execution
+                # NOTE: Must use element_handle() first, then content_frame()
+                iframe_element = await iframe_locator.element_handle()
+                if iframe_element:
+                    eval_context = await iframe_element.content_frame()
+                    if eval_context:
+                        logger.info(f"   ✅ Got iframe content frame for JavaScript execution")
+                    else:
+                        logger.warning(f"   ⚠️ Could not get iframe content frame - using main page")
+                        eval_context = page
+                        eval_x, eval_y = x, y
+                else:
+                    logger.warning(f"   ⚠️ Could not get iframe element handle - using main page")
+                    eval_context = page
+                    eval_x, eval_y = x, y
+            else:
+                logger.warning(f"   ⚠️ Could not get iframe bounding box - using main page")
+        except Exception as e:
+            logger.warning(f"   ⚠️ Error getting iframe context: {e}")
+            eval_context = page
+            eval_x, eval_y = x, y
+    
     # Get the element at coordinates
     try:
         # Use Playwright to get element at coordinates (Shadow DOM aware)
-        element_exists = await page.evaluate(
+        # For iframe elements, this runs inside the iframe with relative coords
+        element_exists = await eval_context.evaluate(
             SHADOW_DOM_ELEMENT_FROM_POINT_JS,
-            {"x": x, "y": y}
+            {"x": eval_x, "y": eval_y}
         )
 
         if not element_exists:
@@ -2138,9 +2683,9 @@ async def find_unique_locator_at_coordinates(
             }
         
         # Check if we got BODY or HTML (coordinates landed in empty space) - Shadow DOM aware
-        tag_check = await page.evaluate(
+        tag_check = await eval_context.evaluate(
             SHADOW_DOM_TAG_NAME_JS,
-            {"x": x, "y": y}
+            {"x": eval_x, "y": eval_y}
         )
         
         if tag_check in ['body', 'html']:
@@ -2173,8 +2718,9 @@ async def find_unique_locator_at_coordinates(
         }
 
     # Step 2: Extract all possible attributes from the element (Shadow DOM aware)
+    # For iframe elements, this runs inside the iframe with relative coords
     try:
-        element_data = await page.evaluate(
+        element_data = await eval_context.evaluate(
             """(coords) => {
                 // Shadow DOM aware element detection
                 function getElementFromPointWithShadow(root, x, y) {
@@ -2255,7 +2801,7 @@ async def find_unique_locator_at_coordinates(
                     totalSiblings: element.parentElement?.children.length || 0
                 };
             }""",
-            {"x": x, "y": y}
+            {"x": eval_x, "y": eval_y}
         )
 
         if not element_data:
@@ -2537,7 +3083,9 @@ async def find_unique_locator_at_coordinates(
             logger.info(f"   Strategy: {strategy['strategy']}")
             
             # Validate with Playwright
-            count = await page.locator(strategy['locator']).count()
+            # NOTE: Use search_context (either page or frame_locator) for validation
+            # This ensures iframe locators are validated inside the iframe
+            count = await search_context.locator(strategy['locator']).count()
             
             # Determine validation status
             is_unique = (count == 1)

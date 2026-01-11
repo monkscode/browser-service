@@ -27,6 +27,7 @@ from browser_service.agent import register_custom_actions
 from browser_service.utils.json_parser import extract_json_for_element
 from browser_service.utils.metrics import record_workflow_metrics
 from src.backend.core.config import settings
+from clients import get_client_config
 
 logger = logging.getLogger(__name__)
 
@@ -234,10 +235,30 @@ def process_workflow_task(
             VIEWPORT_WIDTH = 1920
             VIEWPORT_HEIGHT = 1080
             
+            # ========================================
+            # CLIENT-SPECIFIC CONFIGURATION
+            # ========================================
+            # Get client-specific timing and prompt hints based on URL
+            client_config = get_client_config(url)
+            logger.info(f"📋 Client config: {client_config.name}")
+            if client_config.name != "Default":
+                logger.info(f"   Timing: wait_page_load={client_config.minimum_wait_page_load_time}s, "
+                           f"network_idle={client_config.wait_for_network_idle_page_load_time}s, "
+                           f"wait_between_actions={client_config.wait_between_actions}s")
+                if client_config.system_prompt_additions:
+                    logger.info(f"   Prompt hints: {len(client_config.system_prompt_additions)} application-specific hints")
+            
             session = BrowserSession(
                 headless=session_config.get("headless", config.headless),
                 viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
-                no_viewport=False  # CRITICAL: Force browser-use to respect viewport (default is True when headless=False)
+                no_viewport=False,  # CRITICAL: Force browser-use to respect viewport (default is True when headless=False)
+                minimum_wait_page_load_time=client_config.minimum_wait_page_load_time,
+                wait_for_network_idle_page_load_time=client_config.wait_for_network_idle_page_load_time,
+                wait_between_actions=client_config.wait_between_actions,
+                # CRITICAL: Enable iframe content crawling for proper locator extraction
+                # Without this, get_browser_state_summary() only returns main page elements (~86)
+                # With this, iframe content is indexed in selector_map (2000+ elements)
+                cross_origin_iframes=True
             )
             logger.info(f"📐 Viewport set to {VIEWPORT_WIDTH}x{VIEWPORT_HEIGHT} for coordinate consistency (no_viewport=False)")
             
@@ -282,7 +303,8 @@ def process_workflow_task(
                 url=url,
                 elements=elements,
                 library_type=library_type,
-                include_custom_action=enable_custom_actions_flag
+                include_custom_action=enable_custom_actions_flag,
+                client_hints=client_config.system_prompt_additions
             )
             logger.info(f"📝 Built workflow prompt for {len(elements)} elements")
 
@@ -290,15 +312,7 @@ def process_workflow_task(
             # NOTE: browser-use 0.9.x changed parameter name from browser_context to browser_session
             # 
             # NOTE: We do NOT manually set session._original_viewport_size here.
-            # browser-use's DOM watchdog automatically sets this based on the actual page viewport
-            # (see browser_use/browser/watchdogs/dom_watchdog.py line ~495).
-            # Our coordinate scaling code in registration.py reads this value dynamically.
-            
-            # LLM Screenshot Size for coordinate scaling (from config)
-            # Gemini provides coordinates in the resized screenshot space
-            # We must scale these coordinates to the actual viewport (set automatically by browser-use)
-            LLM_SCREENSHOT_SIZE = (config.llm.llm_screenshot_width, config.llm.llm_screenshot_height)
-            
+
             agent = Agent(
                 task=unified_objective,
                 browser_session=session,
@@ -306,24 +320,19 @@ def process_workflow_task(
                     model=config.llm.google_model,
                     api_key=config.llm.google_api_key,
                     temperature=0.1,
-                    thinking_budget=0  # Disable thinking output (no <think> tags in response)
+                    thinking_budget=0
                 ),
                 use_vision=True,
                 max_steps=dynamic_max_steps,
                 system_prompt=build_system_prompt(include_custom_action=enable_custom_actions_flag),
-                use_thinking=False,  # Disable thinking process in agent output
-                calculate_cost=True  # Enable cost calculation for token tracking
-                # NOTE: Don't pass llm_screenshot_size to Agent - browser-use 0.9.7 has a bug
-                # where it uses self.logger before self.browser_session is set.
+                use_thinking=False,
+                calculate_cost=True
             )
             
-            # CRITICAL: Set llm_screenshot_size on session AFTER Agent creation
-            # browser-use 0.9.7 has two bugs:
-            # 1. If we pass llm_screenshot_size to Agent, it crashes (uses self.logger before self.browser_session is set)
-            # 2. If we don't pass it, the library sets session.llm_screenshot_size = None (overwriting any preexisting value)
-            # Solution: Set it AFTER Agent creation to ensure it persists
-            session.llm_screenshot_size = LLM_SCREENSHOT_SIZE
-            logger.info(f"🖼️  LLM screenshot resizing enabled: {LLM_SCREENSHOT_SIZE[0]}x{LLM_SCREENSHOT_SIZE[1]} (viewport: {VIEWPORT_WIDTH}x{VIEWPORT_HEIGHT})")
+            session.llm_screenshot_size = (VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
+            logger.info(f"LLM screenshot size: {VIEWPORT_WIDTH}x{VIEWPORT_HEIGHT} (matches viewport)")
+
+
 
 
             # ========================================
@@ -355,7 +364,8 @@ def process_workflow_task(
                         url=url,
                         elements=elements,
                         library_type=library_type,
-                        include_custom_action=False  # Fallback to legacy mode
+                        include_custom_action=False,  # Fallback to legacy mode
+                        client_hints=client_config.system_prompt_additions
                     )
                     agent.task = unified_objective
                     agent.system_prompt = build_system_prompt(include_custom_action=False)

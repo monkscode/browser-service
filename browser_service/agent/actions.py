@@ -94,7 +94,9 @@ async def find_unique_locator_action(
     expected_text: Optional[str] = None,
     candidate_locator: Optional[str] = None,
     element_data: Optional[Dict[str, Any]] = None,  # Element attributes from browser-use DOM
-    page=None
+    page=None,
+    iframe_context: Optional[str] = None,  # Iframe locator if element is inside an iframe
+    is_collection: Optional[bool] = None  # Collection flag for multi-element detection
 ) -> Dict[str, Any]:
     """
     Custom action that agent can call to find and validate unique locator.
@@ -119,6 +121,8 @@ async def find_unique_locator_action(
                       Used for semantic validation to ensure we found the CORRECT element.
         candidate_locator: Optional locator suggested by agent (e.g., "id=search")
         page: Playwright page object
+        iframe_context: Optional iframe locator (e.g., 'iframe[id=\"main\"]') if element is inside an iframe.
+                       When provided, locator searches will be performed inside the iframe context.
 
     Returns:
         Dict with validated locator or error:
@@ -157,6 +161,10 @@ async def find_unique_locator_action(
         logger.info(f"   Element data from index: tag=<{element_data.get('tagName', '?')}>, text=\"{element_data.get('textContent', '')[:30]}...\"")
     if candidate_locator:
         logger.info(f"   Candidate locator: {candidate_locator}")
+    if iframe_context:
+        logger.info(f"   🖼️ Iframe context: {iframe_context}")
+    if is_collection:
+        logger.info(f"   📋 Collection mode: {is_collection}")
 
     # Helper function to create structured error result
     def create_error_result(error_type: str, error_message: str, additional_context: Optional[Dict] = None) -> Dict[str, Any]:
@@ -369,9 +377,19 @@ async def find_unique_locator_action(
 
         # Call smart locator finder with timeout protection
         try:
+            # Create search context based on iframe detection
+            # If element is inside an iframe, use frame_locator for all searches
+            if iframe_context:
+                logger.info(f"🖼️ Creating frame context: page.frame_locator('{iframe_context}')")
+                search_context = page.frame_locator(iframe_context)
+            else:
+                search_context = page
+            
             result = await asyncio.wait_for(
                 find_unique_locator_at_coordinates(
                     page=page,
+                    search_context=search_context,  # Either page or frame_locator
+                    iframe_context=iframe_context,  # For composite locator generation
                     x=x,
                     y=y,
                     element_id=element_id,
@@ -379,7 +397,8 @@ async def find_unique_locator_action(
                     expected_text=expected_text,  # Pass expected_text for semantic validation
                     candidate_locator=None,  # Already validated above, so pass None
                     library_type=config.robot_library,  # Use configured library type
-                    element_data=element_data  # Pass element attributes from browser-use DOM
+                    element_data=element_data,  # Pass element attributes from browser-use DOM
+                    is_collection=is_collection  # Pass collection flag for multi-element detection
                 ),
                 timeout=settings.CUSTOM_ACTION_TIMEOUT
             )

@@ -40,6 +40,7 @@ Usage:
 import asyncio
 import atexit
 import logging
+import re
 from typing import Optional
 
 # Get logger
@@ -117,7 +118,7 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
     x, y = coords
     iframe_ordinal = 0
     
-    for idx, elem in selector_map.items():
+    for _idx, elem in selector_map.items():
         if hasattr(elem, 'node_name') and elem.node_name.lower() == 'iframe':
             if hasattr(elem, 'absolute_position') and elem.absolute_position:
                 pos = elem.absolute_position
@@ -231,7 +232,6 @@ def invalidate_playwright_cache():
 
 # CDP URL pattern: ws[s]://HOST:PORT/devtools/browser/UUID
 # Supports: ws://, wss://, IPv4, IPv6, hostnames
-import re
 _CDP_URL_PATTERN = re.compile(r'^wss?://[^\s/]+/devtools/browser/')
 
 
@@ -956,16 +956,13 @@ def register_custom_actions(agent, page=None) -> bool:
                             logger.info(f"   📊 Selector map has {len(selector_map)} elements")
                             
                             try:
-                                # Use existing selector_map (no refresh needed!)
-                                refreshed_selector_map = selector_map
-                                
                                 # Find element by coordinates in selector_map
                                 # (find smallest bounding box containing coords)
-                                if refreshed_selector_map:
+                                if selector_map:
                                     best_match = None
                                     best_area = float('inf')
                                     
-                                    for idx, elem in refreshed_selector_map.items():
+                                    for idx, elem in selector_map.items():
                                         if hasattr(elem, 'absolute_position') and elem.absolute_position:
                                             pos = elem.absolute_position
                                             # Check if coordinates are within bounding box

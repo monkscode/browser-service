@@ -101,7 +101,6 @@ def is_dropdown_element(
     
     Args:
         element_data: Dict with element attributes from browser-use DOM
-        keyword: Robot Framework keyword from test planner (e.g., "Select Options By")
         element_description: Human-readable description of the element
         
     Returns:
@@ -123,7 +122,7 @@ def is_dropdown_element(
     # Priority 3: Native <select> tag
     tag = element_data.get('tagName', '').lower() if element_data else ''
     if tag == 'select':
-        logger.debug(f"🔽 Dropdown detected via <select> tag")
+        logger.debug("🔽 Dropdown detected via <select> tag")
         return True
     
     # Priority 4: CSS class patterns (framework-specific)
@@ -225,7 +224,7 @@ async def _shorten_xpath(page, full_xpath: str) -> tuple[str, bool]:
         except Exception:
             continue
     
-    logger.debug(f"   ⚠️ Could not shorten xpath (no unique suffix found)")
+    logger.debug("   ⚠️ Could not shorten xpath (no unique suffix found)")
     return full_xpath if full_xpath.startswith('xpath=') else f"xpath={full_xpath}", False
 
 
@@ -1745,7 +1744,7 @@ async def _generate_locators_from_element_data(
         # PRIMARY METHOD: Use expected_text as a beacon to find the actual row container
         # This works even when element_data is from a wrong parent container
         if expected_text:
-            text_result = await _find_collection_by_text_traversal(page, expected_text)
+            text_result = await _find_collection_by_text_traversal(search_context, expected_text)
             
             if text_result and text_result.get('locator'):
                 collection_locator = text_result['locator']
@@ -1804,11 +1803,11 @@ async def _generate_locators_from_element_data(
         if collection_class:
             logger.info(f"   📦 Collection class from element_data: '{collection_class}'")
             
-            collection_locator = await _find_collection_locator(page, element_data, collection_class)
+            collection_locator = await _find_collection_locator(search_context, element_data, collection_class)
             
             if collection_locator:
                 try:
-                    count = await page.locator(collection_locator).count()
+                    count = await search_context.locator(collection_locator).count()
                     
                     if count > 1:
                         # VALIDATION: Check if matched elements contain expected_text
@@ -1816,7 +1815,7 @@ async def _generate_locators_from_element_data(
                             text_found = False
                             try:
                                 for i in range(min(count, 3)):
-                                    el_text = await page.locator(collection_locator).nth(i).text_content() or ""
+                                    el_text = await search_context.locator(collection_locator).nth(i).text_content() or ""
                                     if expected_text.lower() in el_text.lower():
                                         text_found = True
                                         break
@@ -2020,7 +2019,7 @@ async def _generate_locators_from_element_data(
             full_xpath = element_data['xpath']
             
             # Add shortened xpath with higher priority (more stable)
-            shortened_xpath, was_shortened = await _shorten_xpath(page, full_xpath)
+            shortened_xpath, was_shortened = await _shorten_xpath(search_context, full_xpath)
             if was_shortened:
                 locator_candidates.append({
                     'locator': shortened_xpath,

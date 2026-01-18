@@ -79,6 +79,7 @@ def _escape_css_selector(value: str) -> str:
         if char.isalnum() or char in '-_':
             result += char
         elif char == ' ':
+            logger.debug(f"Skipping multi-word class in CSS escape: '{value}'")
             return ''  # Multi-word classes should be handled separately
         else:
             result += f'\\{char}'  # CSS escape
@@ -2363,6 +2364,22 @@ async def find_unique_locator_at_coordinates(
             element_data = None  # Force STEP 1/2/3 to find element inside iframe
     
     # ========================================
+    # APPROACH METRICS: Build base dict for pattern analysis
+    # ========================================
+    # Captures element characteristics to enable future pattern analysis
+    # (e.g., "buttons work better with text_first approach")
+    # NOTE: This must be AFTER the iframe reset above to capture the actual
+    # target element's characteristics, not the iframe container's.
+    _approach_metrics_base = {
+        'element_tag': element_data.get('tagName', '').lower() if element_data else '',
+        'has_id': bool(element_data.get('id')) if element_data else False,
+        'has_text_content': bool(element_data.get('textContent', '').strip()) if element_data else False,
+        'element_data_available': bool(element_data),
+        'is_collection': is_collection is True,
+        'is_in_iframe': bool(iframe_context),
+    }
+    
+    # ========================================
     # STEP 0: ELEMENT-DATA approach (highest priority - FASTEST)
     # ========================================
     # When element_index is provided, we already have element attributes from browser-use DOM.
@@ -2374,6 +2391,13 @@ async def find_unique_locator_at_coordinates(
             confirmed_coords=(x, y) if x is not None and y is not None else None  # Use explicit None checks (0 is valid coord)
         )
         if result:
+            # Add approach metrics for pattern analysis
+            result['approach_metrics'] = {
+                **_approach_metrics_base,
+                'locator_approach': 'element_data',
+                'fallback_depth': 1,
+                'success': True,
+            }
             # Add iframe prefix to best_locator AND all_locators
             return _apply_iframe_prefix_to_result(result)
 
@@ -2389,6 +2413,13 @@ async def find_unique_locator_at_coordinates(
             expected_text, x, y
         )
         if result:
+            # Add approach metrics for pattern analysis
+            result['approach_metrics'] = {
+                **_approach_metrics_base,
+                'locator_approach': 'candidate',
+                'fallback_depth': 2,
+                'success': True,
+            }
             # Add iframe prefix to best_locator AND all_locators
             return _apply_iframe_prefix_to_result(result)
     
@@ -2470,7 +2501,14 @@ async def find_unique_locator_at_coordinates(
                     'unique': False,  # Collections are never unique (even if count==1)
                     'valid': True,
                     'semantic_match': True,
-                    'validation_method': 'playwright'
+                    'validation_method': 'playwright',
+                    # Approach metrics for pattern analysis
+                    'approach_metrics': {
+                        **_approach_metrics_base,
+                        'locator_approach': 'collection',
+                        'fallback_depth': 3,
+                        'success': True,
+                    }
                 }
             else:
                 logger.info(f"   ⚠️ Collection found but count={count}, no explicit flag, falling through to single-element")
@@ -2541,7 +2579,14 @@ async def find_unique_locator_at_coordinates(
                 'unique': True,
                 'valid': True,
                 'semantic_match': True,
-                'validation_method': 'playwright'
+                'validation_method': 'playwright',
+                # Approach metrics for pattern analysis
+                'approach_metrics': {
+                    **_approach_metrics_base,
+                    'locator_approach': 'text_first',
+                    'fallback_depth': 4,
+                    'success': True,
+                }
             }
         else:
             logger.info(f"⚠️ TEXT-FIRST approach failed - trying table cell locators")
@@ -2612,7 +2657,14 @@ async def find_unique_locator_at_coordinates(
                     'unique': True,
                     'valid': True,
                     'semantic_match': semantic_match,
-                    'validation_method': 'playwright'
+                    'validation_method': 'playwright',
+                    # Approach metrics for pattern analysis
+                    'approach_metrics': {
+                        **_approach_metrics_base,
+                        'locator_approach': 'semantic',
+                        'fallback_depth': 5,
+                        'success': True,
+                    }
                 }
         else:
             logger.info(f"⚠️ Semantic approach failed - falling back to coordinate-based approach")
@@ -2679,7 +2731,14 @@ async def find_unique_locator_at_coordinates(
                 "element_id": element_id,
                 "description": element_description,
                 "found": False,
-                "error": f"No element at coordinates ({x}, {y}) and semantic approach also failed"
+                "error": f"No element at coordinates ({x}, {y}) and semantic approach also failed",
+                # Track failure metrics for pattern analysis
+                'approach_metrics': {
+                    **_approach_metrics_base,
+                    'locator_approach': 'coordinate_fallback',
+                    'fallback_depth': 6,
+                    'success': False,
+                }
             }
         
         # Check if we got BODY or HTML (coordinates landed in empty space) - Shadow DOM aware
@@ -2706,6 +2765,13 @@ async def find_unique_locator_at_coordinates(
                     'best_type': None,
                     'best_strategy': None,
                     'validation_method': 'playwright'
+                },
+                # Track failure metrics for pattern analysis
+                'approach_metrics': {
+                    **_approach_metrics_base,
+                    'locator_approach': 'coordinate_fallback',
+                    'fallback_depth': 6,
+                    'success': False,
                 }
             }
 
@@ -2714,7 +2780,14 @@ async def find_unique_locator_at_coordinates(
         return {
             "element_id": element_id,
             "found": False,
-            "error": str(e)
+            "error": str(e),
+            # Track failure metrics for pattern analysis
+            'approach_metrics': {
+                **_approach_metrics_base,
+                'locator_approach': 'coordinate_fallback',
+                'fallback_depth': 6,
+                'success': False,
+            }
         }
 
     # Step 2: Extract all possible attributes from the element (Shadow DOM aware)
@@ -3288,12 +3361,26 @@ async def find_unique_locator_at_coordinates(
         result['unique'] = True
         result['valid'] = True
         result['validation_method'] = 'playwright'
+        # Approach metrics for pattern analysis (coordinate_fallback succeeded)
+        result['approach_metrics'] = {
+            **_approach_metrics_base,
+            'locator_approach': 'coordinate_fallback',
+            'fallback_depth': 6,
+            'success': True,
+        }
     else:
         result['validated'] = True  # Validation was attempted
         result['count'] = 0  # No unique locator found
         result['unique'] = False
         result['valid'] = False
         result['validation_method'] = 'playwright'
+        # Approach metrics for pattern analysis (all approaches failed)
+        result['approach_metrics'] = {
+            **_approach_metrics_base,
+            'locator_approach': 'coordinate_fallback',
+            'fallback_depth': 6,
+            'success': False,
+        }
     
     # Log validation summary
     logger.info(f"")

@@ -85,7 +85,9 @@ def record_workflow_metrics(
             "custom_action_usage_count": custom_action_usage_count,
             "execution_time": execution_time,
             "url": url,
-            "session_id": session_id
+            "session_id": session_id,
+            # Per-element approach metrics for pattern analysis
+            "element_approach_metrics": summary.get('element_approach_metrics', [])
         }
 
         # Get the backend API URL

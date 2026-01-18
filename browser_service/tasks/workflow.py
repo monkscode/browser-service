@@ -2022,12 +2022,15 @@ def process_workflow_task(
             
             element_approach_metrics = []
             for result in results_list:
-                approach_data = result.get('approach_metrics', {})
+                approach_data = result.get('approach_metrics')
                 if approach_data:
-                    # Add element_id and url_domain to each approach metrics entry
-                    approach_data['element_id'] = result.get('element_id', '')
-                    approach_data['url_domain'] = url_domain
-                    element_approach_metrics.append(approach_data)
+                    # Create new dict to avoid mutating original result
+                    approach_entry = {
+                        **approach_data,
+                        'element_id': result.get('element_id', ''),
+                        'url_domain': url_domain,
+                    }
+                    element_approach_metrics.append(approach_entry)
 
             return {
                 'success': all_found,  # Changed from 'successful > 0' to require ALL elements found

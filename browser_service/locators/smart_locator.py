@@ -2325,20 +2325,6 @@ async def find_unique_locator_at_coordinates(
     if search_context is None:
         search_context = page
     
-    # ========================================
-    # APPROACH METRICS: Build base dict for pattern analysis
-    # ========================================
-    # Captures element characteristics to enable future pattern analysis
-    # (e.g., "buttons work better with text_first approach")
-    _approach_metrics_base = {
-        'element_tag': element_data.get('tagName', '').lower() if element_data else '',
-        'has_id': bool(element_data.get('id')) if element_data else False,
-        'has_text_content': bool(element_data.get('textContent', '').strip()) if element_data else False,
-        'element_data_available': bool(element_data),
-        'is_collection': is_collection is True,
-        'is_in_iframe': bool(iframe_context),
-    }
-    
     # Helper function to create composite locator for iframe elements
     def _make_composite_locator(locator: str) -> str:
         """Prefix locator with iframe context if element is inside iframe."""
@@ -2376,6 +2362,22 @@ async def find_unique_locator_at_coordinates(
             logger.info(f"⚠️ element_data is the iframe container (tagName={element_tag})")
             logger.info(f"   Resetting element_data - will search inside {iframe_context} for actual element")
             element_data = None  # Force STEP 1/2/3 to find element inside iframe
+    
+    # ========================================
+    # APPROACH METRICS: Build base dict for pattern analysis
+    # ========================================
+    # Captures element characteristics to enable future pattern analysis
+    # (e.g., "buttons work better with text_first approach")
+    # NOTE: This must be AFTER the iframe reset above to capture the actual
+    # target element's characteristics, not the iframe container's.
+    _approach_metrics_base = {
+        'element_tag': element_data.get('tagName', '').lower() if element_data else '',
+        'has_id': bool(element_data.get('id')) if element_data else False,
+        'has_text_content': bool(element_data.get('textContent', '').strip()) if element_data else False,
+        'element_data_available': bool(element_data),
+        'is_collection': is_collection is True,
+        'is_in_iframe': bool(iframe_context),
+    }
     
     # ========================================
     # STEP 0: ELEMENT-DATA approach (highest priority - FASTEST)
@@ -2729,7 +2731,14 @@ async def find_unique_locator_at_coordinates(
                 "element_id": element_id,
                 "description": element_description,
                 "found": False,
-                "error": f"No element at coordinates ({x}, {y}) and semantic approach also failed"
+                "error": f"No element at coordinates ({x}, {y}) and semantic approach also failed",
+                # Track failure metrics for pattern analysis
+                'approach_metrics': {
+                    **_approach_metrics_base,
+                    'locator_approach': 'coordinate_fallback',
+                    'fallback_depth': 6,
+                    'success': False,
+                }
             }
         
         # Check if we got BODY or HTML (coordinates landed in empty space) - Shadow DOM aware
@@ -2756,6 +2765,13 @@ async def find_unique_locator_at_coordinates(
                     'best_type': None,
                     'best_strategy': None,
                     'validation_method': 'playwright'
+                },
+                # Track failure metrics for pattern analysis
+                'approach_metrics': {
+                    **_approach_metrics_base,
+                    'locator_approach': 'coordinate_fallback',
+                    'fallback_depth': 6,
+                    'success': False,
                 }
             }
 
@@ -2764,7 +2780,14 @@ async def find_unique_locator_at_coordinates(
         return {
             "element_id": element_id,
             "found": False,
-            "error": str(e)
+            "error": str(e),
+            # Track failure metrics for pattern analysis
+            'approach_metrics': {
+                **_approach_metrics_base,
+                'locator_approach': 'coordinate_fallback',
+                'fallback_depth': 6,
+                'success': False,
+            }
         }
 
     # Step 2: Extract all possible attributes from the element (Shadow DOM aware)

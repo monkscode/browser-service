@@ -79,6 +79,7 @@ def _escape_css_selector(value: str) -> str:
         if char.isalnum() or char in '-_':
             result += char
         elif char == ' ':
+            logger.debug(f"Skipping multi-word class in CSS escape: '{value}'")
             return ''  # Multi-word classes should be handled separately
         else:
             result += f'\\{char}'  # CSS escape
@@ -2324,6 +2325,20 @@ async def find_unique_locator_at_coordinates(
     if search_context is None:
         search_context = page
     
+    # ========================================
+    # APPROACH METRICS: Build base dict for pattern analysis
+    # ========================================
+    # Captures element characteristics to enable future pattern analysis
+    # (e.g., "buttons work better with text_first approach")
+    _approach_metrics_base = {
+        'element_tag': element_data.get('tagName', '').lower() if element_data else '',
+        'has_id': bool(element_data.get('id')) if element_data else False,
+        'has_text_content': bool(element_data.get('textContent', '').strip()) if element_data else False,
+        'element_data_available': bool(element_data),
+        'is_collection': is_collection is True,
+        'is_in_iframe': bool(iframe_context),
+    }
+    
     # Helper function to create composite locator for iframe elements
     def _make_composite_locator(locator: str) -> str:
         """Prefix locator with iframe context if element is inside iframe."""
@@ -2374,6 +2389,13 @@ async def find_unique_locator_at_coordinates(
             confirmed_coords=(x, y) if x is not None and y is not None else None  # Use explicit None checks (0 is valid coord)
         )
         if result:
+            # Add approach metrics for pattern analysis
+            result['approach_metrics'] = {
+                **_approach_metrics_base,
+                'locator_approach': 'element_data',
+                'fallback_depth': 1,
+                'success': True,
+            }
             # Add iframe prefix to best_locator AND all_locators
             return _apply_iframe_prefix_to_result(result)
 
@@ -2389,6 +2411,13 @@ async def find_unique_locator_at_coordinates(
             expected_text, x, y
         )
         if result:
+            # Add approach metrics for pattern analysis
+            result['approach_metrics'] = {
+                **_approach_metrics_base,
+                'locator_approach': 'candidate',
+                'fallback_depth': 2,
+                'success': True,
+            }
             # Add iframe prefix to best_locator AND all_locators
             return _apply_iframe_prefix_to_result(result)
     
@@ -2470,7 +2499,14 @@ async def find_unique_locator_at_coordinates(
                     'unique': False,  # Collections are never unique (even if count==1)
                     'valid': True,
                     'semantic_match': True,
-                    'validation_method': 'playwright'
+                    'validation_method': 'playwright',
+                    # Approach metrics for pattern analysis
+                    'approach_metrics': {
+                        **_approach_metrics_base,
+                        'locator_approach': 'collection',
+                        'fallback_depth': 3,
+                        'success': True,
+                    }
                 }
             else:
                 logger.info(f"   ⚠️ Collection found but count={count}, no explicit flag, falling through to single-element")
@@ -2541,7 +2577,14 @@ async def find_unique_locator_at_coordinates(
                 'unique': True,
                 'valid': True,
                 'semantic_match': True,
-                'validation_method': 'playwright'
+                'validation_method': 'playwright',
+                # Approach metrics for pattern analysis
+                'approach_metrics': {
+                    **_approach_metrics_base,
+                    'locator_approach': 'text_first',
+                    'fallback_depth': 4,
+                    'success': True,
+                }
             }
         else:
             logger.info(f"⚠️ TEXT-FIRST approach failed - trying table cell locators")
@@ -2612,7 +2655,14 @@ async def find_unique_locator_at_coordinates(
                     'unique': True,
                     'valid': True,
                     'semantic_match': semantic_match,
-                    'validation_method': 'playwright'
+                    'validation_method': 'playwright',
+                    # Approach metrics for pattern analysis
+                    'approach_metrics': {
+                        **_approach_metrics_base,
+                        'locator_approach': 'semantic',
+                        'fallback_depth': 5,
+                        'success': True,
+                    }
                 }
         else:
             logger.info(f"⚠️ Semantic approach failed - falling back to coordinate-based approach")
@@ -3288,12 +3338,26 @@ async def find_unique_locator_at_coordinates(
         result['unique'] = True
         result['valid'] = True
         result['validation_method'] = 'playwright'
+        # Approach metrics for pattern analysis (coordinate_fallback succeeded)
+        result['approach_metrics'] = {
+            **_approach_metrics_base,
+            'locator_approach': 'coordinate_fallback',
+            'fallback_depth': 6,
+            'success': True,
+        }
     else:
         result['validated'] = True  # Validation was attempted
         result['count'] = 0  # No unique locator found
         result['unique'] = False
         result['valid'] = False
         result['validation_method'] = 'playwright'
+        # Approach metrics for pattern analysis (all approaches failed)
+        result['approach_metrics'] = {
+            **_approach_metrics_base,
+            'locator_approach': 'coordinate_fallback',
+            'fallback_depth': 6,
+            'success': False,
+        }
     
     # Log validation summary
     logger.info(f"")

@@ -2012,6 +2012,23 @@ def process_workflow_task(
             all_found = successful == len(
                 results_list) and len(results_list) > 0
 
+            # ========================================
+            # COLLECT ELEMENT APPROACH METRICS
+            # ========================================
+            # Extract approach_metrics from each element result for pattern analysis
+            # This enables tracking which locator approach worked best for different element types
+            from urllib.parse import urlparse
+            url_domain = urlparse(url).netloc if url else ""
+            
+            element_approach_metrics = []
+            for result in results_list:
+                approach_data = result.get('approach_metrics', {})
+                if approach_data:
+                    # Add element_id and url_domain to each approach metrics entry
+                    approach_data['element_id'] = result.get('element_id', '')
+                    approach_data['url_domain'] = url_domain
+                    element_approach_metrics.append(approach_data)
+
             return {
                 'success': all_found,  # Changed from 'successful > 0' to require ALL elements found
                 'workflow_mode': True,
@@ -2031,7 +2048,9 @@ def process_workflow_task(
                     'input_tokens': token_usage['input_tokens'],
                     'output_tokens': token_usage['output_tokens'],
                     'cached_tokens': token_usage['cached_tokens'],
-                    'actual_cost': token_usage['actual_cost']
+                    'actual_cost': token_usage['actual_cost'],
+                    # Per-element approach metrics for pattern analysis
+                    'element_approach_metrics': element_approach_metrics
                 },
                 'validation_summary': validation_summary,  # Add validation summary to results
                 'execution_time': execution_time,

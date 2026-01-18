@@ -319,7 +319,19 @@ async def find_unique_locator_action(
                             'count': count,
                             'unique': True,
                             'valid': True,
-                            'validation_method': 'playwright'
+                            'validation_method': 'playwright',
+                            # Per-element approach metrics for pattern analysis
+                            'approach_metrics': {
+                                'locator_approach': 'actions_candidate',
+                                'fallback_depth': 0,  # Best case - candidate worked
+                                'success': True,
+                                'element_tag': '',  # Not available in this path
+                                'has_id': 'id=' in final_locator.lower(),
+                                'has_text_content': False,  # Not available
+                                'element_data_available': False,
+                                'is_collection': is_collection is True,
+                                'is_in_iframe': bool(iframe_context),
+                            }
                         }
                     elif count > 1:
                         logger.info(f"   ⚠️ Candidate locator NOT UNIQUE (matches {count} elements)")

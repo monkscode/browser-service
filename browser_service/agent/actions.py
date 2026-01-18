@@ -284,6 +284,7 @@ async def find_unique_locator_action(
                         logger.info(f"{'='*80}")
                         logger.info("")
 
+                        locator_lower = final_locator.lower().lstrip()
                         return {
                             'element_id': element_id,
                             'description': element_description,
@@ -326,7 +327,14 @@ async def find_unique_locator_action(
                                 'fallback_depth': 0,  # Best case - candidate worked
                                 'success': True,
                                 'element_tag': '',  # Not available in this path
-                                'has_id': any(x in final_locator.lower() for x in ['id=', '#', '[id=']),
+                                'has_id': (
+                                    locator_lower.startswith('#')
+                                    or '[id=' in locator_lower
+                                    or (
+                                        'id=' in locator_lower
+                                        and not any(k in locator_lower for k in ('data-testid=', 'data-test=', 'data-qa='))
+                                    )
+                                ),
                                 'has_text_content': False,  # Not available
                                 'element_data_available': False,
                                 'is_collection': is_collection is True,

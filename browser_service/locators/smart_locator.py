@@ -1315,6 +1315,921 @@ async def _find_element_by_description(page, description: str) -> Optional[str]:
         return None
 
 
+# =============================================================================
+# ACCESSIBILITY API FALLBACK STRATEGY (STEP 2.5)
+# =============================================================================
+# These functions use Playwright's accessibility features to generate robust
+# role-based locators. This is a fallback that queries the LIVE DOM (not cached
+# indices), solving stale index issues and working reliably with dynamic content.
+# =============================================================================
+
+
+async def _find_element_by_playwright_role(
+    search_context,
+    expected_text: str,
+    element_description: str,
+    iframe_context: Optional[str] = None
+) -> Optional[dict]:
+    """
+    Find element using Playwright's native getBy* APIs (100% MCP parity).
+    
+    This is COORDINATE-INDEPENDENT and follows Microsoft's recommended approach.
+    Uses the accessibility tree directly without needing pixel coordinates.
+    
+    Priority order (Microsoft/Playwright MCP recommendation):
+    1. getByRole with name - Most stable, matches ARIA roles (exact match)
+    2. getByLabel - For form inputs with associated labels
+    3. getByPlaceholder - For text inputs with placeholder
+    4. getByRole (partial) - Role match with partial name
+    5. getByAltText - For images with alt attribute
+    6. getByTitle - For elements with title attribute
+    
+    Args:
+        search_context: Page or frame_locator for the target context
+        expected_text: The visible text/label to search for
+        element_description: Human-readable description for context
+        iframe_context: Optional iframe locator for composite locators
+        
+    Returns:
+        Dict with locator, count, and metadata if found, None otherwise
+    """
+    if not expected_text or len(expected_text.strip()) < MIN_TEXT_LENGTH:
+        return None
+    
+    text = expected_text.strip()
+    desc_lower = element_description.lower() if element_description else ""
+    
+    logger.info(f"   🎯 PLAYWRIGHT ROLE: Trying native Playwright accessibility APIs")
+    logger.info(f"      Text: '{text[:40]}...' | Description: '{desc_lower[:40]}...'")
+    
+    def apply_iframe_prefix(locator: str) -> str:
+        if iframe_context and not locator.startswith(iframe_context):
+            return f"{iframe_context} >>> {locator}"
+        return locator
+    
+    # Map description keywords to likely roles
+    role_hints = []
+    if any(kw in desc_lower for kw in ['button', 'submit', 'click', 'press']):
+        role_hints.append('button')
+    if any(kw in desc_lower for kw in ['link', 'navigate', 'go to']):
+        role_hints.append('link')
+    if any(kw in desc_lower for kw in ['input', 'text', 'field', 'enter', 'type']):
+        role_hints.extend(['textbox', 'combobox', 'searchbox'])
+    if any(kw in desc_lower for kw in ['checkbox', 'check', 'tick']):
+        role_hints.append('checkbox')
+    if any(kw in desc_lower for kw in ['radio', 'option']):
+        role_hints.append('radio')
+    if any(kw in desc_lower for kw in ['tab']):
+        role_hints.append('tab')
+    if any(kw in desc_lower for kw in ['menu', 'dropdown']):
+        role_hints.extend(['menuitem', 'option'])
+    if any(kw in desc_lower for kw in ['heading', 'title']):
+        role_hints.append('heading')
+    
+    # Common ARIA roles to try for interactive elements
+    common_roles = ['button', 'link', 'textbox', 'combobox', 'checkbox', 
+                    'radio', 'tab', 'menuitem', 'option', 'searchbox']
+    
+    # Prioritize hinted roles, then try common roles
+    roles_to_try = role_hints + [r for r in common_roles if r not in role_hints]
+    
+    # Track what we tried for debugging
+    attempts = []
+    
+    try:
+        # Strategy 1: getByRole with exact name match
+        for role in roles_to_try:
+            try:
+                locator_obj = search_context.get_by_role(role, name=text, exact=True)
+                count = await locator_obj.count()
+                attempts.append(f"role={role}[name=\"{text}\"] -> {count}")
+                
+                if count == 1:
+                    # Convert to string locator for Robot Framework compatibility
+                    locator_str = f'role={role}[name="{text}"]'
+                    locator_str = apply_iframe_prefix(locator_str)
+                    
+                    logger.info(f"   ✅ PLAYWRIGHT ROLE SUCCESS: {locator_str}")
+                    return {
+                        'locator': locator_str,
+                        'count': 1,
+                        'unique': True,
+                        'role': role,
+                        'accessible_name': text,
+                        'element_type': role,
+                        'strategy': f'playwright_get_by_role_{role}'
+                    }
+            except Exception:
+                pass  # Role not applicable, continue
+        
+        # Strategy 2: getByLabel - for form inputs
+        try:
+            locator_obj = search_context.get_by_label(text, exact=True)
+            count = await locator_obj.count()
+            attempts.append(f"label=\"{text}\" -> {count}")
+            
+            if count == 1:
+                locator_str = f'[aria-label="{text}"]'  # Closest RF equivalent
+                locator_str = apply_iframe_prefix(locator_str)
+                
+                logger.info(f"   ✅ PLAYWRIGHT LABEL SUCCESS: {locator_str}")
+                return {
+                    'locator': locator_str,
+                    'count': 1,
+                    'unique': True,
+                    'role': 'textbox',  # Most common for labeled inputs
+                    'accessible_name': text,
+                    'element_type': 'labeled-input',
+                    'strategy': 'playwright_get_by_label'
+                }
+        except Exception:
+            pass
+        
+        # Strategy 3: getByPlaceholder - for text inputs
+        try:
+            locator_obj = search_context.get_by_placeholder(text, exact=True)
+            count = await locator_obj.count()
+            attempts.append(f"placeholder=\"{text}\" -> {count}")
+            
+            if count == 1:
+                locator_str = f'[placeholder="{text}"]'
+                locator_str = apply_iframe_prefix(locator_str)
+                
+                logger.info(f"   ✅ PLAYWRIGHT PLACEHOLDER SUCCESS: {locator_str}")
+                return {
+                    'locator': locator_str,
+                    'count': 1,
+                    'unique': True,
+                    'role': 'textbox',
+                    'accessible_name': text,
+                    'element_type': 'placeholder-input',
+                    'strategy': 'playwright_get_by_placeholder'
+                }
+        except Exception:
+            pass
+        
+        # Strategy 4: getByRole with partial name match (less strict)
+        for role in roles_to_try[:5]:  # Only try top 5 roles for partial match
+            try:
+                locator_obj = search_context.get_by_role(role, name=text, exact=False)
+                count = await locator_obj.count()
+                attempts.append(f"role={role}[name~=\"{text}\"] -> {count}")
+                
+                if count == 1:
+                    locator_str = f'role={role}[name="{text}"]'
+                    locator_str = apply_iframe_prefix(locator_str)
+                    
+                    logger.info(f"   ✅ PLAYWRIGHT ROLE (partial) SUCCESS: {locator_str}")
+                    return {
+                        'locator': locator_str,
+                        'count': 1,
+                        'unique': True,
+                        'role': role,
+                        'accessible_name': text,
+                        'element_type': role,
+                        'strategy': f'playwright_get_by_role_{role}_partial'
+                    }
+            except Exception:
+                pass
+        
+        # Strategy 5: getByAltText - for images (MCP parity)
+        try:
+            locator_obj = search_context.get_by_alt_text(text, exact=True)
+            count = await locator_obj.count()
+            attempts.append(f"alt=\"{text}\" -> {count}")
+            
+            if count == 1:
+                locator_str = f'[alt="{text}"]'
+                locator_str = apply_iframe_prefix(locator_str)
+                
+                logger.info(f"   ✅ PLAYWRIGHT ALT TEXT SUCCESS: {locator_str}")
+                return {
+                    'locator': locator_str,
+                    'count': 1,
+                    'unique': True,
+                    'role': 'img',
+                    'accessible_name': text,
+                    'element_type': 'image',
+                    'strategy': 'playwright_get_by_alt_text'
+                }
+        except Exception:
+            pass
+        
+        # Strategy 6: getByTitle - for elements with title attribute (MCP parity)
+        try:
+            locator_obj = search_context.get_by_title(text, exact=True)
+            count = await locator_obj.count()
+            attempts.append(f"title=\"{text}\" -> {count}")
+            
+            if count == 1:
+                locator_str = f'[title="{text}"]'
+                locator_str = apply_iframe_prefix(locator_str)
+                
+                logger.info(f"   ✅ PLAYWRIGHT TITLE SUCCESS: {locator_str}")
+                return {
+                    'locator': locator_str,
+                    'count': 1,
+                    'unique': True,
+                    'role': 'generic',
+                    'accessible_name': text,
+                    'element_type': 'titled-element',
+                    'strategy': 'playwright_get_by_title'
+                }
+        except Exception:
+            pass
+        
+        # Log attempts for debugging
+        logger.info(f"   ⚠️ PLAYWRIGHT ROLE: No unique match found")
+        if attempts:
+            logger.info(f"      Tried: {', '.join(attempts[:5])}...")
+        
+        return None
+        
+    except Exception as e:
+        logger.warning(f"   ⚠️ PLAYWRIGHT ROLE error: {e}")
+        return None
+
+
+
+async def _find_element_via_accessibility_tree(
+    page,
+    expected_text: Optional[str] = None,
+    element_description: Optional[str] = None,
+    iframe_context: Optional[str] = None
+) -> Optional[dict]:
+    """
+    STEP 2.5c: Full Accessibility Tree Search (MCP Parity)
+    
+    Uses Playwright's NATIVE accessibility APIs to search the entire page.
+    No custom JavaScript - automatically benefits from Playwright updates.
+    
+    Capabilities:
+    - Full Accessibility Tree: Uses Playwright's built-in getBy* methods
+    - Tree Search: Searches all elements by role/text/label
+    - Fallback Matching: Exact → Partial → Contains (via regex)
+    - No Coordinate Dependency: Pure text/role based search
+    
+    Args:
+        page: Playwright page object
+        expected_text: Text to search for in element names
+        element_description: Description to derive role hints
+        iframe_context: Optional iframe locator prefix
+        
+    Returns:
+        Dict with locator, count, and metadata if found, None otherwise
+    """
+    import re
+    
+    if not expected_text:
+        return None
+    
+    logger.info(f"   🌳 STEP 2.5c: Searching via Playwright native APIs for '{expected_text}'")
+    
+    def apply_iframe_prefix(locator: str) -> str:
+        if iframe_context and not locator.startswith(iframe_context):
+            return f"{iframe_context} >>> {locator}"
+        return locator
+    
+    # Derive role hints from description
+    desc_lower = element_description.lower() if element_description else ""
+    role_hints = []
+    if any(kw in desc_lower for kw in ['button', 'submit', 'click']):
+        role_hints.append('button')
+    if any(kw in desc_lower for kw in ['link', 'navigate', 'go to', 'menu']):
+        role_hints.append('link')
+    if any(kw in desc_lower for kw in ['input', 'text', 'field', 'enter', 'type', 'search']):
+        role_hints.extend(['textbox', 'combobox', 'searchbox'])
+    if any(kw in desc_lower for kw in ['checkbox', 'check']):
+        role_hints.append('checkbox')
+    if any(kw in desc_lower for kw in ['dropdown', 'select']):
+        role_hints.extend(['combobox', 'listbox'])
+    
+    # If no role hints from description, try all common roles
+    if not role_hints:
+        role_hints = ['link', 'button', 'textbox', 'combobox', 'checkbox', 'menuitem', 'tab']
+    
+    # Create regex pattern for flexible matching
+    escaped_text = re.escape(expected_text)
+    text_pattern = re.compile(escaped_text, re.IGNORECASE)
+    
+    try:
+        # Strategy 1: Try role-based search with Playwright's get_by_role
+        # This uses Playwright's built-in accessibility tree traversal
+        for role in role_hints:
+            try:
+                # Exact match
+                locator_obj = page.get_by_role(role, name=expected_text, exact=True)
+                count = await locator_obj.count()
+                
+                if count == 1:
+                    safe_name = expected_text.replace('"', '\\"')
+                    locator_str = f'role={role}[name="{safe_name}"]'
+                    locator_str = apply_iframe_prefix(locator_str)
+                    
+                    logger.info(f"   ✅ NATIVE API SUCCESS (exact): {locator_str}")
+                    return {
+                        'locator': locator_str,
+                        'count': 1,
+                        'unique': True,
+                        'role': role,
+                        'accessible_name': expected_text,
+                        'element_type': role,
+                        'strategy': 'playwright_native_exact'
+                    }
+                
+                # Partial match (case-insensitive, substring)
+                locator_obj = page.get_by_role(role, name=expected_text, exact=False)
+                count = await locator_obj.count()
+                
+                if count == 1:
+                    safe_name = expected_text.replace('"', '\\"')
+                    locator_str = f'role={role}[name="{safe_name}"]'
+                    locator_str = apply_iframe_prefix(locator_str)
+                    
+                    logger.info(f"   ✅ NATIVE API SUCCESS (partial): {locator_str}")
+                    return {
+                        'locator': locator_str,
+                        'count': 1,
+                        'unique': True,
+                        'role': role,
+                        'accessible_name': expected_text,
+                        'element_type': role,
+                        'strategy': 'playwright_native_partial'
+                    }
+                    
+                # Regex match for more flexible matching
+                locator_obj = page.get_by_role(role, name=text_pattern)
+                count = await locator_obj.count()
+                
+                if count == 1:
+                    safe_name = expected_text.replace('"', '\\"')
+                    locator_str = f'role={role}[name="{safe_name}"]'
+                    locator_str = apply_iframe_prefix(locator_str)
+                    
+                    logger.info(f"   ✅ NATIVE API SUCCESS (regex): {locator_str}")
+                    return {
+                        'locator': locator_str,
+                        'count': 1,
+                        'unique': True,
+                        'role': role,
+                        'accessible_name': expected_text,
+                        'element_type': role,
+                        'strategy': 'playwright_native_regex'
+                    }
+                    
+            except Exception as e:
+                logger.debug(f"   Role {role} search failed: {e}")
+                continue
+        
+        # Strategy 2: Try get_by_text (searches visible text content)
+        try:
+            locator_obj = page.get_by_text(expected_text, exact=True)
+            count = await locator_obj.count()
+            
+            if count == 1:
+                # Get the text locator string
+                locator_str = f'text="{expected_text}"'
+                locator_str = apply_iframe_prefix(locator_str)
+                
+                logger.info(f"   ✅ NATIVE TEXT SUCCESS: {locator_str}")
+                return {
+                    'locator': locator_str,
+                    'count': 1,
+                    'unique': True,
+                    'accessible_name': expected_text,
+                    'element_type': 'text',
+                    'strategy': 'playwright_get_by_text'
+                }
+        except Exception:
+            pass
+        
+        # Strategy 3: Try get_by_text with partial match
+        try:
+            locator_obj = page.get_by_text(expected_text, exact=False)
+            count = await locator_obj.count()
+            
+            if count == 1:
+                locator_str = f'text="{expected_text}"'
+                locator_str = apply_iframe_prefix(locator_str)
+                
+                logger.info(f"   ✅ NATIVE TEXT (partial) SUCCESS: {locator_str}")
+                return {
+                    'locator': locator_str,
+                    'count': 1,
+                    'unique': True,
+                    'accessible_name': expected_text,
+                    'element_type': 'text',
+                    'strategy': 'playwright_get_by_text_partial'
+                }
+        except Exception:
+            pass
+        
+        # Strategy 4: Try get_by_label (for form elements)
+        try:
+            locator_obj = page.get_by_label(expected_text, exact=False)
+            count = await locator_obj.count()
+            
+            if count == 1:
+                locator_str = f'label="{expected_text}"'
+                locator_str = apply_iframe_prefix(locator_str)
+                
+                logger.info(f"   ✅ NATIVE LABEL SUCCESS: {locator_str}")
+                return {
+                    'locator': locator_str,
+                    'count': 1,
+                    'unique': True,
+                    'accessible_name': expected_text,
+                    'element_type': 'label',
+                    'strategy': 'playwright_get_by_label'
+                }
+        except Exception:
+            pass
+        
+        logger.info(f"   ⚠️ Native API search found no unique match for '{expected_text}'")
+        return None
+        
+    except Exception as e:
+        logger.warning(f"   ⚠️ Native API search error: {e}")
+        return None
+
+
+
+async def _get_element_accessibility_info(
+    search_context,
+    x: float,
+    y: float
+) -> Optional[dict]:
+    """
+    Query the live DOM to get accessibility information for element at coordinates.
+    
+    Unlike cached element indices, this always reflects the CURRENT page state,
+    solving stale index issues after search/filter/AJAX operations.
+    
+    Args:
+        search_context: Page or frame_locator for the target context
+        x, y: Coordinates of the target element
+        
+    Returns:
+        Dict with role, accessible name, and other info, or None if failed
+    """
+    try:
+        result = await search_context.evaluate("""
+            ({x, y}) => {
+                const element = document.elementFromPoint(x, y);
+                if (!element) return null;
+                
+                // Get explicit role or derive from HTML semantics
+                const explicitRole = element.getAttribute('role');
+                const tagName = element.tagName.toLowerCase();
+                
+                // Map common HTML elements to implicit ARIA roles
+                let implicitRole = null;
+                if (tagName === 'button') implicitRole = 'button';
+                else if (tagName === 'a' && element.hasAttribute('href')) implicitRole = 'link';
+                else if (tagName === 'input') {
+                    const type = element.getAttribute('type') || 'text';
+                    if (type === 'checkbox') implicitRole = 'checkbox';
+                    else if (type === 'radio') implicitRole = 'radio';
+                    else if (type === 'submit' || type === 'button') implicitRole = 'button';
+                    else if (type === 'search') implicitRole = 'searchbox';
+                    else implicitRole = 'textbox';
+                }
+                else if (tagName === 'textarea') implicitRole = 'textbox';
+                else if (tagName === 'select') implicitRole = 'combobox';
+                else if (tagName === 'table') implicitRole = 'table';
+                else if (tagName === 'tr') implicitRole = 'row';
+                else if (tagName === 'td') implicitRole = 'cell';
+                else if (tagName === 'th') implicitRole = 'columnheader';
+                else if (tagName === 'ul' || tagName === 'ol') implicitRole = 'list';
+                else if (tagName === 'li') implicitRole = 'listitem';
+                else if (tagName === 'nav') implicitRole = 'navigation';
+                else if (tagName === 'dialog') implicitRole = 'dialog';
+                else if (['h1','h2','h3','h4','h5','h6'].includes(tagName)) implicitRole = 'heading';
+                else if (tagName === 'img') implicitRole = 'img';
+                
+                const role = explicitRole || implicitRole;
+                
+                // Get accessible name following W3C AccName algorithm
+                let accessibleName = null;
+                
+                // 1. aria-labelledby
+                const labelledBy = element.getAttribute('aria-labelledby');
+                if (labelledBy) {
+                    const labels = labelledBy.split(' ')
+                        .map(id => document.getElementById(id)?.textContent?.trim())
+                        .filter(Boolean);
+                    if (labels.length) accessibleName = labels.join(' ');
+                }
+                
+                // 2. aria-label
+                if (!accessibleName) {
+                    accessibleName = element.getAttribute('aria-label');
+                }
+                
+                // 3. Associated label for form elements
+                if (!accessibleName && element.id) {
+                    const label = document.querySelector(`label[for="${element.id}"]`);
+                    if (label) accessibleName = label.textContent?.trim();
+                }
+                
+                // 4. title attribute
+                if (!accessibleName) {
+                    accessibleName = element.getAttribute('title');
+                }
+                
+                // 5. For buttons/links, use text content
+                if (!accessibleName) {
+                    const interactiveRoles = ['button', 'link', 'tab', 'menuitem', 'option'];
+                    if (interactiveRoles.includes(role) || ['BUTTON', 'A'].includes(element.tagName)) {
+                        const text = element.textContent?.trim();
+                        if (text && text.length < 100) accessibleName = text;
+                    }
+                }
+                
+                // 6. alt for images
+                if (!accessibleName && tagName === 'img') {
+                    accessibleName = element.getAttribute('alt');
+                }
+                
+                // 7. placeholder for inputs
+                if (!accessibleName && ['input', 'textarea'].includes(tagName)) {
+                    accessibleName = element.getAttribute('placeholder');
+                }
+                
+                // Check if element is part of a collection
+                const collectionRoles = ['row', 'listitem', 'option', 'treeitem', 'menuitem', 'cell', 'gridcell'];
+                const isCollection = collectionRoles.includes(role);
+                
+                return {
+                    role: role,
+                    accessibleName: accessibleName,
+                    tagName: tagName,
+                    isCollection: isCollection,
+                    id: element.id || null,
+                    className: element.className || null
+                };
+            }
+        """, {'x': x, 'y': y})
+        
+        if result:
+            logger.info(f"   🔍 Accessibility info: role={result.get('role')}, name='{str(result.get('accessibleName', ''))[:30]}...'")
+        return result
+        
+    except Exception as e:
+        logger.warning(f"   ⚠️ Failed to get accessibility info: {e}")
+        return None
+
+
+async def _find_table_via_accessibility(
+    search_context,
+    x: float,
+    y: float,
+    expected_text: Optional[str] = None
+) -> Optional[dict]:
+    """
+    Specialized table/grid detection using accessibility API.
+    
+    Handles tables that standard CSS selectors miss:
+    - React-Table, AG Grid, MUI Table (via role attributes)
+    - Custom data grids with proper ARIA markup
+    - Dynamic tables after filtering/searching
+    """
+    try:
+        # JavaScript to detect table/grid and extract ALL visible data row texts
+        table_info = await search_context.evaluate("""
+            ({x, y, expectedText}) => {
+                let element = document.elementFromPoint(x, y);
+                if (!element) return { found: false };
+                
+                let current = element;
+                let rowElement = null;
+                
+                while (current && current !== document.body) {
+                    const role = current.getAttribute('role');
+                    const tag = current.tagName.toLowerCase();
+                    
+                    if (role === 'row' || tag === 'tr') {
+                        rowElement = current;
+                    }
+                    
+                    if (role === 'grid' || role === 'table' || tag === 'table') {
+                        const rows = current.querySelectorAll('[role="row"], tr');
+                        
+                        // Filter out header rows (containing th or with columnheader role)
+                        const dataRows = Array.from(rows).filter(r => {
+                            const isHeader = r.querySelector('th') || 
+                                           r.getAttribute('role') === 'columnheader' ||
+                                           r.closest('thead');
+                            return !isHeader;
+                        });
+                        
+                        // Extract text content from ALL data rows (skip empty but keep all non-empty)
+                        const rowTexts = dataRows
+                            .map(r => r.textContent.trim())
+                            .filter(text => text.length > 0);  // Skip blank rows
+                        
+                        // Find the best CSS selector for targeting data rows
+                        // Priority: 1) role=row not in header, 2) tbody tr, 3) common table patterns
+                        let rowSelector = null;
+                        let selectorType = null;
+                        
+                        // Try React-Table pattern first (most specific)
+                        const rtRows = current.querySelectorAll('.rt-tbody .rt-tr-group');
+                        if (rtRows.length > 0) {
+                            rowSelector = '.rt-tbody .rt-tr-group';
+                            selectorType = 'react-table';
+                        }
+                        // Try standard table tbody rows
+                        else if (tag === 'table') {
+                            const tbodyRows = current.querySelectorAll('tbody tr');
+                            if (tbodyRows.length > 0) {
+                                rowSelector = 'tbody tr';
+                                selectorType = 'html-table';
+                            }
+                        }
+                        // Try ARIA grid with rowgroup (excludes header)
+                        else if (role === 'grid') {
+                            const rowgroupRows = current.querySelectorAll('[role="rowgroup"]:not(:first-child) [role="row"]');
+                            if (rowgroupRows.length > 0) {
+                                rowSelector = '[role="rowgroup"]:not(:first-child) [role="row"]';
+                                selectorType = 'aria-grid';
+                            } else {
+                                // Fallback: all rows except those with th
+                                rowSelector = '[role="row"]:not(:has(th)):not([role="columnheader"])';
+                                selectorType = 'aria-row-generic';
+                            }
+                        }
+                        // Generic fallback using role=row
+                        if (!rowSelector) {
+                            rowSelector = '[role="row"]';
+                            selectorType = 'role-row-generic';
+                        }
+                        
+                        return {
+                            found: true,
+                            role: role || (tag === 'table' ? 'table' : null),
+                            ariaLabel: current.getAttribute('aria-label'),
+                            totalRows: rows.length,
+                            dataRowCount: dataRows.length,
+                            visibleRowCount: rowTexts.length,
+                            hadRowElement: !!rowElement,
+                            tag: tag,
+                            rowTexts: rowTexts,
+                            rowSelector: rowSelector,
+                            selectorType: selectorType
+                        };
+                    }
+                    current = current.parentElement;
+                }
+                // No table/grid found - return debug info about what we found
+                return { 
+                    found: false, 
+                    debugInfo: element ? `tag=${element.tagName.toLowerCase()}, role=${element.getAttribute('role')}, class=${element.className?.substring(0,50)}` : 'no element at coords'
+                };
+            }
+        """, {'x': x, 'y': y, 'expectedText': expected_text})
+        
+        if not table_info.get('found'):
+            # Debug: Log what we found at coordinates
+            debug_info = table_info.get('debugInfo', 'No debug info')
+            logger.info(f"   ⚠️ No table/grid found at coordinates ({x}, {y})")
+            logger.info(f"   🔍 Debug: {debug_info}")
+            return None
+        
+        visible_rows = table_info.get('visibleRowCount', 0)
+        data_rows = table_info.get('dataRowCount', 0)
+        row_texts = table_info.get('rowTexts', [])
+        row_selector = table_info.get('rowSelector', 'role=row')
+        selector_type = table_info.get('selectorType', 'generic')
+        
+        logger.info(f"   📊 Found {table_info.get('role') or 'table'} with {data_rows} data rows ({visible_rows} non-empty)")
+        logger.info(f"   📍 Row selector: {row_selector} (type: {selector_type})")
+        
+        role = table_info.get('role') or 'table'
+        aria_label = table_info.get('ariaLabel')
+        
+        # Verify the row selector works
+        actual_count = await search_context.locator(row_selector).count()
+        
+        if actual_count == 0:
+            # Fallback to role=row if specific selector fails
+            logger.info(f"   ⚠️ Selector '{row_selector}' found 0 matches, falling back to role=row")
+            row_selector = 'role=row'
+            actual_count = await search_context.locator(row_selector).count()
+        
+        if actual_count == 0:
+            logger.info(f"   ⚠️ No rows found with any selector")
+            return None
+        
+        logger.info(f"   ✅ Verified: {actual_count} rows found with '{row_selector}'")
+        
+        # Log first few row texts for debugging (limit to 3)
+        if row_texts:
+            for i, text in enumerate(row_texts[:3]):
+                preview = text[:60] + '...' if len(text) > 60 else text
+                logger.info(f"   📝 Row {i+1}: {preview}")
+            if len(row_texts) > 3:
+                logger.info(f"   📝 ... and {len(row_texts) - 3} more rows")
+        
+        # Return result with ALL row data for FOR loop validation in Robot Framework
+        return {
+            'locator': row_selector,  # Locator for ALL data rows (not pre-filtered)
+            'count': actual_count,
+            'unique': False,  # Always False for table rows (collection)
+            'role': 'row',
+            'element_type': 'table-rows',  # Triggers FOR loop generation in CrewAI
+            'strategy': f'accessibility_table_{selector_type}',
+            # Additional metadata for validation
+            'row_texts': row_texts,  # Actual text content of each row
+            'visible_row_count': visible_rows,
+            'validation_text': expected_text,  # Text to validate each row contains
+            'table_role': role,
+            'table_label': aria_label
+        }
+        
+    except Exception as e:
+        logger.warning(f"   ⚠️ Table accessibility detection failed: {e}")
+        return None
+
+
+async def _find_element_via_accessibility(
+    page,
+    x: float,
+    y: float,
+    element_description: str,
+    expected_text: Optional[str] = None,
+    library_type: str = "browser",
+    search_context=None,
+    iframe_context: Optional[str] = None
+) -> Optional[dict]:
+    """
+    STEP 2.5: Accessibility API Fallback Strategy
+    
+    Uses Playwright's live DOM query to generate robust role-based locators.
+    Queries CURRENT page state (not stale indices), works after search/filter.
+    
+    Browser Library Compatible Output:
+    - role=button[name="Submit"]
+    - role=grid
+    - role=row
+    - role=textbox[name="Search"]
+    """
+    logger.info("=" * 60)
+    logger.info("STEP 2.5: Trying ACCESSIBILITY API fallback")
+    logger.info("=" * 60)
+    
+    ctx = search_context if search_context is not None else page
+    desc_lower = element_description.lower() if element_description else ""
+    
+    def apply_iframe_prefix(locator: str) -> str:
+        if iframe_context and not locator.startswith(iframe_context):
+            return f"{iframe_context} >>> {locator}"
+        return locator
+    
+    # === STRATEGY 2.5a: COORDINATE-INDEPENDENT (Playwright Native APIs) ===
+    # Try this FIRST - uses getByRole, getByLabel, etc. without coordinates
+    # This is the Microsoft-recommended approach for accessibility
+    if expected_text:
+        pw_role_result = await _find_element_by_playwright_role(
+            ctx, expected_text, element_description, iframe_context
+        )
+        if pw_role_result:
+            logger.info(f"   ✅ STEP 2.5a SUCCESS (coordinate-independent): {pw_role_result['locator']}")
+            return pw_role_result
+        logger.info(f"   ⚠️ STEP 2.5a: Coordinate-independent approach failed, trying coordinate-based...")
+    
+    # === STRATEGY 2.5b: COORDINATE-DEPENDENT (original approach) ===
+    # Falls back to querying element at coordinates when no expected_text or 2.5a fails
+    
+    # Check for table/grid request
+    table_keywords = ['table', 'grid', 'row', 'rows', 'cell', 'data', 'result', 'record', 'entry']
+    is_table_request = any(kw in desc_lower for kw in table_keywords)
+    
+    if is_table_request:
+        logger.info(f"   🔍 Description suggests table/grid - trying table detection")
+        table_result = await _find_table_via_accessibility(ctx, x, y, expected_text)
+        
+        if table_result:
+            table_result['locator'] = apply_iframe_prefix(table_result['locator'])
+            if table_result.get('filtered_locator'):
+                table_result['filtered_locator'] = apply_iframe_prefix(table_result['filtered_locator'])
+            logger.info(f"   ✅ ACCESSIBILITY TABLE: {table_result['locator']}")
+            return table_result
+
+    
+    acc_info = await _get_element_accessibility_info(ctx, x, y)
+    
+    if not acc_info or not acc_info.get('role'):
+        logger.info(f"   ⚠️ No accessibility role found at coordinates ({x}, {y})")
+        return None
+    
+    role = acc_info['role']
+    accessible_name = acc_info.get('accessibleName')
+    is_collection = acc_info.get('isCollection', False)
+    
+    if accessible_name:
+        safe_name = accessible_name.replace('"', '\\"')
+        locator = f'role={role}[name="{safe_name}"]'
+    else:
+        locator = f'role={role}'
+    
+    try:
+        count = await ctx.locator(locator).count()
+        
+        if count == 0 and accessible_name:
+            logger.info(f"   ⚠️ Role locator found 0 matches: {locator}")
+            
+            # Strategy 2.5b-1: Try Playwright's native get_by_role with EXACT match
+            try:
+                native_locator = ctx.get_by_role(role, name=accessible_name, exact=True)
+                native_count = await native_locator.count()
+                if native_count == 1:
+                    locator = f'role={role}[name="{safe_name}"]'
+                    count = native_count
+                    logger.info(f"   ✅ Playwright native exact match found: {locator}")
+            except Exception:
+                pass
+            
+            # Strategy 2.5b-2: Try Playwright's native get_by_role with PARTIAL match
+            if count == 0:
+                try:
+                    native_locator = ctx.get_by_role(role, name=accessible_name, exact=False)
+                    native_count = await native_locator.count()
+                    if native_count == 1:
+                        locator = f'role={role}[name="{safe_name}"]'
+                        count = native_count
+                        logger.info(f"   ✅ Playwright native partial match found: {locator}")
+                except Exception:
+                    pass
+            
+            # Strategy 2.5b-3: Try CSS contains text selector
+            if count == 0:
+                try:
+                    text_locator = f'{role}:has-text("{safe_name}")'
+                    text_count = await ctx.locator(text_locator).count()
+                    if text_count == 1:
+                        locator = f'role={role}:has-text("{safe_name}")'
+                        count = text_count
+                        logger.info(f"   ✅ Text contains match found: {locator}")
+                except Exception:
+                    pass
+            
+            # Strategy 2.5b-4: Try role with normalized whitespace
+            if count == 0:
+                try:
+                    normalized_name = ' '.join(accessible_name.split())
+                    if normalized_name != accessible_name:
+                        norm_locator = f'role={role}[name="{normalized_name}"]'
+                        norm_count = await ctx.locator(norm_locator).count()
+                        if norm_count == 1:
+                            locator = norm_locator
+                            count = norm_count
+                            logger.info(f"   ✅ Normalized whitespace match found: {locator}")
+                except Exception:
+                    pass
+            
+            # If all strategies failed, try STEP 2.5c (Full Accessibility Tree Search)
+            if count == 0:
+                logger.info(f"   ⚠️ All 2.5b matching strategies failed for '{accessible_name}' - trying 2.5c tree search...")
+                tree_result = await _find_element_via_accessibility_tree(
+                    page, expected_text, element_description, iframe_context
+                )
+                if tree_result:
+                    return tree_result
+                return None
+        
+        if count == 0:
+            return None
+        
+        # Only accept unique locators (count=1) for non-collection elements
+        if count > 1 and not is_collection:
+            logger.info(f"   ❌ Accessibility locator not unique: {locator} ({count} matches) - trying 2.5c tree search...")
+            tree_result = await _find_element_via_accessibility_tree(
+                page, expected_text, element_description, iframe_context
+            )
+            if tree_result:
+                return tree_result
+            return None
+        
+        locator = apply_iframe_prefix(locator)
+        
+        logger.info(f"   ✅ ACCESSIBILITY SUCCESS: {locator} ({count} matches)")
+        
+        return {
+            'locator': locator,
+            'count': count,
+            'unique': count == 1 and not is_collection,
+            'role': role,
+            'accessible_name': accessible_name,
+            'element_type': role,
+            'strategy': 'accessibility_role'
+        }
+        
+    except Exception as e:
+        logger.warning(f"   ⚠️ Error validating accessibility locator: {e}")
+        return None
+
+
 async def _find_table_rows_by_description(
     page,
     description: str,
@@ -2667,9 +3582,94 @@ async def find_unique_locator_at_coordinates(
                     }
                 }
         else:
-            logger.info(f"⚠️ Semantic approach failed - falling back to coordinate-based approach")
+            logger.info(f"⚠️ Semantic approach failed - falling back to accessibility API")
     else:
-        logger.info(f"⚠️ No description provided - skipping semantic approach, using coordinates")
+        logger.info(f"⚠️ No description provided - skipping semantic approach")
+    
+    # ========================================
+    # STEP 2.5: ACCESSIBILITY API FALLBACK
+    # ========================================
+    # Uses Playwright's live DOM query to generate robust role-based locators.
+    # This is fundamentally different from cached element indices:
+    # - Queries CURRENT page state (not stale indices)
+    # - Works after search/filter/AJAX without refresh
+    # - Handles tables, grids, dialogs, menus, etc.
+    logger.info(f"🔍 Step 2.5: Trying ACCESSIBILITY API fallback")
+    
+    accessibility_result = await _find_element_via_accessibility(
+        page=page,
+        x=x,
+        y=y,
+        element_description=element_description,
+        expected_text=expected_text,
+        library_type=library_type,
+        search_context=search_context,
+        iframe_context=iframe_context
+    )
+    
+    if accessibility_result and accessibility_result.get('locator'):
+        locator = accessibility_result['locator']
+        logger.info(f"✅ ACCESSIBILITY FALLBACK SUCCESS: {locator}")
+        
+        # Validate against expected_text if provided
+        semantic_match = True
+        if expected_text and accessibility_result.get('accessible_name'):
+            expected_lower = expected_text.lower()
+            accessible_lower = accessibility_result['accessible_name'].lower()
+            semantic_match = expected_lower in accessible_lower or accessible_lower in expected_lower
+            if not semantic_match:
+                logger.info(f"   ⚠️ Semantic mismatch: expected '{expected_text}' but found '{accessibility_result['accessible_name']}'")
+        
+        return _apply_iframe_prefix_to_result({
+            # CRITICAL: workflow.py extraction requires these fields
+            'element_id': element_id,
+            'description': element_description,
+            'found': True,  # CRITICAL: Required by registration.py to recognize as success
+            'best_locator': locator,
+            'all_locators': [{'locator': locator, 'method': 'accessibility_role', 'priority': 1}],
+            'preferred_method': 'accessibility_role',
+            'validated': True,
+            'count': accessibility_result.get('count', 1),
+            'unique': accessibility_result.get('unique', True),
+            'valid': True,
+            'semantic_match': semantic_match,
+            'validation_method': 'playwright',
+            # Pass through element_type for table-rows FOR loop handling
+            'element_type': accessibility_result.get('element_type'),
+            'row_texts': accessibility_result.get('row_texts'),
+            'validation_text': accessibility_result.get('validation_text'),
+            # Element info for debugging and metrics
+            'element_info': {
+                'role': accessibility_result.get('role', 'unknown'),
+                'aria_label': accessibility_result.get('table_label'),
+                'source': 'accessibility_fallback',
+                'selector_type': accessibility_result.get('selector_type', 'unknown')
+            },
+            # Add validation_summary for actions.py logging
+            'validation_summary': {
+                'total_generated': 1,
+                'valid': 1,
+                'unique': 1 if accessibility_result.get('unique', True) else 0,
+                'validated': 1,
+                'not_found': 0,
+                'not_unique': 0 if accessibility_result.get('unique', True) else 1,
+                'errors': 0,
+                'best_type': accessibility_result.get('role', 'accessibility'),
+                'best_strategy': accessibility_result.get('strategy', 'accessibility_role'),
+                'validation_method': 'playwright'
+            },
+            'approach_metrics': {
+                **_approach_metrics_base,
+                'locator_approach': 'accessibility',
+                'strategy_used': accessibility_result.get('strategy', 'accessibility_role'),
+                'role': accessibility_result.get('role'),
+                'fallback_depth': 6,  # Accessibility fallback
+                'success': True,
+            }
+        })
+
+    else:
+        logger.info(f"⚠️ Accessibility fallback failed - falling back to coordinate-based approach")
     
     # ========================================
     # STEP 3: FALLBACK - Coordinate-based approach (21 strategies)
@@ -2736,7 +3736,7 @@ async def find_unique_locator_at_coordinates(
                 'approach_metrics': {
                     **_approach_metrics_base,
                     'locator_approach': 'coordinate_fallback',
-                    'fallback_depth': 6,
+                    'fallback_depth': 7,
                     'success': False,
                 }
             }
@@ -2770,7 +3770,7 @@ async def find_unique_locator_at_coordinates(
                 'approach_metrics': {
                     **_approach_metrics_base,
                     'locator_approach': 'coordinate_fallback',
-                    'fallback_depth': 6,
+                    'fallback_depth': 7,
                     'success': False,
                 }
             }
@@ -2785,7 +3785,7 @@ async def find_unique_locator_at_coordinates(
             'approach_metrics': {
                 **_approach_metrics_base,
                 'locator_approach': 'coordinate_fallback',
-                'fallback_depth': 6,
+                'fallback_depth': 7,
                 'success': False,
             }
         }
@@ -3365,7 +4365,7 @@ async def find_unique_locator_at_coordinates(
         result['approach_metrics'] = {
             **_approach_metrics_base,
             'locator_approach': 'coordinate_fallback',
-            'fallback_depth': 6,
+            'fallback_depth': 7,
             'success': True,
         }
     else:
@@ -3378,7 +4378,7 @@ async def find_unique_locator_at_coordinates(
         result['approach_metrics'] = {
             **_approach_metrics_base,
             'locator_approach': 'coordinate_fallback',
-            'fallback_depth': 6,
+            'fallback_depth': 7,
             'success': False,
         }
     

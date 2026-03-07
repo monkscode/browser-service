@@ -226,7 +226,7 @@ def process_workflow_task(
             logger.info("🌐 Initializing browser session...")
             
             # CRITICAL: Set explicit viewport for consistent coordinates
-            # browser-use 0.9.x in headful mode (headless=False) defaults to no_viewport=True
+            # browser-use in headful mode (headless=False) defaults to no_viewport=True
             # which makes content fit to window, causing coordinate misalignment.
             # Setting explicit viewport ensures:
             # 1. Vision AI sees page at this exact resolution
@@ -258,19 +258,28 @@ def process_workflow_task(
                 # CRITICAL: Enable iframe content crawling for proper locator extraction
                 # Without this, get_browser_state_summary() only returns main page elements (~86)
                 # With this, iframe content is indexed in selector_map (2000+ elements)
-                cross_origin_iframes=True
+                cross_origin_iframes=True,
+                # Prevent agent from navigating to ad/analytics/tracker domains during element detection
+                prohibited_domains=[
+                    "ads.google.com",
+                    "analytics.google.com",
+                    "googletagmanager.com",
+                    "doubleclick.net",
+                    "facebook.net",
+                    "connect.facebook.net",
+                ]
             )
             logger.info(f"📐 Viewport set to {VIEWPORT_WIDTH}x{VIEWPORT_HEIGHT} for coordinate consistency (no_viewport=False)")
             
-            # browser-use 0.9.x requires explicit start() call
-            logger.info("🚀 Starting browser session (browser-use 0.9.x)...")
+            # browser-use requires explicit start() call
+            logger.info("🚀 Starting browser session...")
             await session.start()
             logger.info("✅ Browser session started successfully")
 
             # Calculate dynamic max_steps based on workflow complexity
-            # Formula: navigate(1) + process_elements(elements * 3 for find+action+wait) + done(1) + buffer(5)
-            # We use a generous estimate since AI handles sequencing intelligently
-            dynamic_max_steps = 1 + (len(elements) * 3) + 1 + 5
+            # Formula: navigate(1) + process_elements(elements * 3 for find+action+wait) + done(1) + buffer(8)
+            # Buffer increased from 5 to 8 for browser-use 0.12.0 agent planning overhead (2-3 steps)
+            dynamic_max_steps = 1 + (len(elements) * 3) + 1 + 8
             logger.info(f"📊 Dynamic max_steps: {dynamic_max_steps} (for {len(elements)} elements)")
             
             # NOTE: Element sequencing is handled by the AI agent based on:
@@ -309,8 +318,9 @@ def process_workflow_task(
             logger.info(f"📝 Built workflow prompt for {len(elements)} elements")
 
             # Create Agent with prompts based on feature flag
-            # NOTE: browser-use 0.9.x changed parameter name from browser_context to browser_session
-            # 
+            # NOTE: browser-use 0.12.0 moved max_steps to agent.run() and renamed
+            # system_prompt to override_system_message
+            #
             # NOTE: We do NOT manually set session._original_viewport_size here.
 
             agent = Agent(
@@ -323,8 +333,7 @@ def process_workflow_task(
                     thinking_budget=0
                 ),
                 use_vision=True,
-                max_steps=dynamic_max_steps,
-                system_prompt=build_system_prompt(include_custom_action=enable_custom_actions_flag),
+                override_system_message=build_system_prompt(include_custom_action=enable_custom_actions_flag),
                 use_thinking=False,
                 calculate_cost=True
             )
@@ -368,7 +377,7 @@ def process_workflow_task(
                         client_hints=client_config.system_prompt_additions
                     )
                     agent.task = unified_objective
-                    agent.system_prompt = build_system_prompt(include_custom_action=False)
+                    agent.override_system_message = build_system_prompt(include_custom_action=False)
                     logger.info("✅ Agent prompts updated with legacy workflow instructions")
             else:
                 logger.info("⏭️ Skipping custom action registration (disabled via config)")
@@ -381,22 +390,26 @@ def process_workflow_task(
 
             # Log available actions for debugging
             if hasattr(agent, 'tools') and agent.tools:
-                if hasattr(agent.tools, 'registry') and hasattr(agent.tools.registry, '_registry'):
-                    available_actions = list(agent.tools.registry._registry.keys())
-                    logger.info(f"📋 Available custom actions: {available_actions}")
+                if hasattr(agent.tools, 'registry') and hasattr(agent.tools.registry, 'registry'):
+                    action_registry = agent.tools.registry.registry
+                    if hasattr(action_registry, 'actions'):
+                        available_actions = list(action_registry.actions.keys())
+                        logger.info(f"📋 Available custom actions: {available_actions}")
+                    else:
+                        logger.info("📋 Tools registry structure unknown")
                 else:
                     logger.info("📋 Tools registry structure unknown")
             else:
                 logger.info("⚠️ Agent has no tools registered")
 
             start_time = time.time()
-            agent_result = await agent.run()
+            agent_result = await agent.run(max_steps=dynamic_max_steps)
             execution_time = time.time() - start_time
 
             logger.info(f"✅ Agent completed in {execution_time:.1f}s")
 
             # ========================================
-            # TOKEN USAGE EXTRACTION from browser-use 0.9.7
+            # TOKEN USAGE EXTRACTION from browser-use
             # ========================================
             # Extract actual token usage from AgentHistoryList.usage (UsageSummary)
             token_usage = {
@@ -424,7 +437,7 @@ def process_workflow_task(
                 except Exception as e:
                     logger.warning(f"🔍 DEBUG: Could not dump usage object: {e}")
 
-                # Extract token counts from UsageSummary (browser-use 0.9.7 structure)
+                # Extract token counts from UsageSummary
                 token_usage = {
                     'input_tokens': getattr(usage, 'total_prompt_tokens', 0) or 0,
                     'output_tokens': getattr(usage, 'total_completion_tokens', 0) or 0,

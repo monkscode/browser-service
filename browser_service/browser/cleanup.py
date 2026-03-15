@@ -375,7 +375,7 @@ async def cleanup_browser_resources(
             pass
 
     # Step 3: Close session gracefully
-    # browser-use 0.9.x uses kill() method for cleanup
+    # browser-use uses kill() method for cleanup
     if session:
         try:
             if hasattr(session, 'kill'):

@@ -58,6 +58,10 @@ def is_already_playwright_selector(locator: str) -> bool:
     
     locator = locator.strip()
     
+    # XPath locators starting with / or // are already Playwright-compatible
+    if locator.startswith('/'):
+        return True
+    
     # If it starts with '[', it's definitely an attribute selector
     if locator.startswith('['):
         return True
@@ -74,6 +78,10 @@ def is_already_playwright_selector(locator: str) -> bool:
         # Split into prefix (selector part) and value
         prefix_part = locator.split('=', 1)[0]
         
+        # Check if prefix is a native Playwright engine
+        if prefix_part.lower() in PLAYWRIGHT_NATIVE_ENGINES or prefix_part.lower() == 'data-testid':
+            return True
+            
         # Check for CSS characters in the PREFIX only
         # Space in prefix = descendant selector (div span=...) - unlikely but check
         # . in prefix = class selector (div.class=...) - unlikely but check

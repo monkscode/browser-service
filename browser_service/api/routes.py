@@ -29,7 +29,10 @@ from browser_service.api.handlers import (
 )
 from browser_service.config import config
 from browser_service.tasks import process_workflow_task
-from src.backend.core.config import settings
+try:
+    from src.backend.core.config import settings as _nl_settings
+except ImportError:
+    _nl_settings = None
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +151,10 @@ def register_routes(app: Flask, task_processor: Any) -> None:
 
             # Feature flag: enable_custom_actions (defaults to config value if not provided)
             if enable_custom_actions is None:
-                enable_custom_actions = settings.ENABLE_CUSTOM_ACTIONS
+                if _nl_settings is not None and hasattr(_nl_settings, 'ENABLE_CUSTOM_ACTIONS'):
+                    enable_custom_actions = _nl_settings.ENABLE_CUSTOM_ACTIONS
+                else:
+                    enable_custom_actions = config.enable_custom_actions
                 logger.info(f"🔧 enable_custom_actions not provided in request, using config default: {enable_custom_actions}")
             else:
                 logger.info(f"🔧 enable_custom_actions provided in request: {enable_custom_actions}")

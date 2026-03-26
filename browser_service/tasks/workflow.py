@@ -13,6 +13,8 @@ import json
 import logging
 import re
 import time
+
+logger = logging.getLogger(__name__)
 from typing import Dict, Any, List, Optional
 
 # Import browser-use components
@@ -20,19 +22,29 @@ from browser_use import Agent
 
 # Import local modules
 from browser_service.config import config
-from browser_service.browser import cleanup_browser_resources
+from browser_service.browser import cleanup_browser_resources, capture_session_pid
 from browser_service.locators import extract_and_validate_locators
 from browser_service.prompts import build_workflow_prompt, build_system_prompt
 from browser_service.agent import register_custom_actions
 from browser_service.utils.json_parser import extract_json_for_element
 from browser_service.utils.metrics import record_workflow_metrics
-from src.backend.core.config import settings
-from clients import get_client_config
-
-logger = logging.getLogger(__name__)
-
-
-# ========================================
+try:
+    from src.backend.core.config import settings as _nl_settings
+except ImportError:
+    _nl_settings = None
+try:
+    from clients import get_client_config
+except ImportError:
+    # Standalone browser-service mode
+    class _MockClientConfig:
+        name = "Default"
+        minimum_wait_page_load_time = 0.5
+        wait_for_network_idle_page_load_time = 1.0
+        wait_between_actions = 0.5
+        system_prompt_additions = []
+    
+    def get_client_config(url: str):
+        return _MockClientConfig()
 # JSON EXTRACTION HELPERS (Module Level)
 # ========================================
 # These functions are used to extract element JSON data from agent results.
@@ -206,7 +218,10 @@ def process_workflow_task(
     # Capture enable_custom_actions parameter for use in async function
     # Default to config value if not provided
     if enable_custom_actions is None:
-        enable_custom_actions_flag = settings.ENABLE_CUSTOM_ACTIONS
+        if _nl_settings is not None and hasattr(_nl_settings, 'ENABLE_CUSTOM_ACTIONS'):
+            enable_custom_actions_flag = _nl_settings.ENABLE_CUSTOM_ACTIONS
+        else:
+            enable_custom_actions_flag = config.enable_custom_actions
         logger.info(f"🔧 Using ENABLE_CUSTOM_ACTIONS from config: {enable_custom_actions_flag}")
     else:
         enable_custom_actions_flag = enable_custom_actions
@@ -220,6 +235,7 @@ def process_workflow_task(
         session = None
         connected_browser = None
         playwright_instance = None
+        browser_pid = None  # Captured after session.start() for orphan cleanup
 
         try:
             # Initialize browser session ONCE
@@ -275,6 +291,16 @@ def process_workflow_task(
             logger.info("🚀 Starting browser session...")
             await session.start()
             logger.info("✅ Browser session started successfully")
+
+            # Capture browser PID immediately — Chrome is guaranteed alive here.
+            # Must happen BEFORE agent.run() because browser-use fires
+            # on_BrowserStopEvent (killing the parent Chrome) before agent.run()
+            # returns, making session.cdp_url unavailable at cleanup time.
+            browser_pid = capture_session_pid(session)
+            if browser_pid:
+                logger.info(f"📍 Captured browser PID {browser_pid} for orphan cleanup")
+            else:
+                logger.warning("⚠️ Could not capture browser PID — orphan cleanup will be skipped")
 
             # Calculate dynamic max_steps based on workflow complexity
             # Formula: navigate(1) + process_elements(elements * 3 for find+action+wait) + done(1) + buffer(8)
@@ -479,12 +505,13 @@ def process_workflow_task(
                 custom_action_calls = 0
                 execute_js_calls = 0
                 for step in agent_result.history:
-                    if hasattr(step, 'action') and step.action:
-                        action_name = str(step.action).lower()
-                        if 'find_unique_locator' in action_name:
-                            custom_action_calls += 1
-                        elif 'execute_js' in action_name:
-                            execute_js_calls += 1
+                    if step.model_output and step.model_output.action:
+                        for action_model in step.model_output.action:
+                            action_fields = action_model.model_fields_set
+                            if 'find_unique_locator' in action_fields:
+                                custom_action_calls += 1
+                            elif 'execute_js' in action_fields:
+                                execute_js_calls += 1
 
                 logger.info(f"📊 Action usage: find_unique_locator={custom_action_calls}, execute_js={execute_js_calls}")
 
@@ -539,10 +566,12 @@ def process_workflow_task(
                                         
                                         if existing_idx is None:
                                             # First occurrence, add it
+                                            metadata['metrics'] = {'custom_action_used': True}
                                             results_list.append(metadata)
                                         else:
                                             # Already have it (agent retry/update), replace with latest
                                             logger.info(f"   🔄 Updating {elem_id} with latest result")
+                                            metadata['metrics'] = {'custom_action_used': True}
                                             results_list[existing_idx] = metadata
                 
                 if results_list:
@@ -551,85 +580,100 @@ def process_workflow_task(
                 else:
                     logger.warning("   ⚠️  No custom action results found in metadata - will try fallback methods")
 
-            # ========================================
-            # EXTRACT LOCATORS USING PLAYWRIGHT'S BUILT-IN METHODS
-            # ========================================
+            # ============================================================
+            # DISABLED: Coordinate Parsing and Playwright Session Access
+            # ============================================================
+            # REASON: browser-use v0.12.0 fires on_BrowserStopEvent and calls
+            # session.reset(force=True) BEFORE agent.run() returns. This makes
+            # every step in this block permanently non-functional:
+            #
+            #   1. parse_coordinates_from_result — always returns [] because the
+            #      agent calls done("Task complete") when using custom actions,
+            #      not the coordinate JSON format {"elements_found": [...]} that
+            #      this function expects.
+            #
+            #   2. extract_coordinates_from_js_history — always returns [] because
+            #      the agent uses find_unique_locator, not raw execute_js for coords.
+            #
+            #   3. Playwright/CDP page access — page is always None because
+            #      session.reset() destroys all CDP connections before agent.run()
+            #      returns. All three access methods (cdp_url, cdp_client, context)
+            #      are therefore unreachable.
+            #
+            #   4. Locator extraction loop (~line 851) — never runs without a live
+            #      non-None page object.
+            #
+            # The real fallback for missing elements is the string-parsing block at
+            # ~line 1022 which works entirely without a live browser session.
+            #
+            # TO RE-ENABLE: Remove the "if False:" wrapper below and reduce the
+            # indentation of the wrapped block by 4 spaces. Also remove the two
+            # default variable assignments (elements_found, page) that follow this
+            # block. This would be required if browser-use adds keep_alive=True
+            # session support, or if on_BrowserStopEvent is overridden to delay
+            # session.reset() until after post-processing completes.
+            # ============================================================
+            if False:  # DISABLED — see comment above
+                # ========================================
+                # EXTRACT LOCATORS USING PLAYWRIGHT'S BUILT-IN METHODS
+                # ========================================
 
-            def extract_coordinates_from_js_history(history, elements_list):
-                """
-                Fallback: Extract coordinates from JavaScript execution results in agent history.
-                This handles cases where the agent executes JS to get coordinates but doesn't
-                return them in the expected JSON format.
-                """
-                extracted_elements = []
+                def extract_coordinates_from_js_history(history, elements_list):
+                    """
+                    Fallback: Extract coordinates from JavaScript execution results in agent history.
+                    This handles cases where the agent executes JS to get coordinates but doesn't
+                    return them in the expected JSON format.
+                    """
+                    extracted_elements = []
 
-                try:
-                    import json
+                    try:
+                        import json
 
-                    # Iterate through history to find execute_js actions
-                    for step_idx, step in enumerate(history):
-                        # Check if this step has action results
-                        if hasattr(step, 'result') and step.result:
-                            result_str = str(step.result)
+                        # Iterate through history to find execute_js actions
+                        for step_idx, step in enumerate(history):
+                            # Check if this step has action results
+                            if hasattr(step, 'result') and step.result:
+                                result_str = str(step.result)
 
-                            # Look for JavaScript execution results with coordinates
-                            # Pattern: Result: {"x":..., "y":..., "element_type":..., "visible_text":...}
-                            if 'Result:' in result_str and '"x":' in result_str and '"y":' in result_str:
-                                # Extract JSON after "Result:"
-                                result_match = re.search(
-                                    r'Result:\s*(\{[^}]*"x"[^}]*\})', result_str)
-                                if result_match:
-                                    try:
-                                        coord_data = json.loads(
-                                            result_match.group(1))
+                                # Look for JavaScript execution results with coordinates
+                                # Pattern: Result: {"x":..., "y":..., "element_type":..., "visible_text":...}
+                                if 'Result:' in result_str and '"x":' in result_str and '"y":' in result_str:
+                                    # Extract JSON after "Result:"
+                                    result_match = re.search(
+                                        r'Result:\s*(\{[^}]*"x"[^}]*\})', result_str)
+                                    if result_match:
+                                        try:
+                                            coord_data = json.loads(
+                                                result_match.group(1))
 
-                                        # Try to match this to an element from our list
-                                        # Use visible_text or element_type to match
-                                        visible_text = coord_data.get(
-                                            'visible_text', '').lower()
-                                        element_type = coord_data.get(
-                                            'element_type', '').lower()
+                                            # Try to match this to an element from our list
+                                            # Use visible_text or element_type to match
+                                            visible_text = coord_data.get(
+                                                'visible_text', '').lower()
+                                            element_type = coord_data.get(
+                                                'element_type', '').lower()
 
-                                        # Try to find matching element from our list
-                                        matched_element = None
-                                        for elem in elements_list:
-                                            elem_desc = elem.get(
-                                                'description', '').lower()
-                                            elem_id = elem.get('id')
+                                            # Try to find matching element from our list
+                                            matched_element = None
+                                            for elem in elements_list:
+                                                elem_desc = elem.get(
+                                                    'description', '').lower()
+                                                elem_id = elem.get('id')
 
-                                            # Check if already extracted
-                                            if any(e.get('element_id') == elem_id for e in extracted_elements):
-                                                continue
+                                                # Check if already extracted
+                                                if any(e.get('element_id') == elem_id for e in extracted_elements):
+                                                    continue
 
-                                            # Match by description keywords in visible_text
-                                            # or by element type
-                                            if (visible_text and any(word in visible_text for word in elem_desc.split() if len(word) > 3)) or \
-                                               (element_type and element_type in elem_desc):
-                                                matched_element = elem
-                                                break
+                                                # Match by description keywords in visible_text
+                                                # or by element type
+                                                if (visible_text and any(word in visible_text for word in elem_desc.split() if len(word) > 3)) or \
+                                                   (element_type and element_type in elem_desc):
+                                                    matched_element = elem
+                                                    break
 
-                                        if matched_element:
-                                            extracted_elements.append({
-                                                'element_id': matched_element['id'],
-                                                'found': True,
-                                                'coordinates': {
-                                                    'x': coord_data.get('x'),
-                                                    'y': coord_data.get('y')
-                                                },
-                                                'element_type': element_type,
-                                                'visible_text': coord_data.get('visible_text', '')
-                                            })
-                                            logger.info(
-                                                f"   ✅ Matched JS result to element: {matched_element['id']}")
-                                        else:
-                                            # If we can't match, add it anyway with a generated ID
-                                            # Use the first unmatched element
-                                            unmatched = [e for e in elements_list if not any(
-                                                ex.get('element_id') == e.get('id') for ex in extracted_elements)]
-                                            if unmatched:
-                                                elem = unmatched[0]
+                                            if matched_element:
                                                 extracted_elements.append({
-                                                    'element_id': elem['id'],
+                                                    'element_id': matched_element['id'],
                                                     'found': True,
                                                     'coordinates': {
                                                         'x': coord_data.get('x'),
@@ -639,185 +683,210 @@ def process_workflow_task(
                                                     'visible_text': coord_data.get('visible_text', '')
                                                 })
                                                 logger.info(
-                                                    f"   ⚠️ Could not match JS result, assigned to: {elem['id']}")
+                                                    f"   ✅ Matched JS result to element: {matched_element['id']}")
+                                            else:
+                                                # If we can't match, add it anyway with a generated ID
+                                                # Use the first unmatched element
+                                                unmatched = [e for e in elements_list if not any(
+                                                    ex.get('element_id') == e.get('id') for ex in extracted_elements)]
+                                                if unmatched:
+                                                    elem = unmatched[0]
+                                                    extracted_elements.append({
+                                                        'element_id': elem['id'],
+                                                        'found': True,
+                                                        'coordinates': {
+                                                            'x': coord_data.get('x'),
+                                                            'y': coord_data.get('y')
+                                                        },
+                                                        'element_type': element_type,
+                                                        'visible_text': coord_data.get('visible_text', '')
+                                                    })
+                                                    logger.info(
+                                                        f"   ⚠️ Could not match JS result, assigned to: {elem['id']}")
 
-                                    except json.JSONDecodeError as e:
-                                        logger.debug(
-                                            f"   Failed to parse JS result JSON: {e}")
-                                        continue
+                                        except json.JSONDecodeError as e:
+                                            logger.debug(
+                                                f"   Failed to parse JS result JSON: {e}")
+                                            continue
 
-                    return extracted_elements
+                        return extracted_elements
 
-                except Exception as e:
-                    logger.error(f"Error extracting from JS history: {e}")
-                    return []
-
-            def parse_coordinates_from_result(agent_result):
-                """Extract element coordinates from agent result."""
-                try:
-                    final_result = ""
-                    if hasattr(agent_result, 'final_result'):
-                        final_result = str(agent_result.final_result())
-                    elif hasattr(agent_result, 'history') and agent_result.history:
-                        if len(agent_result.history) > 0:
-                            last_step = agent_result.history[-1]
-                            if hasattr(last_step, 'result'):
-                                final_result = str(last_step.result)
-
-                    logger.info(
-                        f"📝 Agent final result (first 500 chars): {final_result[:500]}")
-
-                    # Look for JSON with elements_found
-                    json_match = re.search(
-                        r'\{[\s\S]*"elements_found"[\s\S]*\}', final_result)
-                    if json_match:
-                        data = json.loads(json_match.group(0))
-                        return data.get('elements_found', [])
-
-                    logger.warning(
-                        "Could not find elements_found JSON, trying fallback...")
-                    return []
-
-                except Exception as e:
-                    logger.error(f"Error parsing coordinates: {e}")
-                    return []
-
-            elements_found = parse_coordinates_from_result(agent_result)
-            logger.info(
-                f"📍 Agent found {len(elements_found)} elements with coordinates")
-
-            # FALLBACK: If no structured results, try to extract from JavaScript execution results in history
-            if not elements_found and hasattr(agent_result, 'history'):
-                logger.info(
-                    "🔍 Attempting fallback: extracting coordinates from JavaScript execution history...")
-                elements_found = extract_coordinates_from_js_history(
-                    agent_result.history, elements)
-                if elements_found:
-                    logger.info(
-                        f"✅ Fallback successful: extracted {len(elements_found)} elements from JS history")
-                    for elem in elements_found:
-                        coords = elem.get('coordinates', {})
-                        logger.info(
-                            f"   - {elem.get('element_id')}: coords=({coords.get('x')}, {coords.get('y')}), text=\"{elem.get('visible_text', '')[:50]}\"")
-                else:
-                    logger.error(
-                        "❌ Fallback failed: no coordinates extracted from JS history")
-
-            # Get the Playwright page from browser_use session
-            # STRATEGY: Connect Playwright to browser_use's browser via CDP
-            # This allows us to use the SAME browser for vision AND validation
-            page = None
-
-            try:
-                logger.info(
-                    "🔍 Attempting to access browser_use's browser for validation...")
-
-                # Method 1: Try to get CDP URL from session
-                cdp_url = None
-
-                # Try session.cdp_url
-                if hasattr(session, 'cdp_url'):
-                    try:
-                        cdp_url = session.cdp_url
-                        if cdp_url:
-                            logger.info(
-                                f"✅ Found CDP URL from session.cdp_url: {cdp_url}")
-                        else:
-                            logger.debug("session.cdp_url is None")
                     except Exception as e:
-                        logger.debug(f"Error accessing session.cdp_url: {e}")
+                        logger.error(f"Error extracting from JS history: {e}")
+                        return []
 
-                # Try cdp_client.url
-                # Guard: Check if CDP client is still initialized before accessing
-                if not cdp_url and hasattr(session, '_cdp_client_root') and session._cdp_client_root is not None:
+                def parse_coordinates_from_result(agent_result):
+                    """Extract element coordinates from agent result."""
                     try:
-                        cdp_client = session.cdp_client
-                        if hasattr(cdp_client, 'url'):
-                            cdp_url = cdp_client.url
+                        final_result = ""
+                        if hasattr(agent_result, 'final_result'):
+                            final_result = str(agent_result.final_result())
+                        elif hasattr(agent_result, 'history') and agent_result.history:
+                            if len(agent_result.history) > 0:
+                                last_step = agent_result.history[-1]
+                                if hasattr(last_step, 'result'):
+                                    final_result = str(last_step.result)
+
+                        logger.info(
+                            f"📝 Agent final result (first 500 chars): {final_result[:500]}")
+
+                        # Look for JSON with elements_found
+                        json_match = re.search(
+                            r'\{[\s\S]*"elements_found"[\s\S]*\}', final_result)
+                        if json_match:
+                            data = json.loads(json_match.group(0))
+                            return data.get('elements_found', [])
+
+                        logger.warning(
+                            "Could not find elements_found JSON, trying fallback...")
+                        return []
+
+                    except Exception as e:
+                        logger.error(f"Error parsing coordinates: {e}")
+                        return []
+
+                elements_found = parse_coordinates_from_result(agent_result)
+                logger.info(
+                    f"📍 Agent found {len(elements_found)} elements with coordinates")
+
+                # FALLBACK: If no structured results, try to extract from JavaScript execution results in history
+                if not elements_found and hasattr(agent_result, 'history'):
+                    logger.info(
+                        "🔍 Attempting fallback: extracting coordinates from JavaScript execution history...")
+                    elements_found = extract_coordinates_from_js_history(
+                        agent_result.history, elements)
+                    if elements_found:
+                        logger.info(
+                            f"✅ Fallback successful: extracted {len(elements_found)} elements from JS history")
+                        for elem in elements_found:
+                            coords = elem.get('coordinates', {})
+                            logger.info(
+                                f"   - {elem.get('element_id')}: coords=({coords.get('x')}, {coords.get('y')}), text=\"{elem.get('visible_text', '')[:50]}\"")
+                    else:
+                        logger.error(
+                            "❌ Fallback failed: no coordinates extracted from JS history")
+
+                # Get the Playwright page from browser_use session
+                # STRATEGY: Connect Playwright to browser_use's browser via CDP
+                # This allows us to use the SAME browser for vision AND validation
+                page = None
+
+                try:
+                    logger.info(
+                        "🔍 Attempting to access browser_use's browser for validation...")
+
+                    # Method 1: Try to get CDP URL from session
+                    cdp_url = None
+
+                    # Try session.cdp_url
+                    if hasattr(session, 'cdp_url'):
+                        try:
+                            cdp_url = session.cdp_url
                             if cdp_url:
                                 logger.info(
-                                    f"✅ Found CDP URL from cdp_client.url: {cdp_url}")
-                    except (AssertionError, AttributeError) as e:
-                        logger.debug(f"CDP client access failed (session may be reset): {e}")
-                    except Exception as e:
-                        logger.debug(f"Error accessing cdp_client.url: {e}")
-                elif not cdp_url:
-                    logger.debug("   CDP client already reset, skipping cdp_client.url check")
-
-
-                # Search all attributes
-                if not cdp_url:
-                    logger.info(
-                        "🔍 Searching for CDP URL in session attributes...")
-                    for attr in dir(session):
-                        if not attr.startswith('_'):
-                            try:
-                                value = getattr(session, attr, None)
-                                if value and isinstance(value, str) and 'ws://' in value and 'devtools' in value:
-                                    cdp_url = value
-                                    logger.info(
-                                        f"✅ Found CDP URL in {attr}: {cdp_url}")
-                                    break
-                            except Exception:
-                                pass
-
-                # Method 2: If we have CDP URL, connect Playwright to browser_use's browser
-                if cdp_url:
-                    try:
-                        from playwright.async_api import async_playwright
-
-                        logger.info(
-                            "🔌 Connecting Playwright to browser_use's browser via CDP...")
-                        playwright_instance = await async_playwright().start()
-                        connected_browser = await playwright_instance.chromium.connect_over_cdp(cdp_url)
-
-                        # Get the active page from browser_use's browser
-                        if connected_browser.contexts:
-                            context = connected_browser.contexts[0]
-                            logger.info(
-                                f"✅ Found {len(connected_browser.contexts)} context(s)")
-
-                            if context.pages:
-                                page = context.pages[0]
-                                logger.info(f"✅ Connected to browser_use's page! URL: {await page.url()}")
+                                    f"✅ Found CDP URL from session.cdp_url: {cdp_url}")
                             else:
-                                logger.warning("⚠️ Context has no pages")
-                        else:
-                            logger.warning("⚠️ Browser has no contexts")
+                                logger.debug("session.cdp_url is None")
+                        except Exception as e:
+                            logger.debug(f"Error accessing session.cdp_url: {e}")
 
-                    except Exception as e:
-                        logger.error(
-                            f"❌ Failed to connect Playwright via CDP: {e}")
-                        import traceback
-                        logger.debug(traceback.format_exc())
+                    # Try cdp_client.url
+                    # Guard: Check if CDP client is still initialized before accessing
+                    if not cdp_url and hasattr(session, '_cdp_client_root') and session._cdp_client_root is not None:
+                        try:
+                            cdp_client = session.cdp_client
+                            if hasattr(cdp_client, 'url'):
+                                cdp_url = cdp_client.url
+                                if cdp_url:
+                                    logger.info(
+                                        f"✅ Found CDP URL from cdp_client.url: {cdp_url}")
+                        except (AssertionError, AttributeError) as e:
+                            logger.debug(f"CDP client access failed (session may be reset): {e}")
+                        except Exception as e:
+                            logger.debug(f"Error accessing cdp_client.url: {e}")
+                    elif not cdp_url:
+                        logger.debug("   CDP client already reset, skipping cdp_client.url check")
 
-                # Method 3: Fallback - try direct context access (old method)
-                if not page:
-                    logger.info("🔍 Trying fallback: direct context access...")
-                    if hasattr(session, 'context') and session.context is not None:
-                        context = session.context
-                        logger.info(f"✅ Found context: {type(context)}")
 
-                        if hasattr(context, 'pages'):
-                            pages = context.pages
-                            logger.info(f"✅ Context has {len(pages)} pages")
-                            if pages and len(pages) > 0:
-                                page = pages[0]
+                    # Search all attributes
+                    if not cdp_url:
+                        logger.info(
+                            "🔍 Searching for CDP URL in session attributes...")
+                        for attr in dir(session):
+                            if not attr.startswith('_'):
+                                try:
+                                    value = getattr(session, attr, None)
+                                    if value and isinstance(value, str) and 'ws://' in value and 'devtools' in value:
+                                        cdp_url = value
+                                        logger.info(
+                                            f"✅ Found CDP URL in {attr}: {cdp_url}")
+                                        break
+                                except Exception:
+                                    pass
+
+                    # Method 2: If we have CDP URL, connect Playwright to browser_use's browser
+                    if cdp_url:
+                        try:
+                            from playwright.async_api import async_playwright
+
+                            logger.info(
+                                "🔌 Connecting Playwright to browser_use's browser via CDP...")
+                            playwright_instance = await async_playwright().start()
+                            connected_browser = await playwright_instance.chromium.connect_over_cdp(cdp_url)
+
+                            # Get the active page from browser_use's browser
+                            if connected_browser.contexts:
+                                context = connected_browser.contexts[0]
                                 logger.info(
-                                    "✅ Got page from session.context.pages[0]")
+                                    f"✅ Found {len(connected_browser.contexts)} context(s)")
 
-                if not page:
-                    logger.warning("⚠️ Could not access Playwright page")
-                    logger.info(f"   Session type: {type(session)}")
-                    logger.info(
-                        f"   Session attributes (first 20): {[attr for attr in dir(session) if not attr.startswith('_')][:20]}")
-                    logger.info(
-                        "   Will proceed without validation (trusting browser_use)")
+                                if context.pages:
+                                    page = context.pages[0]
+                                    logger.info(f"✅ Connected to browser_use's page! URL: {await page.url()}")
+                                else:
+                                    logger.warning("⚠️ Context has no pages")
+                            else:
+                                logger.warning("⚠️ Browser has no contexts")
 
-            except Exception as e:
-                logger.error(f"❌ Error accessing page: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
+                        except Exception as e:
+                            logger.error(
+                                f"❌ Failed to connect Playwright via CDP: {e}")
+                            import traceback
+                            logger.debug(traceback.format_exc())
+
+                    # Method 3: Fallback - try direct context access (old method)
+                    if not page:
+                        logger.info("🔍 Trying fallback: direct context access...")
+                        if hasattr(session, 'context') and session.context is not None:
+                            context = session.context
+                            logger.info(f"✅ Found context: {type(context)}")
+
+                            if hasattr(context, 'pages'):
+                                pages = context.pages
+                                logger.info(f"✅ Context has {len(pages)} pages")
+                                if pages and len(pages) > 0:
+                                    page = pages[0]
+                                    logger.info(
+                                        "✅ Got page from session.context.pages[0]")
+
+                    if not page:
+                        logger.warning("⚠️ Could not access Playwright page")
+                        logger.info(f"   Session type: {type(session)}")
+                        logger.info(
+                            f"   Session attributes (first 20): {[attr for attr in dir(session) if not attr.startswith('_')][:20]}")
+                        logger.info(
+                            "   Will proceed without validation (trusting browser_use)")
+
+                except Exception as e:
+                    logger.error(f"❌ Error accessing page: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+
+            # Required by downstream branches (~line 841) and the string-parsing
+            # fallback block (~lines 1313, 1396, 1409) which reference these vars.
+            # Remove these two lines if re-enabling the "if False:" block above.
+            elements_found = []  # Coordinate parsing disabled (see comment above)
+            page = None          # Playwright/CDP session access disabled (see above)
 
             # results_list already initialized above after custom action extraction
             workflow_completed = False
@@ -888,7 +957,7 @@ def process_workflow_task(
                             estimated_llm_calls_for_element = 5 if custom_actions_enabled else 30
                             estimated_cost_for_element = estimated_llm_calls_for_element * estimated_cost_per_call
 
-                            if settings.TRACK_LLM_COSTS:
+                            if _nl_settings and _nl_settings.TRACK_LLM_COSTS:
                                 logger.info(f"📊 METRIC [{elem_id}]: Estimated LLM calls: {estimated_llm_calls_for_element}")
                                 logger.info(f"📊 METRIC [{elem_id}]: Estimated cost: ${estimated_cost_for_element:.6f}")
 
@@ -933,7 +1002,7 @@ def process_workflow_task(
                                 f"   ❌ Error extracting locators for {elem_id}: {e}")
 
                             # Log metrics even for failed elements
-                            if settings.TRACK_LLM_COSTS:
+                            if _nl_settings and _nl_settings.TRACK_LLM_COSTS:
                                 logger.info(f"📊 METRIC [{elem_id}]: Execution time: {element_execution_time:.2f}s (FAILED)")
                                 logger.info(f"📊 METRIC [{elem_id}]: Custom action used: {custom_actions_enabled}")
 
@@ -961,7 +1030,7 @@ def process_workflow_task(
                             f"⚠️ Element {elem_id} not found by agent")
 
                         # Log metrics for not found elements
-                        if settings.TRACK_LLM_COSTS:
+                        if _nl_settings and _nl_settings.TRACK_LLM_COSTS:
                             logger.info(f"📊 METRIC [{elem_id}]: Element not found by agent")
                             logger.info(f"📊 METRIC [{elem_id}]: Custom action used: {custom_actions_enabled}")
 
@@ -1919,7 +1988,7 @@ def process_workflow_task(
             # Phase: Error Handling and Logging | Requirements: 6.1, 6.2, 6.3, 9.5
 
             # Only log cost metrics if TRACK_LLM_COSTS is enabled
-            if settings.TRACK_LLM_COSTS:
+            if _nl_settings and _nl_settings.TRACK_LLM_COSTS:
                 # Calculate average metrics
                 avg_llm_calls_per_element = llm_call_count / len(elements) if len(elements) > 0 else 0
                 
@@ -2089,7 +2158,9 @@ def process_workflow_task(
             }
         finally:
             # Clean up cached Playwright instance used by custom actions
-            if enable_custom_actions:
+            # NOTE: Use enable_custom_actions_flag (resolved bool), NOT the raw
+            # enable_custom_actions parameter which defaults to None and is falsy.
+            if enable_custom_actions_flag:
                 try:
                     from browser_service.agent.registration import cleanup_playwright_cache
                     await cleanup_playwright_cache()
@@ -2100,7 +2171,8 @@ def process_workflow_task(
             await cleanup_browser_resources(
                 session=session,
                 connected_browser=connected_browser,
-                playwright_instance=playwright_instance
+                playwright_instance=playwright_instance,
+                browser_pid=browser_pid
             )
 
     # Run the async workflow
@@ -2128,14 +2200,14 @@ def process_workflow_task(
         # ========================================
         # Send metrics to the workflow metrics API endpoint for persistence
         # Skip if parent_workflow_id is provided (main workflow will handle unified metrics)
-        if settings.TRACK_LLM_COSTS and 'summary' in results and not parent_workflow_id:
+        if _nl_settings and _nl_settings.TRACK_LLM_COSTS and 'summary' in results and not parent_workflow_id:
             try:
                 record_workflow_metrics(
                     workflow_id=task_id,
                     url=url,
                     results=results,
                     session_id=results.get('session_id'),
-                    backend_port=settings.APP_PORT
+                    backend_port=_nl_settings.APP_PORT if _nl_settings else 5000
                 )
                 logger.info(f"📊 Browser-use metrics recorded for task {task_id}")
             except Exception as metrics_error:

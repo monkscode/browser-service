@@ -172,6 +172,36 @@ def clear_stored_cdp_port():
     _tracked_browser_pid = None
 
 
+def capture_session_pid(session) -> Optional[int]:
+    """
+    Capture the browser PID from a live browser session's CDP URL.
+
+    Call this IMMEDIATELY after session.start() returns, while Chrome is
+    guaranteed to be running. The CDP URL becomes unavailable after browser-use
+    fires on_BrowserStopEvent (which kills the parent Chrome before agent.run()
+    returns), so early capture is the only reliable moment.
+
+    Args:
+        session: Live browser session (BrowserSession from browser-use)
+
+    Returns:
+        Chrome browser process PID, or None if capture failed
+    """
+    try:
+        cdp_url = getattr(session, 'cdp_url', None)
+        if not cdp_url:
+            return None
+        match = re.search(r':(\d+)/', cdp_url)
+        if not match:
+            return None
+        port = match.group(1)
+        return _get_pid_from_port(port)
+    except Exception as e:
+        logger.debug(f"Error capturing session PID: {e}")
+        return None
+
+
+
 def get_browser_process_id(session) -> Optional[int]:
     """
     Extract the Chrome process ID from the browser session.
@@ -320,25 +350,32 @@ def get_browser_process_id(session) -> Optional[int]:
 async def cleanup_browser_resources(
     session=None,
     connected_browser=None,
-    playwright_instance=None
+    playwright_instance=None,
+    browser_pid: Optional[int] = None
 ) -> None:
     """
     Simple and robust browser cleanup.
 
     This function performs a comprehensive cleanup of browser resources:
-    1. Tracks the browser process ID before closing
+    1. Resolves browser PID (uses provided value, or derives from session as fallback)
     2. Closes connected browser gracefully
     3. Stops Playwright instance
     4. Closes browser session
-    5. Force kills the tracked Chrome process if still running (Windows only)
+    5. Kills the parent Chrome process if still alive, then kills any orphaned
+       child processes by PPID (psutil-based, cross-platform)
 
-    The cleanup only kills the Chrome process that was started by this service,
-    not the user's personal Chrome instances.
+    The cleanup only kills Chrome processes belonging to this specific session.
+    User's personal Chrome instances and other sessions are never affected because
+    the PPID filter is scoped to the exact PID of this session's parent process.
 
     Args:
         session: Browser session object to clean up
         connected_browser: Connected browser instance to close
         playwright_instance: Playwright instance to stop
+        browser_pid: PID of the Chrome browser process started for this session.
+                     Pass this from workflow.py (captured right after session.start())
+                     for reliable early capture. Falls back to session-derived detection
+                     if not provided.
 
     Returns:
         None
@@ -349,12 +386,14 @@ async def cleanup_browser_resources(
     before_count, before_pids = count_chrome_processes()
     logger.info(f"   📊 Chrome processes BEFORE cleanup: {before_count}")
 
-    # Get the PID of OUR Chrome process before closing
-    browser_pid = None
-    if session:
+    # Resolve browser PID: use the value provided by the caller (captured early,
+    # while Chrome was guaranteed alive) or fall back to session-derived detection.
+    if browser_pid is not None:
+        logger.info(f"   📍 Using provided browser PID: {browser_pid}")
+    elif session:
         browser_pid = get_browser_process_id(session)
         if browser_pid:
-            logger.info(f"   📍 Tracked browser PID: {browser_pid}")
+            logger.info(f"   📍 Tracked browser PID (derived from session): {browser_pid}")
         else:
             logger.debug("   ⚠️ Could not track browser PID - will use graceful close only")
 
@@ -388,95 +427,52 @@ async def cleanup_browser_resources(
         except Exception:
             pass
 
-    # Step 4: Force kill ONLY our Chrome process if it's still running
+    # Step 4: Hard-kill Chrome in a DETACHED subprocess.
+    # CRITICAL: proc.kill() on Windows can crash the calling process (Flask) when called
+    # from within the async event loop. Running the hard kill in a completely separate OS
+    # process protects Flask:
+    #   - If the subprocess crashes → only it dies, Flask and tasks_dict survive
+    #   - Flask can continue serving /query requests with the result already stored
+    #
+    # IMPORTANT: We use the absolute file path to cleanup_worker.py (same directory as
+    # this file) rather than `-m module.path` because sys.path is NOT inherited by
+    # subprocesses — only environment variables are. Absolute path works unconditionally.
     if browser_pid:
-        if sys.platform.startswith('win'):
-            try:
-                import subprocess
-
-                # Check if our specific Chrome process is still running
-                result = subprocess.run(
-                    ['tasklist', '/FI', f'PID eq {browser_pid}'],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
+        try:
+            import os as _os
+            import subprocess as _subprocess
+            _worker_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "cleanup_worker.py")
+            # cleanup_worker.py logs to cleanup_worker.log in cwd — check that file
+            # to verify Chrome was actually killed. We do NOT use DEVNULL for stderr
+            # so that Python startup errors (e.g. file-not-found) surface in the log.
+            cmd = [sys.executable, _worker_path, str(browser_pid)]
+            creation_flags = 0
+            if sys.platform.startswith("win"):
+                # CREATE_NO_WINDOW: no console flash
+                # DETACHED_PROCESS: subprocess can outlive Flask if Flask exits first
+                creation_flags = (
+                    getattr(_subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                    | getattr(_subprocess, "DETACHED_PROCESS", 0x00000008)
                 )
-
-                if 'chrome.exe' in result.stdout.lower():
-                    logger.warning(f"   ⚠️ Chrome process {browser_pid} still running after graceful close")
-                    logger.info(f"   🔨 Force killing Chrome PID {browser_pid} and its children...")
-
-                    # Kill only our specific Chrome process and its children
-                    # /T flag kills the process tree (parent + all children)
-                    subprocess.run(
-                        ['taskkill', '/F', '/PID', str(browser_pid), '/T'],
-                        capture_output=True,
-                        timeout=5
-                    )
-
-                    # Wait a moment for processes to terminate
-                    import time
-                    time.sleep(0.5)
-
-                    # Verify it's gone
-                    result = subprocess.run(
-                        ['tasklist', '/FI', f'PID eq {browser_pid}'],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-
-                    if 'chrome.exe' not in result.stdout.lower():
-                        logger.info(f"   ✅ Chrome process {browser_pid} and children terminated")
-                    else:
-                        logger.warning(f"   ⚠️ Chrome process {browser_pid} may still be running")
-                else:
-                    logger.info(f"   ✅ Chrome process {browser_pid} already terminated")
-
-            except Exception as e:
-                logger.warning(f"   ⚠️ Error during force kill: {e}")
-        else:
-            # Linux/Mac cleanup
-            try:
-                import subprocess
-                
-                # Try to kill the process group
-                logger.info(f"   🔨 Terminating Chrome PID {browser_pid}...")
-                subprocess.run(['kill', '-TERM', str(browser_pid)], timeout=5)
-                
-                # Wait a moment
-                import time
-                time.sleep(0.5)
-                
-                # Check if still running, force kill if needed
-                try:
-                    subprocess.run(['kill', '-0', str(browser_pid)], timeout=5, check=True)
-                    # Still running, force kill
-                    logger.warning(f"   ⚠️ Chrome process {browser_pid} still running, force killing...")
-                    subprocess.run(['kill', '-KILL', str(browser_pid)], timeout=5)
-                    logger.info(f"   ✅ Chrome process {browser_pid} force killed")
-                except subprocess.CalledProcessError:
-                    # Process doesn't exist anymore
-                    logger.info(f"   ✅ Chrome process {browser_pid} terminated")
-                    
-            except Exception as e:
-                logger.warning(f"   ⚠️ Error during force kill: {e}")
+            _subprocess.Popen(
+                cmd,
+                stdout=_subprocess.DEVNULL,
+                stderr=_subprocess.DEVNULL,
+                creationflags=creation_flags,
+            )
+            logger.info(
+                f"   🚀 Chrome hard-kill delegated to detached subprocess (browser PID {browser_pid})"
+            )
+        except Exception as e:
+            logger.warning(f"   ⚠️ Could not spawn cleanup subprocess: {e}")
     else:
-        logger.warning("   ⚠️ No browser PID tracked - cannot force kill (graceful close only)")
+        logger.warning("   ⚠️ No browser PID tracked — cannot force kill (graceful close only)")
 
-    # Count Chrome processes AFTER cleanup
+    # Count Chrome processes AFTER cleanup (graceful close only — subprocess kill runs
+    # asynchronously with a 1s delay, so this count reflects pre-subprocess state).
+    # Check cleanup_worker.log in the service working directory for the actual kill result.
     after_count, after_pids = count_chrome_processes()
-    logger.info(f"   📊 Chrome processes AFTER cleanup: {after_count}")
-    
-    # Compare before and after
-    if before_count > 0 and after_count >= 0:
-        diff = before_count - after_count
-        if diff > 0:
-            logger.info(f"   ✅ Cleanup reduced Chrome processes by {diff} (from {before_count} to {after_count})")
-        elif diff == 0:
-            logger.info(f"   ℹ️ Chrome process count unchanged ({before_count})")
-        else:
-            logger.warning(f"   ⚠️ Chrome processes increased by {-diff} (from {before_count} to {after_count})")
+    logger.info(f"   📊 Chrome processes snapshot (pre-subprocess kill): {after_count} (subprocess kill is async)")
 
     # Clear stored CDP port for next session
     clear_stored_cdp_port()

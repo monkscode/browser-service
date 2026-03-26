@@ -150,7 +150,16 @@ async def find_unique_locator_action(
     """
     # Import config and settings here to avoid circular imports
     from browser_service.config import config
-    from src.backend.core.config import settings
+    try:
+        from src.backend.core.config import settings as _nl_settings
+    except ImportError:
+        _nl_settings = None
+
+    # Resolve timeout for smart locator finder (default matches NL repo config)
+    if _nl_settings is not None and hasattr(_nl_settings, 'CUSTOM_ACTION_TIMEOUT'):
+        custom_action_timeout = _nl_settings.CUSTOM_ACTION_TIMEOUT
+    else:
+        custom_action_timeout = 5
 
     logger.info(f"🎯 Custom Action: find_unique_locator called for {element_id}")
     logger.info(f"   Description: {element_description}")
@@ -420,7 +429,7 @@ async def find_unique_locator_action(
                     element_data=element_data,  # Pass element attributes from browser-use DOM
                     is_collection=is_collection  # Pass collection flag for multi-element detection
                 ),
-                timeout=settings.CUSTOM_ACTION_TIMEOUT
+                timeout=custom_action_timeout
             )
 
             # Log the result with detailed information
@@ -433,7 +442,7 @@ async def find_unique_locator_action(
 
         except asyncio.TimeoutError:
             # Handle timeout gracefully
-            timeout_msg = f"Smart locator finder timed out after {settings.CUSTOM_ACTION_TIMEOUT} seconds"
+            timeout_msg = f"Smart locator finder timed out after {custom_action_timeout} seconds"
             logger.error(f"⏱️ {timeout_msg}")
             logger.error(f"   Element ID: {element_id}")
             logger.error(f"   Description: {element_description}")
@@ -441,7 +450,7 @@ async def find_unique_locator_action(
             logger.error("   This may indicate a complex page or slow network")
 
             return create_error_result('TimeoutError', timeout_msg, {
-                'timeout_seconds': settings.CUSTOM_ACTION_TIMEOUT
+                'timeout_seconds': custom_action_timeout
             })
 
         except asyncio.CancelledError:

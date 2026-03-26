@@ -475,8 +475,17 @@ def register_custom_actions(agent, page=None) -> bool:
         # Import the action implementation
         from browser_service.agent.actions import find_unique_locator_action
 
-        # Import settings
-        from src.backend.core.config import settings
+        # Import settings (with fallback for standalone mode)
+        try:
+            from src.backend.core.config import settings as _nl_settings
+        except ImportError:
+            _nl_settings = None
+
+        # Resolve timeout (default matches NL repo config)
+        if _nl_settings is not None and hasattr(_nl_settings, 'CUSTOM_ACTION_TIMEOUT'):
+            custom_action_timeout = _nl_settings.CUSTOM_ACTION_TIMEOUT
+        else:
+            custom_action_timeout = 5
 
         # Define parameter model for find_unique_locator action
         class FindUniqueLocatorParams(BaseModel):
@@ -1013,12 +1022,12 @@ def register_custom_actions(agent, page=None) -> bool:
                             iframe_context=iframe_context,  # Pass iframe context if detected
                             is_collection=params.is_collection  # Pass collection flag for multi-element detection
                         ),
-                        timeout=settings.CUSTOM_ACTION_TIMEOUT
+                        timeout=custom_action_timeout
                     )
                 except asyncio.TimeoutError:
                     # Handle timeout gracefully
                     timeout_msg = (
-                        f"Custom action timed out after {settings.CUSTOM_ACTION_TIMEOUT} seconds "
+                        f"Custom action timed out after {custom_action_timeout} seconds "
                         f"for element {params.element_id}"
                     )
                     logger.error(f"⏱️ {timeout_msg}")

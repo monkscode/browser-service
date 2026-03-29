@@ -427,54 +427,81 @@ async def cleanup_browser_resources(
         except Exception:
             pass
 
-    # Step 4: Hard-kill Chrome in a DETACHED subprocess.
+    # Step 4: Hard-kill Chrome in a subprocess and AWAIT its result.
     # CRITICAL: proc.kill() on Windows can crash the calling process (Flask) when called
     # from within the async event loop. Running the hard kill in a completely separate OS
     # process protects Flask:
     #   - If the subprocess crashes → only it dies, Flask and tasks_dict survive
     #   - Flask can continue serving /query requests with the result already stored
     #
+    # We use asyncio.create_subprocess_exec (instead of a detached Popen) so that
+    # we can await the subprocess result and get verified confirmation that the kill
+    # actually ran — while still keeping the kill isolated in a separate OS process.
+    #
     # IMPORTANT: We use the absolute file path to cleanup_worker.py (same directory as
     # this file) rather than `-m module.path` because sys.path is NOT inherited by
     # subprocesses — only environment variables are. Absolute path works unconditionally.
     if browser_pid:
         try:
+            import asyncio as _asyncio
             import os as _os
-            import subprocess as _subprocess
             _worker_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "cleanup_worker.py")
-            # cleanup_worker.py logs to cleanup_worker.log in cwd — check that file
-            # to verify Chrome was actually killed. We do NOT use DEVNULL for stderr
-            # so that Python startup errors (e.g. file-not-found) surface in the log.
-            cmd = [sys.executable, _worker_path, str(browser_pid)]
-            creation_flags = 0
+            # Pass the log path so cleanup_worker writes into the mounted logs/ dir
+            _log_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "..", "logs")
+            _log_path = _os.path.normpath(_os.path.join(_log_dir, "cleanup_worker.log"))
+            _env = {**_os.environ, "CLEANUP_WORKER_LOG": _log_path}
+
+            kwargs = {}
             if sys.platform.startswith("win"):
-                # CREATE_NO_WINDOW: no console flash
-                # DETACHED_PROCESS: subprocess can outlive Flask if Flask exits first
-                creation_flags = (
-                    getattr(_subprocess, "CREATE_NO_WINDOW", 0x08000000)
-                    | getattr(_subprocess, "DETACHED_PROCESS", 0x00000008)
-                )
-            _subprocess.Popen(
-                cmd,
-                stdout=_subprocess.DEVNULL,
-                stderr=_subprocess.DEVNULL,
-                creationflags=creation_flags,
+                # CREATE_NO_WINDOW prevents a console flash on Windows
+                kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+
+            proc = await _asyncio.create_subprocess_exec(
+                sys.executable, _worker_path, str(browser_pid),
+                stdout=_asyncio.subprocess.DEVNULL,
+                stderr=_asyncio.subprocess.DEVNULL,
+                env=_env,
+                **kwargs,
             )
             logger.info(
-                f"   🚀 Chrome hard-kill delegated to detached subprocess (browser PID {browser_pid})"
+                f"   🚀 Chrome hard-kill subprocess started (browser PID {browser_pid}), awaiting result..."
             )
+            try:
+                await _asyncio.wait_for(proc.wait(), timeout=10.0)
+                if proc.returncode == 0:
+                    logger.info(f"   ✅ Cleanup worker finished successfully (rc=0)")
+                else:
+                    logger.warning(f"   ⚠️ Cleanup worker exited with rc={proc.returncode}")
+            except _asyncio.TimeoutError:
+                logger.warning("   ⚠️ Cleanup worker timed out after 10s — killing it")
+                proc.kill()
+                try:
+                    # Reap the process so the OS cleans up the handle.
+                    # Process was just SIGKILL'd so this returns almost immediately.
+                    await _asyncio.wait_for(proc.wait(), timeout=2.0)
+                except Exception:
+                    pass  # Best-effort reap; process is already signalled dead
         except Exception as e:
             logger.warning(f"   ⚠️ Could not spawn cleanup subprocess: {e}")
     else:
         logger.warning("   ⚠️ No browser PID tracked — cannot force kill (graceful close only)")
 
-    # Count Chrome processes AFTER cleanup (graceful close only — subprocess kill runs
-    # asynchronously with a 1s delay, so this count reflects pre-subprocess state).
-    # Check cleanup_worker.log in the service working directory for the actual kill result.
+    # Count Chrome processes AFTER cleanup (subprocess kill has now completed).
+    # Report the delta vs before so accumulating orphans are immediately visible.
+    # Delta is only meaningful when both counts succeeded (count >= 0).
     after_count, after_pids = count_chrome_processes()
-    logger.info(f"   📊 Chrome processes snapshot (pre-subprocess kill): {after_count} (subprocess kill is async)")
+    logger.info(f"   📊 Chrome processes AFTER cleanup: {after_count}")
+    if before_count >= 0 and after_count >= 0:
+        still_alive = set(before_pids) & set(after_pids)
+        new_orphans = set(after_pids) - set(before_pids)
+        if still_alive:
+            logger.warning(f"   ⚠️ {len(still_alive)} pre-existing Chrome PID(s) still alive: {sorted(still_alive)}")
+        if new_orphans:
+            logger.error(f"   ❌ {len(new_orphans)} new orphaned Chrome PID(s) appeared: {sorted(new_orphans)}")
+        if not still_alive and not new_orphans:
+            logger.info("   ✅ No unexpected Chrome processes remain")
 
     # Clear stored CDP port for next session
     clear_stored_cdp_port()
-    
+
     logger.info("🧹 Cleanup complete")

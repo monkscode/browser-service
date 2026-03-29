@@ -13,7 +13,13 @@ import sys
 import os
 import io
 import logging
+from logging.handlers import RotatingFileHandler
 from typing import Optional
+
+# Browser service log file rotation settings
+BROWSER_USE_LOG_FILE = "logs/browser_use.log"
+BROWSER_USE_LOG_MAX_BYTES = 50 * 1024 * 1024  # 50MB per file
+BROWSER_USE_LOG_BACKUP_COUNT = 7               # 7 backups = 350MB max
 
 
 def setup_logging(
@@ -82,8 +88,26 @@ def setup_logging(
         log_handler = logging.StreamHandler(sys.stdout)
 
     log_handler.setFormatter(logging.Formatter(
-        "%(asctime)s - %(levelname)-8s [%(name)s] %(message)s"
+        "%(asctime)s,%(msecs)03d - %(levelname)-8s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
     ))
+
+    # File handler - rotates logs to prevent unbounded growth
+    file_handler = None
+    try:
+        os.makedirs(os.path.dirname(BROWSER_USE_LOG_FILE), exist_ok=True)
+        file_handler = RotatingFileHandler(
+            BROWSER_USE_LOG_FILE,
+            maxBytes=BROWSER_USE_LOG_MAX_BYTES,
+            backupCount=BROWSER_USE_LOG_BACKUP_COUNT,
+            encoding='utf-8'
+        )
+        file_handler.setLevel(log_level)
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s - %(levelname)-8s [%(name)s] %(message)s"
+        ))
+    except (OSError, IOError) as e:
+        print(f"Warning: Could not initialize browser_use.log file handler: {e}", file=sys.stderr)
 
     # Configure root logger with our UTF-8 handler
     # This ensures all child loggers inherit the UTF-8 encoding
@@ -91,6 +115,8 @@ def setup_logging(
     root_logger.setLevel(log_level)
     root_logger.handlers.clear()  # Remove any existing handlers
     root_logger.addHandler(log_handler)
+    if file_handler:
+        root_logger.addHandler(file_handler)
 
     # Get the requested logger (or root logger if none specified)
     if logger_name:

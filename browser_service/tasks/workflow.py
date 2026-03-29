@@ -361,7 +361,8 @@ def process_workflow_task(
                 use_vision=True,
                 override_system_message=build_system_prompt(include_custom_action=enable_custom_actions_flag),
                 use_thinking=False,
-                calculate_cost=True
+                calculate_cost=True,
+                use_judge=False
             )
             
             session.llm_screenshot_size = (VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
@@ -505,12 +506,23 @@ def process_workflow_task(
                 custom_action_calls = 0
                 execute_js_calls = 0
                 for step in agent_result.history:
+                    # find_unique_locator is a registered custom action — it does NOT appear in
+                    # model_fields_set, which only covers native browser-use Pydantic actions.
+                    # Count it from ActionResult.metadata, which the action handler populates
+                    # on every successful call (failed calls have no metadata).
+                    if hasattr(step, 'result') and step.result:
+                        for action_result in step.result:
+                            if (hasattr(action_result, 'metadata')
+                                    and isinstance(action_result.metadata, dict)
+                                    and action_result.metadata.get('element_id')
+                                    and action_result.metadata.get('found')
+                                    and action_result.metadata.get('best_locator')):
+                                custom_action_calls += 1
+                    # execute_js IS a native browser-use action with a Pydantic model, so
+                    # model_fields_set correctly reflects its usage.
                     if step.model_output and step.model_output.action:
                         for action_model in step.model_output.action:
-                            action_fields = action_model.model_fields_set
-                            if 'find_unique_locator' in action_fields:
-                                custom_action_calls += 1
-                            elif 'execute_js' in action_fields:
+                            if 'execute_js' in action_model.model_fields_set:
                                 execute_js_calls += 1
 
                 logger.info(f"📊 Action usage: find_unique_locator={custom_action_calls}, execute_js={execute_js_calls}")

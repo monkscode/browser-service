@@ -1,13 +1,13 @@
 """
-Standalone cleanup worker — runs as a detached subprocess.
+Standalone cleanup worker — runs as a subprocess.
 
 Kills a Chrome process by PID and its orphaned children.
 Called from cleanup.py's cleanup_browser_resources() so that
 Chrome hard-kills cannot crash the Flask parent process.
 
-Output is written to cleanup_worker.log in the same directory as
-browser_use_service.log (cwd of the parent process), so failures
-are always detectable and never silently swallowed.
+Output is written to the path given by the CLEANUP_WORKER_LOG env var
+(set by the parent to point into the mounted logs/ directory).
+Falls back to cleanup_worker.log in cwd if the env var is not set.
 
 Usage:
     python /abs/path/to/cleanup_worker.py <browser_pid>
@@ -25,7 +25,10 @@ def _setup_logging() -> logging.Logger:
     Falls back to stderr if the log file cannot be opened.
     We deliberately do NOT use DEVNULL — silent failures must be visible.
     """
-    log_path = os.path.join(os.getcwd(), "cleanup_worker.log")
+    log_path = os.environ.get(
+        "CLEANUP_WORKER_LOG",
+        os.path.join(os.getcwd(), "cleanup_worker.log"),
+    )
     handlers = []
 
     try:

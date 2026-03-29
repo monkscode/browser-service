@@ -294,6 +294,17 @@ async def find_unique_locator_action(
                         logger.info("")
 
                         locator_lower = final_locator.lower().lstrip()
+
+                        # Extract element metadata from DOM data (available via element_data param)
+                        elem_tag = ''
+                        elem_has_text = False
+                        elem_data_available = False
+                        if element_data:
+                            elem_tag = element_data.get('tagName', '').lower()
+                            text_content = element_data.get('textContent', '') or element_data.get('text', '')
+                            elem_has_text = bool(text_content and text_content.strip())
+                            elem_data_available = True
+
                         return {
                             'element_id': element_id,
                             'description': element_description,
@@ -335,7 +346,7 @@ async def find_unique_locator_action(
                                 'locator_approach': 'actions_candidate',
                                 'fallback_depth': 0,  # Best case - candidate worked
                                 'success': True,
-                                'element_tag': '',  # Not available in this path
+                                'element_tag': elem_tag,
                                 'has_id': (
                                     locator_lower.startswith('#')
                                     or '[id=' in locator_lower
@@ -344,8 +355,8 @@ async def find_unique_locator_action(
                                         and not any(k in locator_lower for k in ('data-testid=', 'data-test=', 'data-qa='))
                                     )
                                 ),
-                                'has_text_content': False,  # Not available
-                                'element_data_available': False,
+                                'has_text_content': elem_has_text,
+                                'element_data_available': elem_data_available,
                                 'is_collection': is_collection is True,
                                 'is_in_iframe': bool(iframe_context),
                             }

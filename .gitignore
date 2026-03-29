@@ -136,3 +136,4 @@ Thumbs.db
 tmpclaude-*
 .agents/workflows/development-workflow.md
 tasks/lessons.md
+chroma_db/chroma.sqlite3

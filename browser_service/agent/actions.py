@@ -150,7 +150,16 @@ async def find_unique_locator_action(
     """
     # Import config and settings here to avoid circular imports
     from browser_service.config import config
-    from src.backend.core.config import settings
+    try:
+        from src.backend.core.config import settings as _nl_settings
+    except ImportError:
+        _nl_settings = None
+
+    # Resolve timeout for smart locator finder (default matches NL repo config)
+    if _nl_settings is not None and hasattr(_nl_settings, 'CUSTOM_ACTION_TIMEOUT'):
+        custom_action_timeout = _nl_settings.CUSTOM_ACTION_TIMEOUT
+    else:
+        custom_action_timeout = 5
 
     logger.info(f"🎯 Custom Action: find_unique_locator called for {element_id}")
     logger.info(f"   Description: {element_description}")
@@ -285,6 +294,17 @@ async def find_unique_locator_action(
                         logger.info("")
 
                         locator_lower = final_locator.lower().lstrip()
+
+                        # Extract element metadata from DOM data (available via element_data param)
+                        elem_tag = ''
+                        elem_has_text = False
+                        elem_data_available = False
+                        if element_data:
+                            elem_tag = element_data.get('tagName', '').lower()
+                            text_content = element_data.get('textContent', '') or element_data.get('text', '')
+                            elem_has_text = bool(text_content and text_content.strip())
+                            elem_data_available = True
+
                         return {
                             'element_id': element_id,
                             'description': element_description,
@@ -326,7 +346,7 @@ async def find_unique_locator_action(
                                 'locator_approach': 'actions_candidate',
                                 'fallback_depth': 0,  # Best case - candidate worked
                                 'success': True,
-                                'element_tag': '',  # Not available in this path
+                                'element_tag': elem_tag,
                                 'has_id': (
                                     locator_lower.startswith('#')
                                     or '[id=' in locator_lower
@@ -335,8 +355,8 @@ async def find_unique_locator_action(
                                         and not any(k in locator_lower for k in ('data-testid=', 'data-test=', 'data-qa='))
                                     )
                                 ),
-                                'has_text_content': False,  # Not available
-                                'element_data_available': False,
+                                'has_text_content': elem_has_text,
+                                'element_data_available': elem_data_available,
                                 'is_collection': is_collection is True,
                                 'is_in_iframe': bool(iframe_context),
                             }
@@ -420,7 +440,7 @@ async def find_unique_locator_action(
                     element_data=element_data,  # Pass element attributes from browser-use DOM
                     is_collection=is_collection  # Pass collection flag for multi-element detection
                 ),
-                timeout=settings.CUSTOM_ACTION_TIMEOUT
+                timeout=custom_action_timeout
             )
 
             # Log the result with detailed information
@@ -433,7 +453,7 @@ async def find_unique_locator_action(
 
         except asyncio.TimeoutError:
             # Handle timeout gracefully
-            timeout_msg = f"Smart locator finder timed out after {settings.CUSTOM_ACTION_TIMEOUT} seconds"
+            timeout_msg = f"Smart locator finder timed out after {custom_action_timeout} seconds"
             logger.error(f"⏱️ {timeout_msg}")
             logger.error(f"   Element ID: {element_id}")
             logger.error(f"   Description: {element_description}")
@@ -441,7 +461,7 @@ async def find_unique_locator_action(
             logger.error("   This may indicate a complex page or slow network")
 
             return create_error_result('TimeoutError', timeout_msg, {
-                'timeout_seconds': settings.CUSTOM_ACTION_TIMEOUT
+                'timeout_seconds': custom_action_timeout
             })
 
         except asyncio.CancelledError:

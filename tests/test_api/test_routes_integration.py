@@ -16,6 +16,7 @@ Tests:
 """
 
 import pytest
+from contextlib import contextmanager
 from unittest.mock import patch, MagicMock
 from flask import Flask
 
@@ -159,3 +160,98 @@ class TestTasksEndpoint:
         ]
         resp = client.get("/tasks")
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Health endpoint — provider-aware fields
+# ---------------------------------------------------------------------------
+
+class TestHealthProviderFields:
+    """
+    Tests that /health returns model_provider and the correct google_api_configured
+    value for each provider, using config attributes rather than the global singleton.
+    """
+
+    @contextmanager
+    def _make_app_with_config(self, model_provider, credentials_obj, api_key=""):
+        """
+        Context manager that yields a Flask test client with config.llm patched
+        for the given provider.
+
+        The patch must stay active while requests are made: Flask route handlers
+        look up `config` from the module globals at call time, so the mock must
+        remain in place throughout the test.  Using a context manager guarantees
+        the patch is alive for the duration of the `with` block.
+        """
+        from flask import Flask
+        from unittest.mock import MagicMock, patch
+
+        app = Flask(__name__)
+        app.config["TESTING"] = True
+
+        mock_processor = MagicMock()
+        mock_processor.get_tasks_dict.return_value = {}
+
+        llm_cfg = MagicMock()
+        llm_cfg.model_provider = model_provider
+        llm_cfg.google_api_key = api_key
+        llm_cfg.vertexai_credentials = credentials_obj
+
+        mock_cfg = MagicMock()
+        mock_cfg.llm = llm_cfg
+
+        with patch("browser_service.api.routes.config", mock_cfg), \
+             patch("browser_service.api.routes._nl_settings", None), \
+             patch("browser_service.api.routes.process_workflow_task"):
+            from browser_service.api.routes import register_routes
+            register_routes(app, mock_processor)
+            with app.test_client() as client:
+                yield client
+
+    def test_health_vertex_credentials_loaded(self):
+        """Vertex provider with loaded credentials: google_api_configured=true."""
+        with self._make_app_with_config("vertex", credentials_obj=object()) as client:
+            resp = client.get("/health")
+        data = resp.get_json()
+        assert data["model_provider"] == "vertex"
+        assert data["google_api_configured"] is True
+
+    def test_health_vertex_credentials_not_loaded(self):
+        """Vertex provider with credentials=None: google_api_configured=false."""
+        with self._make_app_with_config("vertex", credentials_obj=None) as client:
+            resp = client.get("/health")
+        data = resp.get_json()
+        assert data["model_provider"] == "vertex"
+        assert data["google_api_configured"] is False
+
+    def test_health_gemini_with_api_key(self):
+        """Gemini provider with a valid API key: google_api_configured=true."""
+        with self._make_app_with_config("gemini", credentials_obj=None, api_key="real-key") as client:
+            resp = client.get("/health")
+        data = resp.get_json()
+        assert data["model_provider"] == "gemini"
+        assert data["google_api_configured"] is True
+
+    def test_health_gemini_no_api_key(self):
+        """Gemini provider with empty API key: google_api_configured=false."""
+        with self._make_app_with_config("gemini", credentials_obj=None, api_key="") as client:
+            resp = client.get("/health")
+        data = resp.get_json()
+        assert data["model_provider"] == "gemini"
+        assert data["google_api_configured"] is False
+
+    def test_health_local_provider(self):
+        """local provider: google_api_configured=false (unsupported)."""
+        with self._make_app_with_config("local", credentials_obj=None) as client:
+            resp = client.get("/health")
+        data = resp.get_json()
+        assert data["model_provider"] == "local"
+        assert data["google_api_configured"] is False
+
+    def test_health_model_provider_key_always_present(self):
+        """model_provider key is always present in /health response."""
+        for provider in ("gemini", "vertex", "local"):
+            with self._make_app_with_config(provider, credentials_obj=None) as client:
+                resp = client.get("/health")
+            data = resp.get_json()
+            assert "model_provider" in data, f"model_provider missing for provider={provider}"

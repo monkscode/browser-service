@@ -93,7 +93,14 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             "active_tasks": len([t for t in all_tasks.values() if t.get('status') in ['processing', 'running']]),
             "total_tasks": len(all_tasks),
             "encoding": "utf-8",
-            "google_api_configured": bool(config.llm.google_api_key and config.llm.google_api_key != 'your_api_key_here')
+            "model_provider": config.llm.model_provider,
+            "google_api_configured": (
+                bool(config.llm.google_api_key and config.llm.google_api_key != "your_api_key_here")
+                if config.llm.model_provider == "gemini"
+                else config.llm.vertexai_credentials is not None
+                if config.llm.model_provider == "vertex"
+                else False
+            )
         }), 200
 
     @app.route('/probe', methods=['GET'])

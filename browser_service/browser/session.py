@@ -146,3 +146,16 @@ class BrowserSessionManager:
             ...     print("Session is active")
         """
         return self.session is not None
+
+    def is_active(self) -> bool:
+        """
+        Check if the browser session is currently active.
+
+        Alias for has_session() — provided for semantic clarity at call sites
+        where the intent is to check live session state rather than mere
+        object presence.
+
+        Returns:
+            True if an active session exists, False otherwise
+        """
+        return self.session is not None

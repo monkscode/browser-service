@@ -104,7 +104,7 @@ class TestBrowserServiceConfigValidation:
 
     def _make_config_raw(self):
         """Create config without env-var mocking for manual attribute tweaking."""
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}, clear=False):
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key", "MODEL_PROVIDER": "gemini"}, clear=False):
             with patch(
                 "browser_service.config.BrowserServiceConfig._get_google_model",
                 return_value="gemini-2.5-flash",
@@ -169,3 +169,241 @@ class TestGoogleModelNormalisation:
                 cfg = BrowserServiceConfig.__new__(BrowserServiceConfig)
                 result = BrowserServiceConfig._get_google_model(cfg)
                 assert result == "gemini-2.5-flash"
+
+    def test_strips_vertex_ai_prefix(self):
+        """'vertex_ai/gemini-2.5-flash' → 'gemini-2.5-flash'."""
+        with patch.dict(os.environ, {"GOOGLE_MODEL": "vertex_ai/gemini-2.5-flash"}, clear=False):
+            with patch("browser_service.config.BrowserServiceConfig.__init__", return_value=None):
+                from browser_service.config import BrowserServiceConfig
+                cfg = BrowserServiceConfig.__new__(BrowserServiceConfig)
+                result = BrowserServiceConfig._get_google_model(cfg)
+                assert result == "gemini-2.5-flash"
+
+
+# ---------------------------------------------------------------------------
+# Vertex AI provider tests
+# ---------------------------------------------------------------------------
+
+class TestVertexAIProviderConfig:
+    """Tests for MODEL_PROVIDER=vertex path in BrowserServiceConfig."""
+
+    def _make_vertex_config(self, extra_env=None, mock_credentials=True):
+        """
+        Build a BrowserServiceConfig with vertex provider env vars.
+
+        mock_credentials=True patches google.oauth2 so no real file is needed.
+        Returns (cfg, mock_load) when mock_credentials=True, else just cfg.
+        """
+        env = {
+            "MODEL_PROVIDER": "vertex",
+            "VERTEXAI_PROJECT": "my-gcp-project",
+            "VERTEXAI_LOCATION": "asia-south1",
+            "VERTEXAI_CREDENTIALS": "/fake/credentials.json",
+            "GEMINI_API_KEY": "",
+            "GOOGLE_MODEL": "gemini-2.5-flash",
+        }
+        if extra_env:
+            env.update(extra_env)
+
+        sentinel = object()  # unique object to assert identity
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("browser_service.config.BrowserServiceConfig._get_google_model",
+                       return_value="gemini-2.5-flash"):
+                with patch("browser_service.config.BrowserServiceConfig.__init__.__globals__",
+                           {}, create=True):
+                    # Block NL-repo settings import
+                    pass
+                if mock_credentials:
+                    with patch(
+                        "browser_service.config.service_account"
+                        if False else "google.oauth2.service_account.Credentials.from_service_account_file",
+                        return_value=sentinel,
+                    ) as mock_load:
+                        from browser_service.config import BrowserServiceConfig
+                        with patch(
+                            "google.oauth2.service_account.Credentials.from_service_account_file",
+                            return_value=sentinel,
+                        ) as mock_load2:
+                            cfg = BrowserServiceConfig()
+                            return cfg, mock_load2
+                else:
+                    from browser_service.config import BrowserServiceConfig
+                    cfg = BrowserServiceConfig()
+                    return cfg
+
+    def _make_vertex_config_simple(self, extra_env=None):
+        """Simpler helper: patches entire __init__ credential block."""
+        env = {
+            "MODEL_PROVIDER": "vertex",
+            "VERTEXAI_PROJECT": "my-gcp-project",
+            "VERTEXAI_LOCATION": "asia-south1",
+            "VERTEXAI_CREDENTIALS": "/fake/credentials.json",
+            "GEMINI_API_KEY": "",
+            "GOOGLE_MODEL": "gemini-2.5-flash",
+        }
+        if extra_env:
+            env.update(extra_env)
+
+        fake_creds = object()
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("browser_service.config.BrowserServiceConfig._get_google_model",
+                       return_value="gemini-2.5-flash"):
+                with patch("google.oauth2.service_account.Credentials.from_service_account_file",
+                           return_value=fake_creds) as mock_load:
+                    from browser_service.config import BrowserServiceConfig
+                    cfg = BrowserServiceConfig()
+                    return cfg, mock_load, fake_creds
+
+    def test_model_provider_set_to_vertex(self):
+        """MODEL_PROVIDER=vertex is stored on config.llm.model_provider."""
+        cfg, _, _ = self._make_vertex_config_simple()
+        assert cfg.llm.model_provider == "vertex"
+
+    def test_vertex_fields_populated(self):
+        """VERTEXAI_PROJECT, VERTEXAI_LOCATION, VERTEXAI_CREDENTIALS are stored."""
+        cfg, _, _ = self._make_vertex_config_simple()
+        assert cfg.llm.vertexai_project == "my-gcp-project"
+        assert cfg.llm.vertexai_location == "asia-south1"
+        assert cfg.llm.vertexai_credentials_path == "/fake/credentials.json"
+
+    def test_credentials_object_loaded_at_startup(self):
+        """Credentials.from_service_account_file is called once during __init__."""
+        cfg, mock_load, fake_creds = self._make_vertex_config_simple()
+        mock_load.assert_called_once_with(
+            "/fake/credentials.json",
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        assert cfg.llm.vertexai_credentials is fake_creds
+
+    def test_credentials_not_loaded_for_gemini_provider(self):
+        """Credentials loading is skipped when model_provider=gemini."""
+        env = {
+            "MODEL_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "test-key",
+            "GOOGLE_MODEL": "gemini-2.5-flash",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch("browser_service.config.BrowserServiceConfig._get_google_model",
+                       return_value="gemini-2.5-flash"):
+                with patch("google.oauth2.service_account.Credentials.from_service_account_file") as mock_load:
+                    from browser_service.config import BrowserServiceConfig
+                    BrowserServiceConfig()
+                    mock_load.assert_not_called()
+
+    def test_credentials_remain_none_when_path_empty(self):
+        """If VERTEXAI_CREDENTIALS is unset, vertexai_credentials stays None."""
+        env = {
+            "MODEL_PROVIDER": "vertex",
+            "VERTEXAI_PROJECT": "proj",
+            "VERTEXAI_LOCATION": "us-central1",
+            "VERTEXAI_CREDENTIALS": "",
+            "GOOGLE_MODEL": "gemini-2.5-flash",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch("browser_service.config.BrowserServiceConfig._get_google_model",
+                       return_value="gemini-2.5-flash"):
+                from browser_service.config import BrowserServiceConfig
+                cfg = BrowserServiceConfig()
+        assert cfg.llm.vertexai_credentials is None
+
+    def test_credentials_none_on_load_failure(self):
+        """If from_service_account_file raises, vertexai_credentials stays None."""
+        env = {
+            "MODEL_PROVIDER": "vertex",
+            "VERTEXAI_PROJECT": "proj",
+            "VERTEXAI_LOCATION": "us-central1",
+            "VERTEXAI_CREDENTIALS": "/fake/bad.json",
+            "GOOGLE_MODEL": "gemini-2.5-flash",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch("browser_service.config.BrowserServiceConfig._get_google_model",
+                       return_value="gemini-2.5-flash"):
+                with patch(
+                    "google.oauth2.service_account.Credentials.from_service_account_file",
+                    side_effect=ValueError("bad JSON"),
+                ):
+                    from browser_service.config import BrowserServiceConfig
+                    cfg = BrowserServiceConfig()
+        assert cfg.llm.vertexai_credentials is None
+
+
+class TestVertexAIValidation:
+    """Tests for validate() provider-specific checks (vertex branch)."""
+
+    def _base_vertex_cfg(self):
+        """Return a BrowserServiceConfig with all vertex fields set to valid values."""
+        from browser_service.config import BrowserServiceConfig, LLMConfig
+        cfg = BrowserServiceConfig.__new__(BrowserServiceConfig)
+        cfg.llm = LLMConfig(
+            model_provider="vertex",
+            vertexai_project="my-project",
+            vertexai_location="asia-south1",
+            vertexai_credentials_path="/fake/creds.json",
+            vertexai_credentials=object(),  # non-None = successfully loaded
+        )
+        from browser_service.config import BatchConfig, LocatorConfig
+        cfg.batch = BatchConfig()
+        cfg.locator = LocatorConfig()
+        cfg.robot_library = "browser"
+        cfg.headless = True
+        cfg.enable_custom_actions = True
+        return cfg
+
+    def test_validate_vertex_all_valid(self):
+        """All vertex fields set + credentials loaded → no errors."""
+        cfg = self._base_vertex_cfg()
+        with patch("os.path.exists", return_value=True):
+            errors = cfg.validate()
+        assert errors == [], errors
+
+    def test_validate_vertex_missing_credentials_env(self):
+        cfg = self._base_vertex_cfg()
+        cfg.llm.vertexai_credentials_path = ""
+        errors = cfg.validate()
+        assert any("VERTEXAI_CREDENTIALS" in e for e in errors)
+
+    def test_validate_vertex_credentials_file_not_found(self):
+        cfg = self._base_vertex_cfg()
+        cfg.llm.vertexai_credentials_path = "/nonexistent/path.json"
+        cfg.llm.vertexai_credentials = None
+        with patch("os.path.exists", return_value=False):
+            errors = cfg.validate()
+        assert any("not found" in e for e in errors)
+
+    def test_validate_vertex_credentials_failed_to_load(self):
+        """File exists on disk but credentials object is None (e.g. malformed JSON)."""
+        cfg = self._base_vertex_cfg()
+        cfg.llm.vertexai_credentials = None  # load failed
+        with patch("os.path.exists", return_value=True):
+            errors = cfg.validate()
+        assert any("failed to load" in e for e in errors)
+
+    def test_validate_vertex_missing_project(self):
+        cfg = self._base_vertex_cfg()
+        cfg.llm.vertexai_project = ""
+        with patch("os.path.exists", return_value=True):
+            errors = cfg.validate()
+        assert any("VERTEXAI_PROJECT" in e for e in errors)
+
+    def test_validate_vertex_missing_location(self):
+        cfg = self._base_vertex_cfg()
+        cfg.llm.vertexai_location = ""
+        with patch("os.path.exists", return_value=True):
+            errors = cfg.validate()
+        assert any("VERTEXAI_LOCATION" in e for e in errors)
+
+    def test_validate_local_provider_returns_error(self):
+        """MODEL_PROVIDER=local is explicitly rejected — not a silent pass."""
+        cfg = self._base_vertex_cfg()
+        cfg.llm.model_provider = "local"
+        errors = cfg.validate()
+        assert any("local" in e and "not supported" in e for e in errors)
+
+    def test_validate_unknown_provider_returns_error(self):
+        """An unrecognised provider value returns a clear error."""
+        cfg = self._base_vertex_cfg()
+        cfg.llm.model_provider = "openai"
+        errors = cfg.validate()
+        assert any("openai" in e for e in errors)

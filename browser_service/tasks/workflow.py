@@ -349,15 +349,44 @@ def process_workflow_task(
             #
             # NOTE: We do NOT manually set session._original_viewport_size here.
 
-            agent = Agent(
-                task=unified_objective,
-                browser_session=session,
-                llm=ChatGoogle(
+            # Build LLM instance based on provider.
+            # Credentials for Vertex AI are pre-loaded in BrowserServiceConfig.__init__()
+            # and cached on config.llm.vertexai_credentials — no file I/O here.
+            if config.llm.model_provider == "vertex":
+                llm_instance = ChatGoogle(
+                    model=config.llm.google_model,
+                    vertexai=True,
+                    credentials=config.llm.vertexai_credentials,
+                    project=config.llm.vertexai_project,
+                    location=config.llm.vertexai_location,
+                    temperature=0.1,
+                    thinking_budget=0,
+                )
+                logger.info(
+                    f"🔑 Using Vertex AI: project={config.llm.vertexai_project}, "
+                    f"location={config.llm.vertexai_location}, model={config.llm.google_model}"
+                )
+            elif config.llm.model_provider == "local":
+                # browser-service does not support local/Ollama — validate() already reports
+                # this as an error at startup. Raise explicitly if execution somehow reaches here.
+                raise RuntimeError(
+                    "MODEL_PROVIDER=local is not supported by browser-service. "
+                    "Browser-service requires a Google vision model (gemini or vertex)."
+                )
+            else:
+                # "gemini" — Gemini Developer API
+                llm_instance = ChatGoogle(
                     model=config.llm.google_model,
                     api_key=config.llm.google_api_key,
                     temperature=0.1,
-                    thinking_budget=0
-                ),
+                    thinking_budget=0,
+                )
+                logger.info(f"🔑 Using Gemini API: model={config.llm.google_model}")
+
+            agent = Agent(
+                task=unified_objective,
+                browser_session=session,
+                llm=llm_instance,
                 use_vision=True,
                 override_system_message=build_system_prompt(include_custom_action=enable_custom_actions_flag),
                 use_thinking=False,
@@ -412,8 +441,6 @@ def process_workflow_task(
 
             # Run the unified workflow
             logger.info("🤖 Starting unified Agent...")
-            logger.info(
-                "🤖 Using default ChatGoogle LLM (no rate limiting needed)")
 
             # Log available actions for debugging
             if hasattr(agent, 'tools') and agent.tools:

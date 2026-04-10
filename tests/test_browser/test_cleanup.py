@@ -85,6 +85,59 @@ class TestGetPidFromPort:
         assert pid == 5678
 
 
+class TestCleanupResourcesPidRouting:
+    """Tests verifying PID selection logic in cleanup_browser_resources."""
+
+    @pytest.mark.asyncio
+    async def test_explicit_pid_used_not_global(self):
+        """When browser_pid is passed, get_browser_process_id is never called."""
+        from browser_service.browser import cleanup
+
+        # Set the global fallback to a different PID
+        cleanup._tracked_browser_pid = 5678
+
+        with patch("browser_service.browser.cleanup.get_browser_process_id") as mock_get_pid, \
+             patch("browser_service.browser.cleanup.count_chrome_processes", return_value=(0, [])), \
+             patch("browser_service.browser.cleanup.clear_stored_cdp_port"), \
+             patch("asyncio.create_subprocess_exec") as mock_proc:
+            mock_proc_obj = MagicMock()
+            mock_proc_obj.wait = MagicMock(return_value=None)
+            mock_proc_obj.returncode = 0
+            mock_proc.return_value = mock_proc_obj
+
+            # Pass explicit browser_pid=1234
+            await cleanup.cleanup_browser_resources(browser_pid=1234)
+
+        # Fallback must not have been called
+        mock_get_pid.assert_not_called()
+
+        # Cleanup
+        cleanup._tracked_browser_pid = None
+
+    @pytest.mark.asyncio
+    async def test_fallback_path_logs_warning(self):
+        """When browser_pid is None and session provided, a warning is logged."""
+        from browser_service.browser import cleanup
+
+        mock_session = MagicMock()
+
+        with patch("browser_service.browser.cleanup.get_browser_process_id", return_value=9999), \
+             patch("browser_service.browser.cleanup.count_chrome_processes", return_value=(0, [])), \
+             patch("browser_service.browser.cleanup.clear_stored_cdp_port"), \
+             patch("asyncio.create_subprocess_exec") as mock_proc, \
+             patch.object(cleanup.logger, "warning") as mock_warn:
+            mock_proc_obj = MagicMock()
+            mock_proc_obj.wait = MagicMock(return_value=None)
+            mock_proc_obj.returncode = 0
+            mock_proc.return_value = mock_proc_obj
+
+            await cleanup.cleanup_browser_resources(session=mock_session)
+
+        # At least one warning must mention the fallback
+        warning_calls = [str(c) for c in mock_warn.call_args_list]
+        assert any("fallback" in w.lower() or "inaccurate" in w.lower() for w in warning_calls)
+
+
 class TestCountChromeProcesses:
     """Tests for count_chrome_processes with mocked subprocess."""
 

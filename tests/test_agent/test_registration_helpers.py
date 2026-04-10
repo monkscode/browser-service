@@ -2,17 +2,16 @@
 Unit tests for helper functions in browser_service.agent.registration.
 
 Purpose: registration.py contains pure helper functions that extract DOM node
-         attributes, detect iframe context, resolve CDP URLs, and manage the
-         Playwright cache.  These are deterministic functions that don't require
-         a live browser — they operate on mock objects.  A regression in any
-         of these means locator extraction silently fails or CDP connections break.
+         attributes, detect iframe context, and resolve CDP URLs.  These are
+         deterministic functions that don't require a live browser — they operate
+         on mock objects.  A regression in any of these means locator extraction
+         silently fails or CDP connections break.
 
 Tests:
   _extract_dom_node_attributes: full attrs, missing, no attributes attr
   _detect_iframe_context: inside/outside/by-name/ordinal/empty
   _extract_cdp_host_port: standard / no devtools
   _get_cdp_url_from_session: direct / client / search / None
-  invalidate_playwright_cache: with cache / empty cache
   _CDP_URL_PATTERN: valid / invalid patterns
 """
 
@@ -208,28 +207,28 @@ class TestCdpUrlHelpers:
         assert _CDP_URL_PATTERN.match("not-a-url") is None
 
 
-class TestPlaywrightCacheManagement:
-    """Tests for invalidate_playwright_cache."""
+class TestNoCacheGlobals:
+    """Verify the module-level Playwright cache has been removed."""
 
-    def test_invalidate_with_cache(self):
-        """Invalidating an active cache returns True."""
+    def test_no_cache_globals(self):
+        """Module must not export any of the removed cache globals."""
         import browser_service.agent.registration as reg
-        # Set up fake cache
-        reg._playwright_instance_cache = MagicMock()
-        reg._connected_browser_cache = MagicMock()
-        reg._cache_cdp_url = "ws://x:1/devtools/browser/y"
+        removed = [
+            '_playwright_instance_cache',
+            '_connected_browser_cache',
+            '_cache_cdp_url',
+            '_cache_initialized',
+            '_cache_lock',
+        ]
+        for name in removed:
+            assert not hasattr(reg, name), f"Removed global still present: {name}"
 
-        result = reg.invalidate_playwright_cache()
-        assert result is True
-        assert reg._playwright_instance_cache is None
-        assert reg._connected_browser_cache is None
-
-    def test_invalidate_empty_cache(self):
-        """Invalidating an empty cache returns False."""
+    def test_cleanup_playwright_cache_removed(self):
+        """cleanup_playwright_cache must not exist (was module-cache-specific)."""
         import browser_service.agent.registration as reg
-        reg._playwright_instance_cache = None
-        reg._connected_browser_cache = None
-        reg._cache_cdp_url = None
+        assert not hasattr(reg, 'cleanup_playwright_cache')
 
-        result = reg.invalidate_playwright_cache()
-        assert result is False
+    def test_invalidate_playwright_cache_removed(self):
+        """invalidate_playwright_cache must not exist (was module-cache-specific)."""
+        import browser_service.agent.registration as reg
+        assert not hasattr(reg, 'invalidate_playwright_cache')

@@ -2196,16 +2196,9 @@ def process_workflow_task(
                 }
             }
         finally:
-            # Clean up cached Playwright instance used by custom actions
-            # NOTE: Use enable_custom_actions_flag (resolved bool), NOT the raw
-            # enable_custom_actions parameter which defaults to None and is falsy.
-            if enable_custom_actions_flag:
-                try:
-                    from browser_service.agent.registration import cleanup_playwright_cache
-                    await cleanup_playwright_cache()
-                except Exception as e:
-                    logger.warning(f"⚠️ Error cleaning up Playwright cache: {e}")
-            
+            # Playwright cache cleanup removed — no module-level cache exists.
+            # Each custom action creates and destroys its own Playwright instance.
+
             # Use comprehensive cleanup utility
             await cleanup_browser_resources(
                 session=session,
@@ -2215,11 +2208,10 @@ def process_workflow_task(
             )
 
     # Run the async workflow
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
         results = loop.run_until_complete(run_unified_workflow())
-        loop.close()
 
         # Update task status
         tasks_dict[task_id].update({
@@ -2270,3 +2262,5 @@ def process_workflow_task(
                 'summary': {'total_elements': len(elements), 'successful': 0, 'failed': len(elements)}
             }
         })
+    finally:
+        loop.close()

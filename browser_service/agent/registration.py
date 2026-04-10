@@ -7,8 +7,6 @@ bypassing the need for LLM calls for specific operations like locator validation
 
 Key Functions:
 - register_custom_actions: Register custom actions with browser-use agent
-- cleanup_playwright_cache: Clean up cached Playwright resources (call at workflow end)
-- invalidate_playwright_cache: Force-invalidate cache (call when CDP URL changes)
 
 The registration process:
 1. Creates or retrieves the Tools instance from the agent
@@ -17,53 +15,28 @@ The registration process:
 4. Handles page object retrieval from browser_session via CDP
 5. Converts results to ActionResult format for the agent
 
-Playwright Cache Lifecycle:
-- Cache is created on first custom action call per workflow
-- Cache is reused across multiple custom action calls (performance optimization)
-- Cache is invalidated if CDP URL changes (browser restart detection)
-- Cache MUST be cleaned up at workflow end via cleanup_playwright_cache()
-- Emergency cleanup via atexit handler prevents orphaned resources
+Playwright Connection Lifecycle:
+- Each custom action call creates a fresh Playwright connection via CDP
+- The connection is destroyed after the action completes (in finally blocks)
+- No module-level cache exists — each concurrent task uses its own connection
+- This ensures isolation when multiple tasks run simultaneously
 
 Usage:
-    from browser_service.agent.registration import register_custom_actions, cleanup_playwright_cache
+    from browser_service.agent.registration import register_custom_actions
 
-    # Register custom actions with agent
     success = register_custom_actions(agent, page=None)
     if success:
         # Agent can now call find_unique_locator action
         pass
-    
-    # IMPORTANT: Always clean up at workflow end
-    await cleanup_playwright_cache()
 """
 
 import asyncio
-import atexit
 import logging
 import re
 from typing import Optional
 
 # Get logger
 logger = logging.getLogger(__name__)
-
-# ========================================
-# PLAYWRIGHT INSTANCE CACHE
-# ========================================
-# Module-level cache for Playwright instance (reuse across custom action calls)
-# This significantly improves performance by avoiding repeated Playwright startup.
-#
-# IMPORTANT: This cache MUST be cleaned up when workflow completes.
-# See cleanup_playwright_cache() for proper cleanup.
-#
-# THREAD SAFETY: _cache_lock protects concurrent access to cache variables.
-# This prevents race conditions when multiple workflows run simultaneously.
-
-_playwright_instance_cache = None
-_connected_browser_cache = None
-_cache_cdp_url = None
-_cache_initialized = False  # Track if cache has ever been used
-_cache_lock = asyncio.Lock()  # Thread-safe access to cache
-
 
 def _extract_dom_node_attributes(dom_node) -> dict:
     """
@@ -149,79 +122,11 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
     
     return None, None
 
-def _sync_cleanup_playwright_cache():
-    """
-    Synchronous cleanup wrapper for atexit handler.
-    
-    This is registered with atexit to ensure cleanup happens even if
-    the async cleanup_playwright_cache() is never called (e.g., crash/interrupt).
-    
-    Note: This is a best-effort cleanup. Some async resources may not be
-    fully released in a sync context.
-    """
-    global _playwright_instance_cache, _connected_browser_cache, _cache_cdp_url, _cache_initialized
-    
-    if not _cache_initialized:
-        return  # Nothing to clean up
-    
-    logger.info("🧹 ATEXIT: Running emergency Playwright cache cleanup...")
-    
-    try:
-        # Note: We can't properly await async cleanup in atexit,
-        # but we can at least clear the references to help GC
-        if _connected_browser_cache:
-            logger.info("   Clearing browser cache reference...")
-            # Try to close if there's a sync close method
-            if hasattr(_connected_browser_cache, 'close') and not asyncio.iscoroutinefunction(_connected_browser_cache.close):
-                try:
-                    _connected_browser_cache.close()
-                except Exception:
-                    pass
-        
-        if _playwright_instance_cache:
-            logger.info("   Clearing Playwright cache reference...")
-            # Playwright stop() is async, so we can't call it here
-            # But clearing reference helps GC
-        
-        _playwright_instance_cache = None
-        _connected_browser_cache = None
-        _cache_cdp_url = None
-        _cache_initialized = False
-        
-        logger.info("✅ ATEXIT: Cache references cleared")
-    except Exception as e:
-        logger.warning(f"⚠️ ATEXIT: Error during emergency cleanup: {e}")
-
-
-# Register the sync cleanup with atexit (runs on normal Python exit)
-atexit.register(_sync_cleanup_playwright_cache)
-
-
-def invalidate_playwright_cache():
-    """
-    Force-invalidate the Playwright cache without closing resources.
-    
-    Call this when you detect that the cached CDP URL is stale (browser restarted)
-    or when you want to force a fresh connection on the next custom action.
-    
-    Note: This does NOT close the existing resources - it just marks the cache
-    as invalid so a new connection will be created. For proper cleanup,
-    use cleanup_playwright_cache() instead.
-    
-    Returns:
-        bool: True if cache was invalidated, False if cache was already empty
-    """
-    global _playwright_instance_cache, _connected_browser_cache, _cache_cdp_url
-    
-    had_cache = _playwright_instance_cache is not None or _connected_browser_cache is not None
-    
-    if had_cache:
-        logger.info("🔄 Invalidating Playwright cache (forcing fresh connection on next use)")
-        _playwright_instance_cache = None
-        _connected_browser_cache = None
-        _cache_cdp_url = None
-    
-    return had_cache
+# ═══════════════════════════════════════════════════════════════════════════════
+# REMOVED: _sync_cleanup_playwright_cache, invalidate_playwright_cache
+# No module-level Playwright cache exists. Each custom action creates and
+# destroys its own connection. See find_unique_locator handler below.
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -303,7 +208,12 @@ def _get_cdp_url_from_session(browser_session) -> Optional[str]:
 
 
 def _store_cdp_port_for_cleanup(cdp_url: str):
-    """Store CDP port for cleanup module (best-effort)."""
+    """Store CDP port for fallback cleanup.
+
+    Warning: This writes to module-level globals in cleanup.py.
+    In concurrent mode, the last writer wins. The primary cleanup path
+    (browser_pid parameter in workflow.py) is unaffected by this.
+    """
     try:
         from browser_service.browser.cleanup import store_cdp_port
         store_cdp_port(cdp_url)
@@ -761,13 +671,10 @@ def register_custom_actions(agent, page=None) -> bool:
 
 
 
-                # IMPORTANT: browser-use now uses CDP (Chrome DevTools Protocol) instead of Playwright
-                # We need to connect to browser-use's browser via CDP to get a Playwright page for validation
-                #
-                # OPTIMIZATION: Reuse Playwright instance across custom action calls
-                # Instead of creating a new instance every time, check cache first
-                global _playwright_instance_cache, _connected_browser_cache, _cache_cdp_url, _cache_initialized
-                
+                # IMPORTANT: browser-use now uses CDP (Chrome DevTools Protocol) instead of Playwright.
+                # Each custom action call creates a fresh Playwright connection and destroys it
+                # after use. This ensures isolation between concurrent tasks — no shared state.
+
                 active_page = None
                 playwright_instance = None
                 connected_browser = None
@@ -783,40 +690,22 @@ def register_custom_actions(agent, page=None) -> bool:
                     cdp_url = _get_cdp_url_from_session(browser_session)
 
                     # ════════════════════════════════════════════════════════════════════
-                    # CONNECT PLAYWRIGHT VIA CDP (with caching)
+                    # CONNECT PLAYWRIGHT VIA CDP (per-call, no module-level cache)
                     # ════════════════════════════════════════════════════════════════════
                     if cdp_url:
-                        # Thread-safe cache access using lock
-                        async with _cache_lock:
-                            
-                            # Check if we can reuse cached Playwright instance
-                            if (_playwright_instance_cache and 
-                                _connected_browser_cache and 
-                                _cache_cdp_url == cdp_url):
-                                logger.info("♻️  Reusing cached Playwright instance (performance optimization)")
-                                playwright_instance = _playwright_instance_cache
-                                connected_browser = _connected_browser_cache
-                            else:
-                                # Create new Playwright instance
-                                try:
-                                    from playwright.async_api import async_playwright
+                        try:
+                            from playwright.async_api import async_playwright
 
-                                    logger.info("🔌 Connecting Playwright to browser-use's browser via CDP...")
-                                    playwright_instance = await async_playwright().start()
-                                    connected_browser = await playwright_instance.chromium.connect_over_cdp(cdp_url)
-                                    
-                                    # Cache for reuse (protected by lock)
-                                    _playwright_instance_cache = playwright_instance
-                                    _connected_browser_cache = connected_browser
-                                    _cache_cdp_url = cdp_url
-                                    _cache_initialized = True  # Mark cache as used for atexit cleanup
-                                    created_new_instance = True
-                                    logger.info("💾 Cached Playwright instance for reuse")
+                            logger.info("🔌 Connecting Playwright to browser-use's browser via CDP...")
+                            playwright_instance = await async_playwright().start()
+                            connected_browser = await playwright_instance.chromium.connect_over_cdp(cdp_url)
+                            created_new_instance = True
+                            logger.info("✅ Playwright connected via CDP (per-call instance)")
 
-                                except Exception as e:
-                                    logger.error(f"❌ Failed to connect Playwright via CDP: {e}")
-                                    import traceback
-                                    logger.debug(traceback.format_exc())
+                        except Exception as e:
+                            logger.error(f"❌ Failed to connect Playwright via CDP: {e}")
+                            import traceback
+                            logger.debug(traceback.format_exc())
                     else:
                         # Log available attributes for debugging when CDP URL not found
                         logger.info(f"   browser_session attributes: {[attr for attr in dir(browser_session) if not attr.startswith('_')][:20]}")
@@ -918,12 +807,8 @@ def register_custom_actions(agent, page=None) -> bool:
                                 logger.warning("⚠️ Page connectivity test returned unexpected result, may be stale")
                         except Exception as connectivity_err:
                             logger.error(f"❌ Page connectivity test FAILED: {connectivity_err}")
-                            logger.info("🔄 Invalidating stale cache and will retry with fresh connection...")
-                            # Invalidate cache so next call creates fresh connection
-                            _playwright_instance_cache = None
-                            _connected_browser_cache = None
-                            _cache_cdp_url = None
-                            active_page = None  # Force retry
+                            logger.info("🔄 Stale connection detected, falling back...")
+                            active_page = None  # Force fallback to page parameter
 
                 try:
                     final_x, final_y = scaled_x, scaled_y
@@ -1141,46 +1026,30 @@ def register_custom_actions(agent, page=None) -> bool:
                             is_done=False  # Let agent try again with different approach
                         )
 
-                # Cleanup: Do NOT close cached Playwright instance (reused across calls)
-                # Only clean up if we created a non-cached instance (shouldn't happen now)
-                if connected_browser and connected_browser != _connected_browser_cache:
-                    try:
-                        logger.info("🧹 Cleaning up: Closing non-cached Playwright CDP connection...")
-                        await connected_browser.close()
-                        logger.info("✅ Playwright browser connection closed")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Error closing Playwright browser: {e}")
-
-                if playwright_instance and playwright_instance != _playwright_instance_cache:
-                    try:
-                        logger.info("🧹 Cleaning up: Stopping non-cached Playwright instance...")
-                        await playwright_instance.stop()
-                        logger.info("✅ Playwright instance stopped")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Error stopping Playwright instance: {e}")
-                
-                # Cached instances are NOT cleaned up here - they persist for reuse
-                # They will be cleaned up when workflow completes (see cleanup_playwright_cache)
-
                 return action_result
 
             except Exception as e:
                 error_msg = f"Error in find_unique_locator custom action: {str(e)}"
                 logger.error(f"❌ {error_msg}", exc_info=True)
-
-                # Cleanup on error - but only non-cached instances
-                if connected_browser and connected_browser != _connected_browser_cache:
-                    try:
-                        await connected_browser.close()
-                    except Exception:
-                        pass
-                if playwright_instance and playwright_instance != _playwright_instance_cache:
-                    try:
-                        await playwright_instance.stop()
-                    except Exception:
-                        pass
-
                 return ActionResult(error=error_msg)
+
+            finally:
+                # Always clean up the per-call Playwright connection.
+                # Consolidated into a single finally block so cleanup is guaranteed
+                # regardless of how the try block exits (return, exception, timeout).
+                if connected_browser:
+                    try:
+                        logger.info("🧹 Closing per-call Playwright CDP connection...")
+                        await connected_browser.close()
+                    except Exception as e:
+                        logger.warning(f"⚠️ Error closing Playwright browser: {e}")
+
+                if playwright_instance:
+                    try:
+                        logger.info("🧹 Stopping per-call Playwright instance...")
+                        await playwright_instance.stop()
+                    except Exception as e:
+                        logger.warning(f"⚠️ Error stopping Playwright instance: {e}")
 
         logger.info("✅ Custom action 'find_unique_locator' registered successfully")
         logger.info("   Agent can now call: find_unique_locator(x, y, element_id, element_description, candidate_locator)")
@@ -1194,44 +1063,4 @@ def register_custom_actions(agent, page=None) -> bool:
         return False
 
 
-async def cleanup_playwright_cache():
-    """
-    Clean up cached Playwright instance at the end of workflow.
-    
-    This should be called once after all custom actions have completed,
-    not after each individual action call.
-    
-    Returns:
-        bool: True if cleanup succeeded
-    """
-    global _playwright_instance_cache, _connected_browser_cache, _cache_cdp_url, _cache_initialized
-    
-    try:
-        if _connected_browser_cache:
-            try:
-                logger.info("🧹 Workflow cleanup: Closing cached Playwright CDP connection...")
-                await _connected_browser_cache.close()
-                logger.info("✅ Cached Playwright browser connection closed")
-            except Exception as e:
-                logger.warning(f"⚠️ Error closing cached Playwright browser: {e}")
-
-        if _playwright_instance_cache:
-            try:
-                logger.info("🧹 Workflow cleanup: Stopping cached Playwright instance...")
-                await _playwright_instance_cache.stop()
-                logger.info("✅ Cached Playwright instance stopped")
-            except Exception as e:
-                logger.warning(f"⚠️ Error stopping cached Playwright instance: {e}")
-        
-        # Clear cache and reset initialized flag
-        _playwright_instance_cache = None
-        _connected_browser_cache = None
-        _cache_cdp_url = None
-        _cache_initialized = False
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Error during Playwright cache cleanup: {e}")
-        return False
 

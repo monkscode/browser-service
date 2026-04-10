@@ -186,6 +186,12 @@ class BrowserServiceConfig:
         # Feature flags
         self.enable_custom_actions = os.getenv("ENABLE_CUSTOM_ACTIONS", "true").lower() == "true"
 
+        # Concurrency configuration
+        # Controls how many browser automation tasks can run simultaneously.
+        # Each task spawns a headless Chrome instance (~250MB RAM).
+        # Default 10 supports 5-10 concurrent users on a 32GB machine.
+        self.max_concurrent_tasks = int(os.getenv("MAX_CONCURRENT_TASKS", "10"))
+
     def _get_google_model(self) -> str:
         """
         Get Google model name from environment or settings.
@@ -272,6 +278,12 @@ class BrowserServiceConfig:
 
         if self.locator.coordinate_offset_attempts < 0:
             errors.append(f"COORDINATE_OFFSET_ATTEMPTS must be >= 0, got {self.locator.coordinate_offset_attempts}")
+
+        # Validate concurrency configuration
+        if self.max_concurrent_tasks < 1:
+            errors.append(
+                f"MAX_CONCURRENT_TASKS must be >= 1, got {self.max_concurrent_tasks}"
+            )
 
         # Validate robot library type
         valid_libraries = ["browser", "selenium"]

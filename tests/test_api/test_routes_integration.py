@@ -30,6 +30,7 @@ def app_and_processor():
     mock_processor = MagicMock()
     mock_processor.tasks = {}
     mock_processor.get_tasks_dict.return_value = {}
+    mock_processor.count_active_tasks.return_value = 0
     mock_processor.list_tasks.return_value = []
     mock_processor.get_task_status.return_value = None
 
@@ -37,6 +38,7 @@ def app_and_processor():
          patch("browser_service.api.routes._nl_settings") as mock_settings, \
          patch("browser_service.api.routes.process_workflow_task"):
         mock_config.llm.google_api_key = "test-key"
+        mock_config.max_concurrent_tasks = 10
         mock_settings.ENABLE_CUSTOM_ACTIONS = True
 
         from browser_service.api.routes import register_routes
@@ -109,20 +111,58 @@ class TestWorkflowSubmit:
         resp = client.post("/workflow", data="not json", content_type="text/plain")
         assert resp.status_code == 400
 
-    def test_busy_returns_429(self, client, processor):
-        """When a task is already processing, returns 429."""
-        processor.get_tasks_dict.return_value = {
-            "existing": {"status": "processing"}
-        }
+    def test_busy_returns_429_when_at_capacity(self, client, processor):
+        """When try_submit_task returns False (at capacity), returns 429."""
+        from browser_service.config import config as real_config
+        limit = real_config.max_concurrent_tasks
+        processor.try_submit_task.return_value = False
+        processor.count_active_tasks.return_value = limit  # used in 429 response body
         resp = client.post("/workflow", json={
             "elements": [{"id": "e1", "description": "btn", "action": "click"}],
             "url": "https://example.com",
         })
         assert resp.status_code == 429
 
+    def test_busy_response_contains_capacity_fields(self, client, processor):
+        """429 response body includes active_tasks and max_tasks fields."""
+        from browser_service.config import config as real_config
+        limit = real_config.max_concurrent_tasks
+        processor.try_submit_task.return_value = False
+        processor.count_active_tasks.return_value = limit
+        resp = client.post("/workflow", json={
+            "elements": [{"id": "e1", "description": "btn", "action": "click"}],
+            "url": "https://example.com",
+        })
+        assert resp.status_code == 429
+        data = resp.get_json()
+        assert data["active_tasks"] == limit
+        assert data["max_tasks"] == limit
+
+    def test_below_capacity_is_accepted(self, client, processor):
+        """When try_submit_task returns True (under capacity), request is accepted."""
+        processor.try_submit_task.return_value = True
+        resp = client.post("/workflow", json={
+            "elements": [{"id": "e1", "description": "btn", "action": "click"}],
+            "url": "https://example.com",
+        })
+        assert resp.status_code in [200, 202]
+
+    def test_config_1_rejects_when_one_active(self, client, processor):
+        """MAX_CONCURRENT_TASKS=1: try_submit_task returns False when one task active."""
+        from unittest.mock import patch
+        from browser_service.config import config as real_config
+        processor.try_submit_task.return_value = False
+        processor.count_active_tasks.return_value = 1
+        with patch.object(real_config, 'max_concurrent_tasks', 1):
+            resp = client.post("/workflow", json={
+                "elements": [{"id": "e1", "description": "btn", "action": "click"}],
+                "url": "https://example.com",
+            })
+        assert resp.status_code == 429
+
     def test_batch_alias_works(self, client, processor):
         """POST /batch works as alias for /workflow."""
-        processor.get_tasks_dict.return_value = {}
+        processor.count_active_tasks.return_value = 0
         resp = client.post("/batch", json={
             "elements": [{"id": "e1", "description": "btn", "action": "click"}],
             "url": "https://example.com",
@@ -191,6 +231,7 @@ class TestHealthProviderFields:
 
         mock_processor = MagicMock()
         mock_processor.get_tasks_dict.return_value = {}
+        mock_processor.count_active_tasks.return_value = 0
 
         llm_cfg = MagicMock()
         llm_cfg.model_provider = model_provider
@@ -199,6 +240,7 @@ class TestHealthProviderFields:
 
         mock_cfg = MagicMock()
         mock_cfg.llm = llm_cfg
+        mock_cfg.max_concurrent_tasks = 10
 
         with patch("browser_service.api.routes.config", mock_cfg), \
              patch("browser_service.api.routes._nl_settings", None), \
@@ -255,3 +297,43 @@ class TestHealthProviderFields:
                 resp = client.get("/health")
             data = resp.get_json()
             assert "model_provider" in data, f"model_provider missing for provider={provider}"
+
+
+class TestHealthCapacityFields:
+    """Tests for capacity fields in the /health response."""
+
+    def test_idle_health_shows_zero_active_tasks(self, client, processor):
+        """No active tasks → active_tasks=0, available_slots=max_tasks."""
+        processor.count_active_tasks.return_value = 0
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["active_tasks"] == 0
+        assert data["max_tasks"] == 10
+        assert data["available_slots"] == 10
+
+    def test_under_load_shows_correct_available_slots(self, client, processor):
+        """3 active tasks → available_slots = max_tasks - 3."""
+        processor.count_active_tasks.return_value = 3
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["active_tasks"] == 3
+        assert data["available_slots"] == 10 - 3
+
+    def test_at_capacity_shows_zero_available_slots(self, client, processor):
+        """active_tasks == max_tasks → available_slots=0."""
+        processor.count_active_tasks.return_value = 10
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["active_tasks"] == 10
+        assert data["available_slots"] == 0
+
+    def test_health_includes_total_tasks_processed(self, client, processor):
+        """total_tasks_processed reflects total tasks in dict (not just active)."""
+        processor.count_active_tasks.return_value = 0
+        processor.get_tasks_dict.return_value = {"a": {}, "b": {}, "c": {}}
+        resp = client.get("/health")
+        data = resp.get_json()
+        assert data["total_tasks_processed"] == 3

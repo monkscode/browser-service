@@ -393,7 +393,10 @@ async def cleanup_browser_resources(
     elif session:
         browser_pid = get_browser_process_id(session)
         if browser_pid:
-            logger.info(f"   📍 Tracked browser PID (derived from session): {browser_pid}")
+            logger.warning(
+                f"   ⚠️ Using fallback PID detection (derived from session): {browser_pid}. "
+                f"This may be inaccurate during concurrent task execution."
+            )
         else:
             logger.debug("   ⚠️ Could not track browser PID - will use graceful close only")
 
@@ -501,7 +504,11 @@ async def cleanup_browser_resources(
         if not still_alive and not new_orphans:
             logger.info("   ✅ No unexpected Chrome processes remain")
 
-    # Clear stored CDP port for next session
+    # Note: In concurrent mode, clearing global CDP tracking state could affect
+    # other tasks. The globals are only used as a fallback when browser_pid is
+    # not passed explicitly. Since workflow.py always passes browser_pid, this
+    # clear is safe — but we log it for observability.
     clear_stored_cdp_port()
+    logger.debug("   Cleared global CDP port tracking (fallback state)")
 
     logger.info("🧹 Cleanup complete")

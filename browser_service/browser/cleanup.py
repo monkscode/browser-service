@@ -504,11 +504,20 @@ async def cleanup_browser_resources(
         if not still_alive and not new_orphans:
             logger.info("   ✅ No unexpected Chrome processes remain")
 
-    # Note: In concurrent mode, clearing global CDP tracking state could affect
-    # other tasks. The globals are only used as a fallback when browser_pid is
-    # not passed explicitly. Since workflow.py always passes browser_pid, this
-    # clear is safe — but we log it for observability.
-    clear_stored_cdp_port()
-    logger.debug("   Cleared global CDP port tracking (fallback state)")
+    # Only clear global CDP tracking state when the stored PID belongs to this task.
+    # These globals are shared across concurrent tasks; clearing unconditionally can
+    # wipe state that another task still needs as a fallback (e.g. when browser_pid
+    # was not captured early and get_browser_process_id() relies on _tracked_browser_pid).
+    stored_pid = get_stored_browser_pid()
+    if stored_pid is not None and browser_pid is not None and browser_pid == stored_pid:
+        clear_stored_cdp_port()
+        logger.debug("   Cleared global CDP port tracking (owned by this task)")
+    elif stored_pid is None:
+        logger.debug("   Global CDP port tracking already clear")
+    else:
+        logger.debug(
+            f"   Skipping global CDP clear — stored PID {stored_pid} "
+            f"does not match this task's PID {browser_pid}"
+        )
 
     logger.info("🧹 Cleanup complete")

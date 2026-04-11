@@ -176,7 +176,7 @@ def process_workflow_task(
     user_query: str,
     session_config: Dict[str, Any],
     enable_custom_actions: Optional[bool] = None,
-    tasks_dict: Optional[Dict[str, Dict[str, Any]]] = None,
+    task_processor=None,  # TaskProcessor — used to update task status atomically
     parent_workflow_id: Optional[str] = None
 ) -> None:
     """
@@ -201,10 +201,10 @@ def process_workflow_task(
         session_config: Browser configuration
         enable_custom_actions: Optional flag to enable/disable custom actions (defaults to config value)
     """
-    if tasks_dict is None:
-        raise ValueError("tasks_dict parameter is required for task tracking")
+    if task_processor is None:
+        raise ValueError("task_processor parameter is required for task tracking")
 
-    tasks_dict[task_id].update({
+    task_processor.update_task(task_id, {
         "status": "running",
         "started_at": time.time(),
         "message": f"Processing {len(elements)} elements as unified workflow"
@@ -2214,7 +2214,7 @@ def process_workflow_task(
         results = loop.run_until_complete(run_unified_workflow())
 
         # Update task status
-        tasks_dict[task_id].update({
+        task_processor.update_task(task_id, {
             "status": "completed",
             "completed_at": time.time(),
             "message": f"Workflow completed: {results['summary']['successful']}/{results['summary']['total_elements']} elements found",
@@ -2250,7 +2250,7 @@ def process_workflow_task(
     except Exception as e:
         logger.error(
             f"❌ Failed to execute workflow task {task_id}: {e}", exc_info=True)
-        tasks_dict[task_id].update({
+        task_processor.update_task(task_id, {
             "status": "completed",
             "completed_at": time.time(),
             "message": f"Workflow failed: {str(e)}",

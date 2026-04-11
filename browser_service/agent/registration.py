@@ -808,7 +808,7 @@ def register_custom_actions(agent, page=None) -> bool:
                         except Exception as connectivity_err:
                             logger.error(f"❌ Page connectivity test FAILED: {connectivity_err}")
                             logger.info("🔄 Stale connection detected, falling back...")
-                            active_page = None  # Force fallback to page parameter
+                            active_page = page  # Fall back to the page passed during registration
 
                 try:
                     final_x, final_y = scaled_x, scaled_y

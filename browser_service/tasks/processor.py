@@ -21,11 +21,11 @@ class TaskProcessor:
     Manages background task execution and status tracking.
 
     Thread-safety: All reads/writes to self.tasks are protected by self._lock.
-    Worker threads update task status via the dict reference returned by
-    get_tasks_dict(). Individual dict key writes (tasks_dict[task_id].update(...))
-    are atomic under CPython's GIL and operate on different keys per worker,
-    so they are safe without holding the lock. The lock protects compound
-    operations like iteration (list_tasks) and count (count_active_tasks).
+    Worker threads must update task status via update_task(), which acquires
+    the lock before writing. This ensures readers (get_task_status, list_tasks,
+    count_active_tasks, try_submit_task) always observe a consistent snapshot
+    — dict.update() with multiple keys is not a single atomic bytecode, so
+    writing outside the lock can expose partial updates to concurrent readers.
 
     Memory management: completed tasks are lazily evicted after completed_task_ttl
     seconds. Eviction runs inside the lock during count_active_tasks() and
@@ -89,7 +89,12 @@ class TaskProcessor:
             }
 
         logger.info(f"Submitting task {task_id} for background execution")
-        self.executor.submit(task_function, *args, **kwargs)
+        try:
+            self.executor.submit(task_function, *args, **kwargs)
+        except Exception:
+            with self._lock:
+                self.tasks.pop(task_id, None)
+            raise
 
     def try_submit_task(
         self,
@@ -131,7 +136,12 @@ class TaskProcessor:
             }
 
         logger.info(f"Submitting task {task_id} for background execution")
-        self.executor.submit(task_function, *args, **kwargs)
+        try:
+            self.executor.submit(task_function, *args, **kwargs)
+        except Exception:
+            with self._lock:
+                self.tasks.pop(task_id, None)
+            raise
         return True
 
     def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
@@ -180,13 +190,43 @@ class TaskProcessor:
                 if t.get('status') in ['processing', 'running']
             )
 
+    def update_task(self, task_id: str, updates: Dict[str, Any]) -> None:
+        """
+        Atomically apply updates to a task record.
+
+        Acquires the lock before writing so readers (get_task_status,
+        list_tasks, count_active_tasks, try_submit_task) always observe
+        a consistent snapshot.
+
+        Args:
+            task_id: The task identifier
+            updates: Key/value pairs to merge into the task record
+        """
+        with self._lock:
+            if task_id in self.tasks:
+                self.tasks[task_id].update(updates)
+            else:
+                logger.warning(
+                    f"update_task: task '{task_id}' not found (evicted or never submitted); "
+                    f"update dropped: {list(updates.keys())}"
+                )
+
+    def task_count(self) -> int:
+        """
+        Return total number of tracked tasks (active + completed).
+
+        Used by the health endpoint to report total tasks processed.
+        """
+        with self._lock:
+            return len(self.tasks)
+
     def get_tasks_dict(self) -> Dict[str, Dict[str, Any]]:
         """
-        Get the internal tasks dictionary.
+        Get the internal tasks dictionary (direct reference).
 
-        This is used by task functions (workflow.py) to update their own
-        task status. Workers write to distinct keys (their own task_id),
-        so concurrent writes are safe under CPython's GIL.
+        Only use this for read-only operations (e.g. ``len()``).  Do NOT
+        write to the returned dict directly — use ``update_task()`` instead
+        to keep writes under the lock.
 
         Returns:
             The tasks dictionary (direct reference, not a copy)

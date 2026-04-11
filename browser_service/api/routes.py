@@ -87,7 +87,6 @@ def register_routes(app: Flask, task_processor: Any) -> None:
         """Health check endpoint with capacity information."""
         active_count = task_processor.count_active_tasks()
         max_tasks = config.max_concurrent_tasks
-        all_tasks = task_processor.get_tasks_dict()
         return jsonify({
             "status": "healthy",
             "service": "enhanced_browser_use_service",
@@ -95,7 +94,7 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             "active_tasks": active_count,
             "max_tasks": max_tasks,
             "available_slots": max_tasks - active_count,
-            "total_tasks_processed": len(all_tasks),
+            "total_tasks_processed": task_processor.task_count(),
             "encoding": "utf-8",
             "model_provider": config.llm.model_provider,
             "google_api_configured": (
@@ -197,7 +196,7 @@ def register_routes(app: Flask, task_processor: Any) -> None:
                 user_query,
                 session_config,
                 enable_custom_actions,
-                task_processor.get_tasks_dict(),
+                task_processor,
                 parent_workflow_id  # Pass parent_workflow_id to prevent duplicate metrics
             )
             if not accepted:

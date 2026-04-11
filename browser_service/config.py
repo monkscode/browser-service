@@ -101,19 +101,24 @@ class BrowserServiceConfig:
     def __init__(self):
         """Initialize configuration from environment variables."""
 
+        # Collect non-numeric env var errors during __init__ so validate() can report
+        # them as friendly messages instead of letting int() raise ValueError and abort
+        # the import before validation runs.
+        self._parse_errors: list[str] = []
+
         # Batch processing configuration
         self.batch = BatchConfig(
-            max_agent_steps=int(os.getenv("MAX_AGENT_STEPS", "15")),
-            max_retries_per_element=int(os.getenv("MAX_RETRIES_PER_ELEMENT", "2")),
-            element_timeout=int(os.getenv("ELEMENT_TIMEOUT", "120"))
+            max_agent_steps=self._int_env("MAX_AGENT_STEPS", 15),
+            max_retries_per_element=self._int_env("MAX_RETRIES_PER_ELEMENT", 2),
+            element_timeout=self._int_env("ELEMENT_TIMEOUT", 120)
         )
 
         # Locator extraction configuration
         self.locator = LocatorConfig(
-            content_based_retries=int(os.getenv("CONTENT_BASED_RETRIES", "7")),
-            coordinate_based_retries=int(os.getenv("COORDINATE_BASED_RETRIES", "7")),
-            element_type_retries=int(os.getenv("ELEMENT_TYPE_RETRIES", "5")),
-            coordinate_offset_attempts=int(os.getenv("COORDINATE_OFFSET_ATTEMPTS", "7"))
+            content_based_retries=self._int_env("CONTENT_BASED_RETRIES", 7),
+            coordinate_based_retries=self._int_env("COORDINATE_BASED_RETRIES", 7),
+            element_type_retries=self._int_env("ELEMENT_TYPE_RETRIES", 5),
+            coordinate_offset_attempts=self._int_env("COORDINATE_OFFSET_ATTEMPTS", 7)
         )
 
         # LLM configuration
@@ -190,7 +195,22 @@ class BrowserServiceConfig:
         # Controls how many browser automation tasks can run simultaneously.
         # Each task spawns a headless Chrome instance (~250MB RAM).
         # Default 10 supports 5-10 concurrent users on a 32GB machine.
-        self.max_concurrent_tasks = int(os.getenv("MAX_CONCURRENT_TASKS", "10"))
+        self.max_concurrent_tasks = self._int_env("MAX_CONCURRENT_TASKS", 10)
+
+    def _int_env(self, name: str, default: int) -> int:
+        """Parse an integer environment variable.
+
+        Returns the default value on non-numeric input and records a parse error
+        so validate() can surface a clear message rather than crashing the import.
+        """
+        raw = os.getenv(name, str(default))
+        try:
+            return int(raw)
+        except ValueError:
+            self._parse_errors.append(
+                f"{name} must be an integer, got '{raw}'"
+            )
+            return default
 
     def _get_google_model(self) -> str:
         """
@@ -220,7 +240,7 @@ class BrowserServiceConfig:
         Returns:
             List of error messages. Empty list if configuration is valid.
         """
-        errors = []
+        errors = list(getattr(self, '_parse_errors', []))  # include any non-numeric parse errors from __init__
 
         # Validate LLM configuration (provider-specific)
         if self.llm.model_provider == "gemini":

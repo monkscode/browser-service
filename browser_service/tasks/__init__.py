@@ -27,7 +27,7 @@ Usage:
     task_processor.submit_task(
         task_id,
         process_workflow_task,
-        task_id, elements, url, user_query, session_config, enable_custom_actions, tasks_dict
+        task_id, elements, url, user_query, session_config, enable_custom_actions, task_processor
     )
 
     # Query task status

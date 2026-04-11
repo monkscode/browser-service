@@ -272,13 +272,14 @@ class TestEviction:
     def test_dict_shrinks_under_sustained_load(self):
         """Dict size stays bounded when completed tasks exceed TTL."""
         proc = self._make_proc(ttl=60)
-        # Simulate 50 completed old tasks
+        # Seed 50 stale completed tasks via public API
         for i in range(50):
-            proc.tasks[f"old-{i}"] = {"status": "completed", "completed_at": time.time() - 120}
+            proc.submit_task(f"old-{i}", MagicMock())
+            proc.update_task(f"old-{i}", {"status": "completed", "completed_at": time.time() - 120})
 
         proc.count_active_tasks()
 
-        assert len(proc.tasks) == 0
+        assert len(proc.get_tasks_dict()) == 0
 
 
 class TestThreadSafety:

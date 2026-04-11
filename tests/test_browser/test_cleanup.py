@@ -14,7 +14,7 @@ Tests:
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 
 class TestStoreCdpPort:
@@ -99,9 +99,9 @@ class TestCleanupResourcesPidRouting:
         with patch("browser_service.browser.cleanup.get_browser_process_id") as mock_get_pid, \
              patch("browser_service.browser.cleanup.count_chrome_processes", return_value=(0, [])), \
              patch("browser_service.browser.cleanup.clear_stored_cdp_port"), \
-             patch("asyncio.create_subprocess_exec") as mock_proc:
+             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_proc:
             mock_proc_obj = MagicMock()
-            mock_proc_obj.wait = MagicMock(return_value=None)
+            mock_proc_obj.wait = AsyncMock(return_value=0)
             mock_proc_obj.returncode = 0
             mock_proc.return_value = mock_proc_obj
 
@@ -124,10 +124,10 @@ class TestCleanupResourcesPidRouting:
         with patch("browser_service.browser.cleanup.get_browser_process_id", return_value=9999), \
              patch("browser_service.browser.cleanup.count_chrome_processes", return_value=(0, [])), \
              patch("browser_service.browser.cleanup.clear_stored_cdp_port"), \
-             patch("asyncio.create_subprocess_exec") as mock_proc, \
+             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_proc, \
              patch.object(cleanup.logger, "warning") as mock_warn:
             mock_proc_obj = MagicMock()
-            mock_proc_obj.wait = MagicMock(return_value=None)
+            mock_proc_obj.wait = AsyncMock(return_value=0)
             mock_proc_obj.returncode = 0
             mock_proc.return_value = mock_proc_obj
 

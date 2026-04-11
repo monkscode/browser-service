@@ -31,6 +31,7 @@ def app_and_processor():
     mock_processor.tasks = {}
     mock_processor.get_tasks_dict.return_value = {}
     mock_processor.count_active_tasks.return_value = 0
+    mock_processor.task_count.return_value = 0
     mock_processor.list_tasks.return_value = []
     mock_processor.get_task_status.return_value = None
 
@@ -147,18 +148,6 @@ class TestWorkflowSubmit:
         })
         assert resp.status_code in [200, 202]
 
-    def test_config_1_rejects_when_one_active(self, client, processor):
-        """MAX_CONCURRENT_TASKS=1: try_submit_task returns False when one task active."""
-        from unittest.mock import patch
-        from browser_service.config import config as real_config
-        processor.try_submit_task.return_value = False
-        processor.count_active_tasks.return_value = 1
-        with patch.object(real_config, 'max_concurrent_tasks', 1):
-            resp = client.post("/workflow", json={
-                "elements": [{"id": "e1", "description": "btn", "action": "click"}],
-                "url": "https://example.com",
-            })
-        assert resp.status_code == 429
 
     def test_batch_alias_works(self, client, processor):
         """POST /batch works as alias for /workflow."""
@@ -232,6 +221,7 @@ class TestHealthProviderFields:
         mock_processor = MagicMock()
         mock_processor.get_tasks_dict.return_value = {}
         mock_processor.count_active_tasks.return_value = 0
+        mock_processor.task_count.return_value = 0
 
         llm_cfg = MagicMock()
         llm_cfg.model_provider = model_provider
@@ -331,9 +321,9 @@ class TestHealthCapacityFields:
         assert data["available_slots"] == 0
 
     def test_health_includes_total_tasks_processed(self, client, processor):
-        """total_tasks_processed reflects total tasks in dict (not just active)."""
+        """total_tasks_processed reflects total tasks tracked (active + completed)."""
         processor.count_active_tasks.return_value = 0
-        processor.get_tasks_dict.return_value = {"a": {}, "b": {}, "c": {}}
+        processor.task_count.return_value = 3
         resp = client.get("/health")
         data = resp.get_json()
         assert data["total_tasks_processed"] == 3

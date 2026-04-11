@@ -40,6 +40,7 @@ class TestBrowserServiceConfigDefaults:
             "COORDINATE_BASED_RETRIES": "7",
             "ELEMENT_TYPE_RETRIES": "5",
             "COORDINATE_OFFSET_ATTEMPTS": "7",
+            "MAX_CONCURRENT_TASKS": "10",
             "GEMINI_API_KEY": "",
             "ROBOT_LIBRARY": "browser",
             "BROWSER_HEADLESS": "true",

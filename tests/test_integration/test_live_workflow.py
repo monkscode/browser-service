@@ -21,6 +21,8 @@ Skip the full agent tests (expensive) with:
 import os
 import time
 import pytest
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch, MagicMock, AsyncMock
 
 pytestmark = pytest.mark.integration
 
@@ -53,80 +55,99 @@ def _has_llm_key() -> bool:
 class TestProcessWorkflowTaskGuardsLive:
     """Guard conditions in process_workflow_task() — replicated with live imports."""
 
+    def _make_processor(self, task_id: str):
+        """Return a TaskProcessor with task_id pre-seeded."""
+        from browser_service.tasks.processor import TaskProcessor
+        tp = TaskProcessor(ThreadPoolExecutor(max_workers=1))
+        tp.submit_task(task_id, lambda: None)
+        return tp
+
+    @staticmethod
+    def _mock_browser():
+        """Patch BrowserSession so tests don't launch a real browser."""
+        mock_session = MagicMock()
+        mock_session.start = AsyncMock(side_effect=RuntimeError("mock: no browser in test"))
+        return patch("browser_use.browser.session.BrowserSession", return_value=mock_session)
+
     def test_raises_on_none_tasks_dict(self):
-        """tasks_dict=None raises ValueError immediately, no browser launched."""
+        """task_processor=None raises ValueError immediately, no browser launched."""
         from browser_service.tasks.workflow import process_workflow_task
-        with pytest.raises(ValueError, match="tasks_dict"):
+        with pytest.raises(ValueError, match="task_processor"):
             process_workflow_task(
                 task_id="guard-test",
                 elements=[{"id": "e1", "description": "button", "action": "click"}],
                 url="https://example.com",
                 user_query="click",
                 session_config=_minimal_session_config(),
-                tasks_dict=None,
+                task_processor=None,
             )
 
     def test_task_id_is_set_in_tasks_dict(self):
-        """tasks_dict entry is created/updated for the given task_id after execution."""
+        """Task entry is updated for the given task_id after execution."""
         from browser_service.tasks.workflow import process_workflow_task
-        tasks_dict = {"live-t1": {"status": "pending"}}
-        process_workflow_task(
-            task_id="live-t1",
-            elements=[{"id": "e1", "description": "heading", "action": "click"}],
-            url="https://example.com",
-            user_query="click the heading",
-            session_config=_minimal_session_config(),
-            tasks_dict=tasks_dict,
-        )
-        assert "live-t1" in tasks_dict
-        assert tasks_dict["live-t1"]["status"] != "pending"
+        tp = self._make_processor("live-t1")
+        with self._mock_browser():
+            process_workflow_task(
+                task_id="live-t1",
+                elements=[{"id": "e1", "description": "heading", "action": "click"}],
+                url="https://example.com",
+                user_query="click the heading",
+                session_config=_minimal_session_config(),
+                task_processor=tp,
+            )
+        status = tp.get_task_status("live-t1")
+        assert status is not None
+        assert status["status"] != "processing"
 
     def test_started_at_is_positive_timestamp(self):
         """started_at value is a positive Unix timestamp."""
         from browser_service.tasks.workflow import process_workflow_task
-        tasks_dict = {"ts-test": {"status": "pending"}}
-        process_workflow_task(
-            task_id="ts-test",
-            elements=[{"id": "e1", "description": "link", "action": "click"}],
-            url="https://example.com",
-            user_query="click the link",
-            session_config=_minimal_session_config(),
-            tasks_dict=tasks_dict,
-        )
-        started = tasks_dict["ts-test"].get("started_at", 0)
+        tp = self._make_processor("ts-test")
+        with self._mock_browser():
+            process_workflow_task(
+                task_id="ts-test",
+                elements=[{"id": "e1", "description": "link", "action": "click"}],
+                url="https://example.com",
+                user_query="click the link",
+                session_config=_minimal_session_config(),
+                task_processor=tp,
+            )
+        started = tp.get_task_status("ts-test").get("started_at", 0)
         assert started > 0
         # Should be roughly "now" — within the last minute
         assert abs(started - time.time()) < 60
 
     def test_message_is_non_empty_string(self):
-        """tasks_dict entry contains a non-empty message string."""
+        """Task entry contains a non-empty message string."""
         from browser_service.tasks.workflow import process_workflow_task
-        tasks_dict = {"msg-test": {"status": "pending"}}
-        process_workflow_task(
-            task_id="msg-test",
-            elements=[{"id": "e1", "description": "element", "action": "click"}],
-            url="https://example.com",
-            user_query="click an element",
-            session_config=_minimal_session_config(),
-            tasks_dict=tasks_dict,
-        )
-        message = tasks_dict["msg-test"].get("message", "")
+        tp = self._make_processor("msg-test")
+        with self._mock_browser():
+            process_workflow_task(
+                task_id="msg-test",
+                elements=[{"id": "e1", "description": "element", "action": "click"}],
+                url="https://example.com",
+                user_query="click an element",
+                session_config=_minimal_session_config(),
+                task_processor=tp,
+            )
+        message = tp.get_task_status("msg-test").get("message", "")
         assert isinstance(message, str)
         assert len(message) > 0
 
     def test_status_is_completed_or_error(self):
         """Terminal status is either 'completed' or 'error' — never left as running."""
         from browser_service.tasks.workflow import process_workflow_task
-        tasks_dict = {"status-test": {"status": "pending"}}
-        process_workflow_task(
-            task_id="status-test",
-            elements=[{"id": "e1", "description": "element", "action": "click"}],
-            url="https://example.com",
-            user_query="find element",
-            session_config=_minimal_session_config(),
-            tasks_dict=tasks_dict,
-        )
-        final_status = tasks_dict["status-test"]["status"]
+        tp = self._make_processor("status-test")
+        with self._mock_browser():
+            process_workflow_task(
+                task_id="status-test",
+                elements=[{"id": "e1", "description": "element", "action": "click"}],
+                url="https://example.com",
+                user_query="find element",
+                session_config=_minimal_session_config(),
+                task_processor=tp,
+            )
+        final_status = tp.get_task_status("status-test")["status"]
         assert final_status in ("completed", "error"), (
             f"Unexpected final status: {final_status}"
         )

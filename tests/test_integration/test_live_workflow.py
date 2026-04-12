@@ -49,18 +49,40 @@ def _has_llm_key() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def make_processor():
+    """Factory fixture: creates TaskProcessor + ThreadPoolExecutor pairs per test.
+
+    Each call to the returned factory allocates a fresh executor and registers
+    it for teardown. All executors are shut down with wait=True after the test
+    so no worker threads outlive the test that created them.
+    """
+    from browser_service.tasks.processor import TaskProcessor
+
+    executors = []
+
+    def _make(task_id: str) -> TaskProcessor:
+        exc = ThreadPoolExecutor(max_workers=1)
+        executors.append(exc)
+        tp = TaskProcessor(exc)
+        tp.submit_task(task_id, lambda: None)
+        return tp
+
+    yield _make
+
+    for exc in executors:
+        exc.shutdown(wait=True)
+
+
+# ---------------------------------------------------------------------------
 # Guard condition tests — no browser/LLM needed
 # ---------------------------------------------------------------------------
 
 class TestProcessWorkflowTaskGuardsLive:
     """Guard conditions in process_workflow_task() — replicated with live imports."""
-
-    def _make_processor(self, task_id: str):
-        """Return a TaskProcessor with task_id pre-seeded."""
-        from browser_service.tasks.processor import TaskProcessor
-        tp = TaskProcessor(ThreadPoolExecutor(max_workers=1))
-        tp.submit_task(task_id, lambda: None)
-        return tp
 
     @staticmethod
     def _mock_browser():
@@ -82,10 +104,10 @@ class TestProcessWorkflowTaskGuardsLive:
                 task_processor=None,
             )
 
-    def test_task_id_is_set_in_tasks_dict(self):
+    def test_task_id_is_set_in_tasks_dict(self, make_processor):
         """Task entry is updated for the given task_id after execution."""
         from browser_service.tasks.workflow import process_workflow_task
-        tp = self._make_processor("live-t1")
+        tp = make_processor("live-t1")
         with self._mock_browser():
             process_workflow_task(
                 task_id="live-t1",
@@ -99,10 +121,10 @@ class TestProcessWorkflowTaskGuardsLive:
         assert status is not None
         assert status["status"] != "processing"
 
-    def test_started_at_is_positive_timestamp(self):
+    def test_started_at_is_positive_timestamp(self, make_processor):
         """started_at value is a positive Unix timestamp."""
         from browser_service.tasks.workflow import process_workflow_task
-        tp = self._make_processor("ts-test")
+        tp = make_processor("ts-test")
         with self._mock_browser():
             process_workflow_task(
                 task_id="ts-test",
@@ -117,10 +139,10 @@ class TestProcessWorkflowTaskGuardsLive:
         # Should be roughly "now" — within the last minute
         assert abs(started - time.time()) < 60
 
-    def test_message_is_non_empty_string(self):
+    def test_message_is_non_empty_string(self, make_processor):
         """Task entry contains a non-empty message string."""
         from browser_service.tasks.workflow import process_workflow_task
-        tp = self._make_processor("msg-test")
+        tp = make_processor("msg-test")
         with self._mock_browser():
             process_workflow_task(
                 task_id="msg-test",
@@ -134,10 +156,10 @@ class TestProcessWorkflowTaskGuardsLive:
         assert isinstance(message, str)
         assert len(message) > 0
 
-    def test_status_is_completed_or_error(self):
+    def test_status_is_completed_or_error(self, make_processor):
         """Terminal status is either 'completed' or 'error' — never left as running."""
         from browser_service.tasks.workflow import process_workflow_task
-        tp = self._make_processor("status-test")
+        tp = make_processor("status-test")
         with self._mock_browser():
             process_workflow_task(
                 task_id="status-test",
@@ -161,17 +183,10 @@ class TestProcessWorkflowTaskGuardsLive:
 class TestLiveAgentWorkflow:
     """Full end-to-end workflow tests against example.com with a real LLM agent."""
 
-    def _make_processor(self, task_id: str):
-        """Return a TaskProcessor with task_id pre-seeded."""
-        from browser_service.tasks.processor import TaskProcessor
-        tp = TaskProcessor(ThreadPoolExecutor(max_workers=1))
-        tp.submit_task(task_id, lambda: None)
-        return tp
-
-    def test_workflow_finds_h1_element(self):
+    def test_workflow_finds_h1_element(self, make_processor):
         """Agent can find the main heading on example.com."""
         from browser_service.tasks.workflow import process_workflow_task
-        tp = self._make_processor("full-e2e-1")
+        tp = make_processor("full-e2e-1")
         process_workflow_task(
             task_id="full-e2e-1",
             elements=[
@@ -187,10 +202,10 @@ class TestLiveAgentWorkflow:
         assert result["status"] in ("completed", "error")
         assert "message" in result
 
-    def test_locator_mapping_key_present_on_completion(self):
+    def test_locator_mapping_key_present_on_completion(self, make_processor):
         """Completed task includes results in the task status."""
         from browser_service.tasks.workflow import process_workflow_task
-        tp = self._make_processor("mapping-test")
+        tp = make_processor("mapping-test")
         process_workflow_task(
             task_id="mapping-test",
             elements=[
@@ -208,14 +223,14 @@ class TestLiveAgentWorkflow:
             task_results = result.get("results", {})
             assert task_results or len(result.get("message", "")) > 0
 
-    def test_multiple_elements_all_tracked(self):
+    def test_multiple_elements_all_tracked(self, make_processor):
         """All requested elements appear in the result dict."""
         from browser_service.tasks.workflow import process_workflow_task
         elements = [
             {"id": "e_heading", "description": "page heading", "action": "find"},
             {"id": "e_link", "description": "hyperlink", "action": "find"},
         ]
-        tp = self._make_processor("multi-test")
+        tp = make_processor("multi-test")
         process_workflow_task(
             task_id="multi-test",
             elements=elements,

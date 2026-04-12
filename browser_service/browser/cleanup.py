@@ -164,8 +164,8 @@ def store_cdp_port(cdp_url: str) -> Optional[str]:
 
     with _cdp_state_lock:
         _tracked_cdp_port = port
-        if pid:
-            _tracked_browser_pid = pid
+        _tracked_browser_pid = pid  # always written together — None clears a stale PID
+        if pid is not None:
             logger.info(f"   📍 Stored CDP port {port} and PID {pid} for cleanup")
         else:
             logger.warning(

@@ -20,15 +20,21 @@ Usage:
     from browser_service.tasks import process_workflow_task, TaskProcessor
 
     # Initialize task processor
-    executor = ThreadPoolExecutor(max_workers=1)
+    executor = ThreadPoolExecutor(max_workers=config.max_concurrent_tasks)
     task_processor = TaskProcessor(executor)
 
-    # Submit workflow task
-    task_processor.submit_task(
+    # Submit a workflow task — always use try_submit_task() so the capacity
+    # check and registration are atomic (no TOCTOU race).  submit_task()
+    # bypasses the capacity gate and must NOT be used for request handling.
+    accepted = task_processor.try_submit_task(
+        config.max_concurrent_tasks,
         task_id,
         process_workflow_task,
-        task_id, elements, url, user_query, session_config, enable_custom_actions, tasks_dict
+        task_id, elements, url, user_query, session_config, enable_custom_actions, task_processor
     )
+    if not accepted:
+        # At capacity — return 429 to the caller
+        ...
 
     # Query task status
     status = task_processor.get_task_status(task_id)

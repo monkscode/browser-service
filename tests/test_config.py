@@ -40,6 +40,7 @@ class TestBrowserServiceConfigDefaults:
             "COORDINATE_BASED_RETRIES": "7",
             "ELEMENT_TYPE_RETRIES": "5",
             "COORDINATE_OFFSET_ATTEMPTS": "7",
+            "MAX_CONCURRENT_TASKS": "10",
             "GEMINI_API_KEY": "",
             "ROBOT_LIBRARY": "browser",
             "BROWSER_HEADLESS": "true",
@@ -98,6 +99,16 @@ class TestBrowserServiceConfigDefaults:
         cfg = self._make_config({"ROBOT_LIBRARY": "selenium"})
         assert cfg.robot_library == "selenium"
 
+    def test_default_max_concurrent_tasks(self):
+        """Default MAX_CONCURRENT_TASKS is 10."""
+        cfg = self._make_config()
+        assert cfg.max_concurrent_tasks == 10
+
+    def test_max_concurrent_tasks_env_override(self):
+        """MAX_CONCURRENT_TASKS env var is read and stored as int."""
+        cfg = self._make_config({"MAX_CONCURRENT_TASKS": "5"})
+        assert cfg.max_concurrent_tasks == 5
+
 
 class TestBrowserServiceConfigValidation:
     """Tests for the validate() method."""
@@ -144,6 +155,30 @@ class TestBrowserServiceConfigValidation:
         cfg.batch.element_timeout = 0
         errors = cfg.validate()
         assert len(errors) >= 3
+
+    def test_validate_max_concurrent_tasks_zero(self):
+        """MAX_CONCURRENT_TASKS=0 is rejected."""
+        cfg = self._make_config_raw()
+        cfg.llm.google_api_key = "key"
+        cfg.max_concurrent_tasks = 0
+        errors = cfg.validate()
+        assert any("MAX_CONCURRENT_TASKS" in e for e in errors)
+
+    def test_validate_max_concurrent_tasks_negative(self):
+        """MAX_CONCURRENT_TASKS=-1 is rejected."""
+        cfg = self._make_config_raw()
+        cfg.llm.google_api_key = "key"
+        cfg.max_concurrent_tasks = -1
+        errors = cfg.validate()
+        assert any("MAX_CONCURRENT_TASKS" in e for e in errors)
+
+    def test_validate_max_concurrent_tasks_one_is_valid(self):
+        """MAX_CONCURRENT_TASKS=1 (single-task mode) is valid."""
+        cfg = self._make_config_raw()
+        cfg.llm.google_api_key = "key"
+        cfg.max_concurrent_tasks = 1
+        errors = cfg.validate()
+        assert not any("MAX_CONCURRENT_TASKS" in e for e in errors)
 
 
 class TestGoogleModelNormalisation:
@@ -349,6 +384,7 @@ class TestVertexAIValidation:
         cfg.robot_library = "browser"
         cfg.headless = True
         cfg.enable_custom_actions = True
+        cfg.max_concurrent_tasks = 10
         return cfg
 
     def test_validate_vertex_all_valid(self):

@@ -176,7 +176,7 @@ def process_workflow_task(
     user_query: str,
     session_config: Dict[str, Any],
     enable_custom_actions: Optional[bool] = None,
-    tasks_dict: Optional[Dict[str, Dict[str, Any]]] = None,
+    task_processor=None,  # TaskProcessor — used to update task status atomically
     parent_workflow_id: Optional[str] = None
 ) -> None:
     """
@@ -201,10 +201,10 @@ def process_workflow_task(
         session_config: Browser configuration
         enable_custom_actions: Optional flag to enable/disable custom actions (defaults to config value)
     """
-    if tasks_dict is None:
-        raise ValueError("tasks_dict parameter is required for task tracking")
+    if task_processor is None:
+        raise ValueError("task_processor parameter is required for task tracking")
 
-    tasks_dict[task_id].update({
+    task_processor.update_task(task_id, {
         "status": "running",
         "started_at": time.time(),
         "message": f"Processing {len(elements)} elements as unified workflow"
@@ -2196,16 +2196,9 @@ def process_workflow_task(
                 }
             }
         finally:
-            # Clean up cached Playwright instance used by custom actions
-            # NOTE: Use enable_custom_actions_flag (resolved bool), NOT the raw
-            # enable_custom_actions parameter which defaults to None and is falsy.
-            if enable_custom_actions_flag:
-                try:
-                    from browser_service.agent.registration import cleanup_playwright_cache
-                    await cleanup_playwright_cache()
-                except Exception as e:
-                    logger.warning(f"⚠️ Error cleaning up Playwright cache: {e}")
-            
+            # Playwright cache cleanup removed — no module-level cache exists.
+            # Each custom action creates and destroys its own Playwright instance.
+
             # Use comprehensive cleanup utility
             await cleanup_browser_resources(
                 session=session,
@@ -2215,14 +2208,13 @@ def process_workflow_task(
             )
 
     # Run the async workflow
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)  # unset in finally before loop.close()
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
         results = loop.run_until_complete(run_unified_workflow())
-        loop.close()
 
         # Update task status
-        tasks_dict[task_id].update({
+        task_processor.update_task(task_id, {
             "status": "completed",
             "completed_at": time.time(),
             "message": f"Workflow completed: {results['summary']['successful']}/{results['summary']['total_elements']} elements found",
@@ -2258,7 +2250,7 @@ def process_workflow_task(
     except Exception as e:
         logger.error(
             f"❌ Failed to execute workflow task {task_id}: {e}", exc_info=True)
-        tasks_dict[task_id].update({
+        task_processor.update_task(task_id, {
             "status": "completed",
             "completed_at": time.time(),
             "message": f"Workflow failed: {str(e)}",
@@ -2270,3 +2262,11 @@ def process_workflow_task(
                 'summary': {'total_elements': len(elements), 'successful': 0, 'failed': len(elements)}
             }
         })
+    finally:
+        # Unset the thread-local loop BEFORE closing it.
+        # ThreadPoolExecutor reuses worker threads; without this, the next task
+        # on the same thread would inherit the closed loop from set_event_loop()
+        # above and fail immediately. asyncio.run() / asyncio.Runner follow the
+        # same pattern: set_event_loop(None) then loop.close().
+        asyncio.set_event_loop(None)
+        loop.close()

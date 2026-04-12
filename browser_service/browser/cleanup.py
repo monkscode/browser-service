@@ -20,6 +20,7 @@ import sys
 import re
 import logging
 import subprocess
+import threading
 from typing import Optional, List, Tuple
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,16 @@ def count_chrome_processes() -> Tuple[int, List[int]]:
         return -1, []
 
 
-# Module-level storage for CDP port and PID - set this EARLY when browser starts
+# Module-level storage for CDP port and PID - set this EARLY when browser starts.
+#
+# Concurrency contract
+# --------------------
+# _cdp_state_lock must be held for ALL read-modify-write operations on these two
+# variables so that the ownership-check-then-clear sequence in
+# cleanup_browser_resources() is atomic.  Plain reads (get_stored_*) that do not
+# condition any subsequent write are safe without the lock under CPython's GIL,
+# but any compound check-then-act MUST acquire the lock.
+_cdp_state_lock: threading.Lock = threading.Lock()
 _tracked_cdp_port: Optional[str] = None
 _tracked_browser_pid: Optional[int] = None
 
@@ -121,37 +131,48 @@ def store_cdp_port(cdp_url: str) -> Optional[str]:
     """
     Store CDP port AND browser PID from URL for later cleanup use.
     Call this EARLY when CDP URL is first available and Chrome is running.
-    
+
     This captures the PID immediately while the browser is active, before
     graceful shutdown closes the port.
-    
+
+    Thread-safety: acquires _cdp_state_lock for the entire write so that
+    cleanup_browser_resources()'s atomic read-compare-clear is never
+    interleaved with a concurrent store.
+
     Args:
         cdp_url: CDP URL like ws://127.0.0.1:12345/devtools/browser/...
-        
+
     Returns:
         The extracted port, or None if extraction failed
     """
     global _tracked_cdp_port, _tracked_browser_pid
-    
+
     if not cdp_url:
         return None
-    
+
     # Extract port from CDP URL
     match = re.search(r':(\d+)/', cdp_url)
     if not match:
         return None
-    
+
     port = match.group(1)
-    _tracked_cdp_port = port
-    
-    # CRITICAL: Get PID immediately while Chrome is still running
+
+    # CRITICAL: Get PID BEFORE acquiring the lock — _get_pid_from_port() may
+    # block on a subprocess call (netstat/lsof) and holding the lock during
+    # that would stall concurrent cleanup_browser_resources() calls.
     pid = _get_pid_from_port(port)
-    if pid:
-        _tracked_browser_pid = pid
-        logger.info(f"   📍 Stored CDP port {port} and PID {pid} for cleanup")
-    else:
-        logger.warning(f"   ⚠️ Stored CDP port {port} but could not get PID (browser may not be listening yet)")
-    
+
+    with _cdp_state_lock:
+        _tracked_cdp_port = port
+        _tracked_browser_pid = pid  # always written together — None clears a stale PID
+        if pid is not None:
+            logger.info(f"   📍 Stored CDP port {port} and PID {pid} for cleanup")
+        else:
+            logger.warning(
+                f"   ⚠️ Stored CDP port {port} but could not get PID "
+                "(browser may not be listening yet)"
+            )
+
     return port
 
 
@@ -166,10 +187,16 @@ def get_stored_browser_pid() -> Optional[int]:
 
 
 def clear_stored_cdp_port():
-    """Clear the stored CDP port and PID (call after cleanup)."""
+    """Clear the stored CDP port and PID (call after cleanup).
+
+    Thread-safety: acquires _cdp_state_lock.  Callers that need an atomic
+    read-compare-clear sequence should acquire the lock themselves and call
+    this function while holding it (see cleanup_browser_resources).
+    """
     global _tracked_cdp_port, _tracked_browser_pid
-    _tracked_cdp_port = None
-    _tracked_browser_pid = None
+    with _cdp_state_lock:
+        _tracked_cdp_port = None
+        _tracked_browser_pid = None
 
 
 def capture_session_pid(session) -> Optional[int]:
@@ -381,6 +408,7 @@ async def cleanup_browser_resources(
         None
     """
     logger.info("🧹 Starting browser cleanup...")
+    global _tracked_cdp_port, _tracked_browser_pid
     
     # Count Chrome processes BEFORE cleanup
     before_count, before_pids = count_chrome_processes()
@@ -393,7 +421,10 @@ async def cleanup_browser_resources(
     elif session:
         browser_pid = get_browser_process_id(session)
         if browser_pid:
-            logger.info(f"   📍 Tracked browser PID (derived from session): {browser_pid}")
+            logger.warning(
+                f"   ⚠️ Using fallback PID detection (derived from session): {browser_pid}. "
+                f"This may be inaccurate during concurrent task execution."
+            )
         else:
             logger.debug("   ⚠️ Could not track browser PID - will use graceful close only")
 
@@ -501,7 +532,29 @@ async def cleanup_browser_resources(
         if not still_alive and not new_orphans:
             logger.info("   ✅ No unexpected Chrome processes remain")
 
-    # Clear stored CDP port for next session
-    clear_stored_cdp_port()
+    # Only clear global CDP tracking state when the stored PID belongs to this task.
+    # These globals are shared across concurrent tasks; clearing unconditionally can
+    # wipe state that another task still needs as a fallback (e.g. when browser_pid
+    # was not captured early and get_browser_process_id() relies on _tracked_browser_pid).
+    #
+    # Thread-safety: the read (_tracked_browser_pid) and the clear must be atomic.
+    # Without a lock a concurrent store_cdp_port() could write a NEW task's PID
+    # between our read and our clear, causing us to wipe a state we don't own.
+    # Holding _cdp_state_lock across the entire check-then-clear prevents this.
+    with _cdp_state_lock:
+        stored_pid = _tracked_browser_pid  # read directly under lock (not via getter)
+        if stored_pid is not None and browser_pid is not None and browser_pid == stored_pid:
+            # We own the slot — clear while still holding the lock so no other
+            # task can sneak a store_cdp_port() between our check and our clear.
+            _tracked_cdp_port = None
+            _tracked_browser_pid = None
+            logger.debug("   Cleared global CDP port tracking (owned by this task)")
+        elif stored_pid is None:
+            logger.debug("   Global CDP port tracking already clear")
+        else:
+            logger.debug(
+                f"   Skipping global CDP clear — stored PID {stored_pid} "
+                f"does not match this task's PID {browser_pid}"
+            )
 
     logger.info("🧹 Cleanup complete")

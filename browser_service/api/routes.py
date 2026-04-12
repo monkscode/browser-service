@@ -84,14 +84,17 @@ def register_routes(app: Flask, task_processor: Any) -> None:
 
     @app.route('/health', methods=['GET'])
     def health():
-        """Health check endpoint."""
-        all_tasks = task_processor.get_tasks_dict()
+        """Health check endpoint with capacity information."""
+        active_count = task_processor.count_active_tasks()
+        max_tasks = config.max_concurrent_tasks
         return jsonify({
             "status": "healthy",
             "service": "enhanced_browser_use_service",
             "timestamp": time.time(),
-            "active_tasks": len([t for t in all_tasks.values() if t.get('status') in ['processing', 'running']]),
-            "total_tasks": len(all_tasks),
+            "active_tasks": active_count,
+            "max_tasks": max_tasks,
+            "available_slots": max_tasks - active_count,
+            "tasks_submitted": task_processor.tasks_submitted_count(),
             "encoding": "utf-8",
             "model_provider": config.llm.model_provider,
             "google_api_configured": (
@@ -173,16 +176,6 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             # All tasks are processed as unified workflows
             logger.info("✅ Using unified workflow mode (all tasks processed as workflows)")
 
-            # Check if service is busy (only one task at a time)
-            active_tasks = [t for t in task_processor.get_tasks_dict().values()
-                            if t.get('status') in ['processing', 'running']]
-            if active_tasks:
-                return jsonify({
-                    "status": "busy",
-                    "message": "Service is currently processing another task. Please try again later.",
-                    "active_tasks": len(active_tasks)
-                }), 429
-
             # Generate a unique task ID
             task_id = str(uuid.uuid4())
 
@@ -191,8 +184,10 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             logger.info("   Processing mode: Unified workflow (single Agent session)")
             logger.info(f"📝 User query: {user_query[:100]}{'...' if len(user_query) > 100 else ''}")
 
-            # Submit to task processor
-            task_processor.submit_task(
+            # Atomically check capacity and submit — prevents TOCTOU race where
+            # concurrent requests both pass a separate count check then both submit.
+            accepted = task_processor.try_submit_task(
+                config.max_concurrent_tasks,
                 task_id,
                 process_workflow_task,
                 task_id,
@@ -201,9 +196,20 @@ def register_routes(app: Flask, task_processor: Any) -> None:
                 user_query,
                 session_config,
                 enable_custom_actions,
-                task_processor.get_tasks_dict(),
+                task_processor,
                 parent_workflow_id  # Pass parent_workflow_id to prevent duplicate metrics
             )
+            if not accepted:
+                active_count = task_processor.count_active_tasks()
+                return jsonify({
+                    "status": "busy",
+                    "message": (
+                        f"Service is at capacity ({active_count}/{config.max_concurrent_tasks} "
+                        f"active tasks). Please try again later."
+                    ),
+                    "active_tasks": active_count,
+                    "max_tasks": config.max_concurrent_tasks
+                }), 429
 
             # Return the task ID immediately
             return jsonify({

@@ -9,7 +9,8 @@ Tests functions that have no browser/agent dependencies:
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import MagicMock, AsyncMock, patch
 
 
 class TestExtractFromResultLines:
@@ -118,85 +119,107 @@ class TestExtractAllElementJsons:
 class TestProcessWorkflowTaskGuards:
     """Tests for guard conditions in process_workflow_task()."""
 
+    def _make_processor(self, task_id: str):
+        """Return a TaskProcessor with task_id pre-seeded."""
+        from browser_service.tasks.processor import TaskProcessor
+        tp = TaskProcessor(ThreadPoolExecutor(max_workers=1))
+        tp.submit_task(task_id, lambda: None)
+        return tp
+
+    @staticmethod
+    def _mock_browser():
+        """Context manager that prevents real Chrome from launching.
+
+        BrowserSession is imported inside run_unified_workflow(), so we patch
+        it at the source module. session.start() raises immediately, which
+        triggers the exception handler in process_workflow_task() — status is
+        set to 'completed' and message/started_at are populated as normal.
+        """
+        mock_session = MagicMock()
+        mock_session.start = AsyncMock(side_effect=RuntimeError("mock: no browser in test"))
+        return patch("browser_use.browser.session.BrowserSession", return_value=mock_session)
+
     def test_raises_when_tasks_dict_is_none(self):
-        """tasks_dict=None must raise ValueError immediately."""
+        """task_processor=None must raise ValueError immediately."""
         from browser_service.tasks.workflow import process_workflow_task
 
-        with pytest.raises(ValueError, match="tasks_dict"):
+        with pytest.raises(ValueError, match="task_processor"):
             process_workflow_task(
                 task_id="t1",
                 elements=[{"id": "e1", "description": "button", "action": "click"}],
                 url="https://example.com",
                 user_query="click the button",
                 session_config={},
-                tasks_dict=None,
+                task_processor=None,
             )
 
     def test_task_status_is_no_longer_pending_after_execution(self):
-        """tasks_dict status is updated away from 'pending' once the task runs.
+        """Task status is updated once the task runs.
 
         Note: process_workflow_task() is synchronous and blocks until the
         async workflow completes, so by return time the status will be
-        'completed' or 'error' (not 'running').  We simply verify it was
-        mutated from the original 'pending' state.
+        'completed' (not 'processing').
         """
         from browser_service.tasks.workflow import process_workflow_task
 
-        tasks_dict = {"t1": {"status": "pending"}}
+        tp = self._make_processor("t1")
 
-        process_workflow_task(
-            task_id="t1",
-            elements=[{"id": "e1", "description": "button", "action": "click"}],
-            url="https://example.com",
-            user_query="click the button",
-            session_config={},
-            tasks_dict=tasks_dict,
-        )
+        with self._mock_browser():
+            process_workflow_task(
+                task_id="t1",
+                elements=[{"id": "e1", "description": "button", "action": "click"}],
+                url="https://example.com",
+                user_query="click the button",
+                session_config={},
+                task_processor=tp,
+            )
 
-        # Status was mutated — no longer "pending"
-        assert tasks_dict["t1"]["status"] != "pending"
+        assert tp.get_task_status("t1")["status"] != "processing"
 
     def test_started_at_is_set(self):
-        """tasks_dict entry gets a started_at timestamp."""
+        """Task entry gets a started_at timestamp."""
         from browser_service.tasks.workflow import process_workflow_task
 
-        tasks_dict = {"t2": {"status": "pending"}}
+        tp = self._make_processor("t2")
 
-        process_workflow_task(
-            task_id="t2",
-            elements=[{"id": "e1", "description": "input", "action": "fill"}],
-            url="https://example.com",
-            user_query="fill the form",
-            session_config={},
-            tasks_dict=tasks_dict,
-        )
+        with self._mock_browser():
+            process_workflow_task(
+                task_id="t2",
+                elements=[{"id": "e1", "description": "input", "action": "fill"}],
+                url="https://example.com",
+                user_query="fill the form",
+                session_config={},
+                task_processor=tp,
+            )
 
-        assert "started_at" in tasks_dict["t2"]
-        assert tasks_dict["t2"]["started_at"] > 0
+        status = tp.get_task_status("t2")
+        assert "started_at" in status
+        assert status["started_at"] > 0
 
     def test_message_key_populated_after_execution(self):
-        """tasks_dict entry has a non-empty message key after execution."""
+        """Task entry has a non-empty message key after execution."""
         from browser_service.tasks.workflow import process_workflow_task
 
-        tasks_dict = {"t3": {"status": "pending"}}
+        tp = self._make_processor("t3")
         elements = [
             {"id": "e1", "description": "button", "action": "click"},
             {"id": "e2", "description": "input", "action": "fill"},
         ]
 
-        process_workflow_task(
-            task_id="t3",
-            elements=elements,
-            url="https://example.com",
-            user_query="test workflow",
-            session_config={},
-            tasks_dict=tasks_dict,
-        )
+        with self._mock_browser():
+            process_workflow_task(
+                task_id="t3",
+                elements=elements,
+                url="https://example.com",
+                user_query="test workflow",
+                session_config={},
+                task_processor=tp,
+            )
 
-        # A message key must exist and be a non-empty string
-        assert "message" in tasks_dict["t3"]
-        assert isinstance(tasks_dict["t3"]["message"], str)
-        assert len(tasks_dict["t3"]["message"]) > 0
+        status = tp.get_task_status("t3")
+        assert "message" in status
+        assert isinstance(status["message"], str)
+        assert len(status["message"]) > 0
 
 
 # ---------------------------------------------------------------------------

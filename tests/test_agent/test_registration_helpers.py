@@ -11,7 +11,7 @@ Tests:
   _extract_dom_node_attributes: full attrs, missing, no attributes attr
   _detect_iframe_context: inside/outside/by-name/ordinal/empty
   _extract_cdp_host_port: standard / no devtools
-  _get_cdp_url_from_session: direct / client / search / None
+  _get_cdp_url_from_session: direct / client / search / None / no shared-state side-effects
   _CDP_URL_PATTERN: valid / invalid patterns
 """
 
@@ -168,8 +168,7 @@ class TestCdpUrlHelpers:
         result = _extract_cdp_host_port("ws://localhost:9222")
         assert result == "ws://localhost:9222"
 
-    @patch("browser_service.agent.registration._store_cdp_port_for_cleanup")
-    def test_get_cdp_url_direct(self, mock_store):
+    def test_get_cdp_url_direct(self):
         """Strategy 1: Direct cdp_url attribute."""
         from browser_service.agent.registration import _get_cdp_url_from_session
         session = MagicMock()
@@ -177,8 +176,7 @@ class TestCdpUrlHelpers:
         result = _get_cdp_url_from_session(session)
         assert result == session.cdp_url
 
-    @patch("browser_service.agent.registration._store_cdp_port_for_cleanup")
-    def test_get_cdp_url_from_client(self, mock_store):
+    def test_get_cdp_url_from_client(self):
         """Strategy 2: cdp_client.url attribute."""
         from browser_service.agent.registration import _get_cdp_url_from_session
         session = MagicMock(spec=["cdp_client"])
@@ -188,6 +186,40 @@ class TestCdpUrlHelpers:
         session.cdp_client.url = "ws://127.0.0.1:9333/devtools/browser/xyz"
         result = _get_cdp_url_from_session(session)
         assert result == "ws://127.0.0.1:9333/devtools/browser/xyz"
+
+    def test_get_cdp_url_does_not_write_shared_cleanup_globals(self):
+        """_get_cdp_url_from_session must not mutate module-level globals in cleanup.py.
+
+        In concurrent mode, _store_cdp_port_for_cleanup() had 'last writer wins'
+        semantics: any task resolving its CDP URL could overwrite _tracked_cdp_port
+        and _tracked_browser_pid in cleanup.py, silently redirecting another task's
+        fallback cleanup target to the wrong browser.
+
+        The function is now a pure reader — it returns the URL without side-effects.
+        """
+        import browser_service.browser.cleanup as cleanup_mod
+        from browser_service.agent.registration import _get_cdp_url_from_session
+
+        # Reset global state to a known baseline
+        original_port = cleanup_mod._tracked_cdp_port
+        original_pid = cleanup_mod._tracked_browser_pid
+        cleanup_mod._tracked_cdp_port = "sentinel-port"
+        cleanup_mod._tracked_browser_pid = 99999
+        try:
+            session = MagicMock()
+            session.cdp_url = "ws://127.0.0.1:9222/devtools/browser/abc"
+            _get_cdp_url_from_session(session)
+
+            # Globals must be untouched
+            assert cleanup_mod._tracked_cdp_port == "sentinel-port", (
+                "_get_cdp_url_from_session must not write to cleanup._tracked_cdp_port"
+            )
+            assert cleanup_mod._tracked_browser_pid == 99999, (
+                "_get_cdp_url_from_session must not write to cleanup._tracked_browser_pid"
+            )
+        finally:
+            cleanup_mod._tracked_cdp_port = original_port
+            cleanup_mod._tracked_browser_pid = original_pid
 
     def test_get_cdp_url_none_session(self):
         """None session → None."""
@@ -208,7 +240,7 @@ class TestCdpUrlHelpers:
 
 
 class TestNoCacheGlobals:
-    """Verify the module-level Playwright cache has been removed."""
+    """Verify removed module-level globals and shared-state helpers are gone."""
 
     def test_no_cache_globals(self):
         """Module must not export any of the removed cache globals."""
@@ -232,3 +264,17 @@ class TestNoCacheGlobals:
         """invalidate_playwright_cache must not exist (was module-cache-specific)."""
         import browser_service.agent.registration as reg
         assert not hasattr(reg, 'invalidate_playwright_cache')
+
+    def test_store_cdp_port_for_cleanup_removed(self):
+        """_store_cdp_port_for_cleanup must not exist.
+
+        This function was removed because it wrote to module-level globals in
+        cleanup.py (_tracked_cdp_port, _tracked_browser_pid). Under concurrent
+        load the 'last writer wins', causing one task's cleanup to target another
+        task's browser. _get_cdp_url_from_session is now a pure reader.
+        """
+        import browser_service.agent.registration as reg
+        assert not hasattr(reg, '_store_cdp_port_for_cleanup'), (
+            "_store_cdp_port_for_cleanup was re-introduced; it writes to shared "
+            "module-level globals in cleanup.py which is unsafe for concurrent tasks."
+        )

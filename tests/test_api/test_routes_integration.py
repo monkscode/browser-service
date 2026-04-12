@@ -31,7 +31,7 @@ def app_and_processor():
     mock_processor.tasks = {}
     mock_processor.get_tasks_dict.return_value = {}
     mock_processor.count_active_tasks.return_value = 0
-    mock_processor.task_count.return_value = 0
+    mock_processor.tasks_submitted_count.return_value = 0
     mock_processor.list_tasks.return_value = []
     mock_processor.get_task_status.return_value = None
 
@@ -221,7 +221,7 @@ class TestHealthProviderFields:
         mock_processor = MagicMock()
         mock_processor.get_tasks_dict.return_value = {}
         mock_processor.count_active_tasks.return_value = 0
-        mock_processor.task_count.return_value = 0
+        mock_processor.tasks_submitted_count.return_value = 0
 
         llm_cfg = MagicMock()
         llm_cfg.model_provider = model_provider
@@ -320,10 +320,10 @@ class TestHealthCapacityFields:
         assert data["active_tasks"] == 10
         assert data["available_slots"] == 0
 
-    def test_health_includes_total_tasks_processed(self, client, processor):
-        """total_tasks_processed reflects total tasks tracked (active + completed)."""
+    def test_health_includes_tasks_submitted(self, client, processor):
+        """tasks_submitted is monotonically cumulative — does not decrease after TTL eviction."""
         processor.count_active_tasks.return_value = 0
-        processor.task_count.return_value = 3
+        processor.tasks_submitted_count.return_value = 3
         resp = client.get("/health")
         data = resp.get_json()
-        assert data["total_tasks_processed"] == 3
+        assert data["tasks_submitted"] == 3

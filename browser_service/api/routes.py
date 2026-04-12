@@ -94,7 +94,7 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             "active_tasks": active_count,
             "max_tasks": max_tasks,
             "available_slots": max_tasks - active_count,
-            "total_tasks_processed": task_processor.task_count(),
+            "tasks_submitted": task_processor.tasks_submitted_count(),
             "encoding": "utf-8",
             "model_provider": config.llm.model_provider,
             "google_api_configured": (

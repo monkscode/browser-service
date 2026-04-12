@@ -150,32 +150,39 @@ def _extract_cdp_host_port(cdp_url: str) -> str:
 def _get_cdp_url_from_session(browser_session) -> Optional[str]:
     """
     Get CDP URL from browser_session using multiple fallback strategies.
-    
+
+    This function is pure: it only reads from browser_session and returns the
+    URL. It intentionally does NOT write to any module-level globals in
+    cleanup.py — those globals are shared across concurrent tasks and the
+    "last writer wins" semantics would cause one session's cleanup to target
+    another session's browser. The primary cleanup path (browser_pid captured
+    in workflow.py right after session.start()) is the only reliable mechanism
+    for concurrent use.
+
     Strategies (in priority order):
     1. Direct cdp_url attribute
     2. cdp_client.url attribute
     3. Search all public attributes for WebSocket DevTools URL pattern
-    
+
     Args:
         browser_session: The browser-use session object
-        
+
     Returns:
         CDP URL string if found, None otherwise
     """
     if not browser_session:
         return None
-    
+
     # Strategy 1: Direct cdp_url attribute (most common)
     if hasattr(browser_session, 'cdp_url'):
         try:
             cdp_url = browser_session.cdp_url
             if cdp_url and _CDP_URL_PATTERN.match(cdp_url):
                 logger.info(f"✅ CDP URL from browser_session.cdp_url: {_extract_cdp_host_port(cdp_url)}")
-                _store_cdp_port_for_cleanup(cdp_url)
                 return cdp_url
         except Exception as e:
             logger.debug(f"Strategy 1 (cdp_url): {e}")
-    
+
     # Strategy 2: cdp_client.url attribute
     if hasattr(browser_session, 'cdp_client'):
         try:
@@ -184,11 +191,10 @@ def _get_cdp_url_from_session(browser_session) -> Optional[str]:
                 cdp_url = cdp_client.url
                 if cdp_url and _CDP_URL_PATTERN.match(cdp_url):
                     logger.info(f"✅ CDP URL from cdp_client.url: {_extract_cdp_host_port(cdp_url)}")
-                    _store_cdp_port_for_cleanup(cdp_url)
                     return cdp_url
         except Exception as e:
             logger.debug(f"Strategy 2 (cdp_client.url): {e}")
-    
+
     # Strategy 3: Search all public attributes for WebSocket DevTools URL
     logger.debug("🔍 Searching all attributes for CDP URL...")
     for attr in dir(browser_session):
@@ -198,27 +204,12 @@ def _get_cdp_url_from_session(browser_session) -> Optional[str]:
             value = getattr(browser_session, attr, None)
             if value and isinstance(value, str) and _CDP_URL_PATTERN.match(value):
                 logger.info(f"✅ CDP URL found in attribute '{attr}': {_extract_cdp_host_port(value)}")
-                _store_cdp_port_for_cleanup(value)
                 return value
         except Exception:
             pass
-    
+
     logger.warning("⚠️ Could not find CDP URL in browser_session")
     return None
-
-
-def _store_cdp_port_for_cleanup(cdp_url: str):
-    """Store CDP port for fallback cleanup.
-
-    Warning: This writes to module-level globals in cleanup.py.
-    In concurrent mode, the last writer wins. The primary cleanup path
-    (browser_pid parameter in workflow.py) is unaffected by this.
-    """
-    try:
-        from browser_service.browser.cleanup import store_cdp_port
-        store_cdp_port(cdp_url)
-    except Exception as e:
-        logger.debug(f"Could not store CDP port: {e}")
 
 
 async def _get_active_page_from_browser(

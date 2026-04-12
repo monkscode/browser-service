@@ -32,6 +32,12 @@ class TaskProcessor:
     try_submit_task() — no background thread required. Tasks without a
     'completed_at' timestamp are never evicted (safe for tests that manually
     set status without the full fields).
+
+    Metrics: _tasks_submitted is a separate cumulative counter incremented once
+    per accepted submission (inside self._lock). It is never decremented, so
+    tasks_submitted_count() is monotonically increasing and suitable for
+    observability dashboards. tracked_task_count() returns len(self.tasks) which
+    can decrease after TTL eviction and is only meaningful as a memory-usage hint.
     """
 
     def __init__(self, executor: ThreadPoolExecutor, completed_task_ttl: float = 300.0):
@@ -48,6 +54,7 @@ class TaskProcessor:
         self.tasks: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         self.completed_task_ttl = completed_task_ttl
+        self._tasks_submitted: int = 0  # cumulative, never decremented
         logger.info("TaskProcessor initialized (thread-safe)")
 
     def _evict_completed(self) -> None:
@@ -87,6 +94,7 @@ class TaskProcessor:
                 "created_at": time.time(),
                 "objective": f"Task {task_id}"
             }
+            self._tasks_submitted += 1
 
         logger.info(f"Submitting task {task_id} for background execution")
         try:
@@ -94,6 +102,7 @@ class TaskProcessor:
         except Exception:
             with self._lock:
                 self.tasks.pop(task_id, None)
+                self._tasks_submitted -= 1
             raise
 
     def try_submit_task(
@@ -134,6 +143,7 @@ class TaskProcessor:
                 "created_at": time.time(),
                 "objective": f"Task {task_id}"
             }
+            self._tasks_submitted += 1
 
         logger.info(f"Submitting task {task_id} for background execution")
         try:
@@ -141,6 +151,7 @@ class TaskProcessor:
         except Exception:
             with self._lock:
                 self.tasks.pop(task_id, None)
+                self._tasks_submitted -= 1
             raise
         return True
 
@@ -211,11 +222,24 @@ class TaskProcessor:
                     f"update dropped: {list(updates.keys())}"
                 )
 
-    def task_count(self) -> int:
+    def tasks_submitted_count(self) -> int:
         """
-        Return total number of tracked tasks (active + completed).
+        Return the cumulative number of tasks accepted for submission.
 
-        Used by the health endpoint to report total tasks processed.
+        This counter is monotonically increasing — it is incremented once per
+        accepted submission and never decremented by TTL eviction. Use this
+        for health/observability metrics that must not decrease over time.
+        """
+        with self._lock:
+            return self._tasks_submitted
+
+    def tracked_task_count(self) -> int:
+        """
+        Return the number of tasks currently held in memory (active + not-yet-evicted
+        completed tasks).
+
+        This value can decrease as TTL eviction removes stale completed records.
+        Use this only as a memory-usage hint, not as a processed-task counter.
         """
         with self._lock:
             return len(self.tasks)

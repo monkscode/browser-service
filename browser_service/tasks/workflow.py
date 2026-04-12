@@ -2209,7 +2209,7 @@ def process_workflow_task(
 
     # Run the async workflow
     loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    asyncio.set_event_loop(loop)  # unset in finally before loop.close()
     try:
         results = loop.run_until_complete(run_unified_workflow())
 
@@ -2263,4 +2263,10 @@ def process_workflow_task(
             }
         })
     finally:
+        # Unset the thread-local loop BEFORE closing it.
+        # ThreadPoolExecutor reuses worker threads; without this, the next task
+        # on the same thread would inherit the closed loop from set_event_loop()
+        # above and fail immediately. asyncio.run() / asyncio.Runner follow the
+        # same pattern: set_event_loop(None) then loop.close().
+        asyncio.set_event_loop(None)
         loop.close()

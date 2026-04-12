@@ -161,10 +161,17 @@ class TestProcessWorkflowTaskGuardsLive:
 class TestLiveAgentWorkflow:
     """Full end-to-end workflow tests against example.com with a real LLM agent."""
 
+    def _make_processor(self, task_id: str):
+        """Return a TaskProcessor with task_id pre-seeded."""
+        from browser_service.tasks.processor import TaskProcessor
+        tp = TaskProcessor(ThreadPoolExecutor(max_workers=1))
+        tp.submit_task(task_id, lambda: None)
+        return tp
+
     def test_workflow_finds_h1_element(self):
         """Agent can find the main heading on example.com."""
         from browser_service.tasks.workflow import process_workflow_task
-        tasks_dict = {"full-e2e-1": {"status": "pending"}}
+        tp = self._make_processor("full-e2e-1")
         process_workflow_task(
             task_id="full-e2e-1",
             elements=[
@@ -173,16 +180,17 @@ class TestLiveAgentWorkflow:
             url="https://example.com",
             user_query="find the main heading on example.com",
             session_config=_minimal_session_config(),
-            tasks_dict=tasks_dict,
+            task_processor=tp,
         )
-        result = tasks_dict["full-e2e-1"]
+        result = tp.get_task_status("full-e2e-1")
+        assert result is not None
         assert result["status"] in ("completed", "error")
         assert "message" in result
 
     def test_locator_mapping_key_present_on_completion(self):
-        """Completed task includes locator_mapping in the result."""
+        """Completed task includes results in the task status."""
         from browser_service.tasks.workflow import process_workflow_task
-        tasks_dict = {"mapping-test": {"status": "pending"}}
+        tp = self._make_processor("mapping-test")
         process_workflow_task(
             task_id="mapping-test",
             elements=[
@@ -191,12 +199,14 @@ class TestLiveAgentWorkflow:
             url="https://example.com",
             user_query="find the more information link on example.com",
             session_config=_minimal_session_config(),
-            tasks_dict=tasks_dict,
+            task_processor=tp,
         )
-        result = tasks_dict["mapping-test"]
+        result = tp.get_task_status("mapping-test")
+        assert result is not None
         if result["status"] == "completed":
-            # Successful run should have a locator_mapping
-            assert "locator_mapping" in result or "results" in result or len(result.get("message", "")) > 0
+            # Successful run should have results or a non-empty message
+            task_results = result.get("results", {})
+            assert task_results or len(result.get("message", "")) > 0
 
     def test_multiple_elements_all_tracked(self):
         """All requested elements appear in the result dict."""
@@ -205,14 +215,15 @@ class TestLiveAgentWorkflow:
             {"id": "e_heading", "description": "page heading", "action": "find"},
             {"id": "e_link", "description": "hyperlink", "action": "find"},
         ]
-        tasks_dict = {"multi-test": {"status": "pending"}}
+        tp = self._make_processor("multi-test")
         process_workflow_task(
             task_id="multi-test",
             elements=elements,
             url="https://example.com",
             user_query="find the heading and link on example.com",
             session_config=_minimal_session_config(),
-            tasks_dict=tasks_dict,
+            task_processor=tp,
         )
-        result = tasks_dict["multi-test"]
+        result = tp.get_task_status("multi-test")
+        assert result is not None
         assert result["status"] in ("completed", "error")

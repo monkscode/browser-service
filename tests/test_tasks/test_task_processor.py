@@ -201,15 +201,32 @@ class TestTrySubmitTask:
             executor.shutdown(wait=False)
 
 
+@pytest.fixture
+def make_eviction_proc():
+    """
+    Fixture providing a factory that builds TaskProcessor instances with a
+    custom TTL.  All executors allocated through the factory are shut down
+    in teardown so no worker threads leak into subsequent tests.
+    """
+    executors = []
+
+    def _factory(ttl: float) -> TaskProcessor:
+        executor = ThreadPoolExecutor(max_workers=1)
+        executors.append(executor)
+        return TaskProcessor(executor, completed_task_ttl=ttl)
+
+    yield _factory
+
+    for executor in executors:
+        executor.shutdown(wait=False)
+
+
 class TestEviction:
     """Tests for lazy eviction of completed tasks (completed_task_ttl)."""
 
-    def _make_proc(self, ttl: float) -> TaskProcessor:
-        return TaskProcessor(ThreadPoolExecutor(max_workers=1), completed_task_ttl=ttl)
-
-    def test_stale_completed_task_removed_by_count(self):
+    def test_stale_completed_task_removed_by_count(self, make_eviction_proc):
         """Completed task with past completed_at is evicted during count_active_tasks."""
-        proc = self._make_proc(ttl=60)
+        proc = make_eviction_proc(ttl=60)
         proc.submit_task("t1", MagicMock())
         proc.get_tasks_dict()["t1"].update({"status": "completed", "completed_at": time.time() - 120})
 
@@ -217,9 +234,9 @@ class TestEviction:
 
         assert proc.get_task_status("t1") is None
 
-    def test_recent_completed_task_retained(self):
+    def test_recent_completed_task_retained(self, make_eviction_proc):
         """Completed task within TTL is NOT evicted."""
-        proc = self._make_proc(ttl=300)
+        proc = make_eviction_proc(ttl=300)
         proc.submit_task("t1", MagicMock())
         proc.get_tasks_dict()["t1"].update({"status": "completed", "completed_at": time.time() - 10})
 
@@ -227,18 +244,18 @@ class TestEviction:
 
         assert proc.get_task_status("t1") is not None
 
-    def test_active_tasks_never_evicted(self):
+    def test_active_tasks_never_evicted(self, make_eviction_proc):
         """Processing and running tasks are never evicted regardless of age."""
-        proc = self._make_proc(ttl=1)
+        proc = make_eviction_proc(ttl=1)
         proc.submit_task("t1", MagicMock())
         proc.get_tasks_dict()["t1"]["status"] = "running"
         # No completed_at — should never be touched
         proc.count_active_tasks()
         assert proc.get_task_status("t1") is not None
 
-    def test_no_completed_at_never_evicted(self):
+    def test_no_completed_at_never_evicted(self, make_eviction_proc):
         """Completed task without completed_at timestamp is never evicted."""
-        proc = self._make_proc(ttl=1)
+        proc = make_eviction_proc(ttl=1)
         proc.submit_task("t1", MagicMock())
         proc.get_tasks_dict()["t1"]["status"] = "completed"
         # No completed_at set — float('inf') guard keeps it
@@ -247,9 +264,9 @@ class TestEviction:
 
         assert proc.get_task_status("t1") is not None
 
-    def test_ttl_zero_disables_eviction(self):
+    def test_ttl_zero_disables_eviction(self, make_eviction_proc):
         """TTL=0 disables eviction entirely."""
-        proc = self._make_proc(ttl=0)
+        proc = make_eviction_proc(ttl=0)
         proc.submit_task("t1", MagicMock())
         proc.get_tasks_dict()["t1"].update({"status": "completed", "completed_at": time.time() - 9999})
 
@@ -257,9 +274,9 @@ class TestEviction:
 
         assert proc.get_task_status("t1") is not None
 
-    def test_eviction_frees_slot_for_try_submit(self):
+    def test_eviction_frees_slot_for_try_submit(self, make_eviction_proc):
         """Stale completed task is evicted inside try_submit_task, freeing its slot for counting."""
-        proc = self._make_proc(ttl=60)
+        proc = make_eviction_proc(ttl=60)
         # Fill to limit with one stale completed task
         proc.submit_task("old", MagicMock())
         proc.get_tasks_dict()["old"].update({"status": "completed", "completed_at": time.time() - 120})
@@ -269,9 +286,9 @@ class TestEviction:
         assert result is True
         assert proc.get_task_status("old") is None
 
-    def test_dict_shrinks_under_sustained_load(self):
+    def test_dict_shrinks_under_sustained_load(self, make_eviction_proc):
         """Dict size stays bounded when completed tasks exceed TTL."""
-        proc = self._make_proc(ttl=60)
+        proc = make_eviction_proc(ttl=60)
         # Seed 50 stale completed tasks via public API
         for i in range(50):
             proc.submit_task(f"old-{i}", MagicMock())

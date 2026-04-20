@@ -38,7 +38,7 @@ import sys
 # Must run before any logging calls and before setup_logging() in the entry
 # point is imported, so this block owns the root logger configuration.
 # ---------------------------------------------------------------------------
-_LOG_FILE = "logs/browser_use.log"
+_LOG_FILE = os.path.join(os.environ.get("BROWSER_USE_LOG_DIR", "logs"), "browser_use.log")
 _LOG_MAX_BYTES = 50 * 1024 * 1024   # 50 MB
 _LOG_BACKUP_COUNT = 7               # 7 backups = 350 MB max
 
@@ -69,8 +69,13 @@ try:
     _console_handler = logging.StreamHandler(sys.stdout)
     _console_handler.setFormatter(_json_formatter)
 
-    os.makedirs(os.path.dirname(_LOG_FILE), exist_ok=True)
+    _root = logging.getLogger()
+    _root.handlers.clear()
+    _root.addHandler(_console_handler)
+    _root.setLevel(logging.INFO)
+
     try:
+        os.makedirs(os.path.dirname(_LOG_FILE), exist_ok=True)
         _file_handler: logging.Handler = logging.handlers.RotatingFileHandler(
             _LOG_FILE,
             maxBytes=_LOG_MAX_BYTES,
@@ -78,19 +83,12 @@ try:
             encoding="utf-8",
         )
         _file_handler.setFormatter(_json_formatter)
-    except (OSError, IOError) as _e:
-        # Cannot open log file — fall back to stdout-only (never crash on logging setup)
+        _root.addHandler(_file_handler)
+    except OSError as _e:
+        # Cannot create log dir or open file — stdout-only, warning is JSON-formatted
         logging.getLogger(__name__).warning(
             "Cannot open %s, falling back to stdout only: %s", _LOG_FILE, _e
         )
-        _file_handler = None  # type: ignore[assignment]
-
-    _root = logging.getLogger()
-    _root.handlers.clear()
-    _root.addHandler(_console_handler)
-    if _file_handler is not None:
-        _root.addHandler(_file_handler)
-    _root.setLevel(logging.INFO)
 
     # Suppress noisy third-party loggers
     for _noisy in ("httpx", "httpcore", "urllib3", "asyncio"):
@@ -114,10 +112,10 @@ if _obs_backend != "none" and _otlp_endpoint:
         from traceloop.sdk import Traceloop
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
-        os.environ["TRACELOOP_TRACE_CONTENT"] = "true"
+        os.environ.setdefault("TRACELOOP_TRACE_CONTENT", "true")
         Traceloop.init(
             app_name="mark1-browser-service",
-            exporter=OTLPSpanExporter(endpoint=f"{_otlp_endpoint}/v1/traces"),
+            exporter=OTLPSpanExporter(endpoint=f"{_otlp_endpoint.rstrip('/')}/v1/traces"),
             traceloop_sync_enabled=False,
         )
         logging.getLogger(__name__).info(

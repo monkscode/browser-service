@@ -28,6 +28,105 @@ Usage:
     from browser_service.api import register_routes
     from browser_service.utils import setup_logging, record_workflow_metrics
 """
+import logging
+import logging.handlers
+import os
+import sys
+
+# ---------------------------------------------------------------------------
+# Structured Logging — JSON output to stdout + rotating file handler.
+# Must run before any logging calls and before setup_logging() in the entry
+# point is imported, so this block owns the root logger configuration.
+# ---------------------------------------------------------------------------
+_LOG_FILE = os.path.join(os.environ.get("BROWSER_USE_LOG_DIR", "logs"), "browser_use.log")
+_LOG_MAX_BYTES = 50 * 1024 * 1024   # 50 MB
+_LOG_BACKUP_COUNT = 7               # 7 backups = 350 MB max
+
+try:
+    import structlog
+
+    _shared_processors = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.add_logger_name,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.format_exc_info,
+        structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+    ]
+
+    structlog.configure(
+        processors=_shared_processors,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+
+    _json_formatter = structlog.stdlib.ProcessorFormatter(
+        processor=structlog.processors.JSONRenderer(),
+        foreign_pre_chain=_shared_processors[:-1],  # exclude wrap_for_formatter
+    )
+
+    _console_handler = logging.StreamHandler(sys.stdout)
+    _console_handler.setFormatter(_json_formatter)
+
+    _root = logging.getLogger()
+    _root.handlers.clear()
+    _root.addHandler(_console_handler)
+    _root.setLevel(logging.INFO)
+
+    try:
+        os.makedirs(os.path.dirname(_LOG_FILE), exist_ok=True)
+        _file_handler: logging.Handler = logging.handlers.RotatingFileHandler(
+            _LOG_FILE,
+            maxBytes=_LOG_MAX_BYTES,
+            backupCount=_LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        _file_handler.setFormatter(_json_formatter)
+        _root.addHandler(_file_handler)
+    except OSError as _e:
+        # Cannot create log dir or open file — stdout-only, warning is JSON-formatted
+        logging.getLogger(__name__).warning(
+            "Cannot open %s, falling back to stdout only: %s", _LOG_FILE, _e
+        )
+
+    # Suppress noisy third-party loggers
+    for _noisy in ("httpx", "httpcore", "urllib3", "asyncio"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+except ImportError:
+    # structlog not installed — fall back to stdlib default format
+    logging.basicConfig(level=logging.INFO)
+
+# ---------------------------------------------------------------------------
+# LLM Observability — only when OTLP endpoint is explicitly configured.
+# Default is none: the NL-to-RF service owns trace storage (SQLite backend).
+# Set OBSERVABILITY_BACKEND=otlp and OTLP_ENDPOINT=http://tempo:4318 when
+# running with the Grafana stack (docker-compose.grafana.yml).
+# ---------------------------------------------------------------------------
+_obs_backend = os.environ.get("OBSERVABILITY_BACKEND", "none").lower()
+_otlp_endpoint = os.environ.get("OTLP_ENDPOINT", "").strip()
+
+if _obs_backend != "none" and _otlp_endpoint:
+    try:
+        from traceloop.sdk import Traceloop
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+        os.environ.setdefault("TRACELOOP_TRACE_CONTENT", "true")
+        Traceloop.init(
+            app_name="mark1-browser-service",
+            exporter=OTLPSpanExporter(endpoint=f"{_otlp_endpoint.rstrip('/')}/v1/traces"),
+            traceloop_sync_enabled=False,
+        )
+        logging.getLogger(__name__).info(
+            "[OBSERVABILITY] OpenLLMetry initialized — endpoint=%s", _otlp_endpoint
+        )
+    except ImportError:
+        pass  # traceloop-sdk not installed — no tracing
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "[OBSERVABILITY] Init failed (non-fatal): %s", e
+        )
 
 __version__ = "1.0.0"
 

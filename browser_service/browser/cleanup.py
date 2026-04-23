@@ -100,16 +100,22 @@ def _get_pid_from_port(port: str) -> Optional[int]:
                 timeout=5
             )
             
-            # Check for both LISTENING and ESTABLISHED states
+            # Match only lines where the CDP port is in the LOCAL address column
+            # (column index 1 in "Proto LocalAddr ForeignAddr State PID" format).
+            # Matching on any column would also catch ESTABLISHED connections where
+            # the browser-use Python process is the client (foreign addr = CDP port),
+            # causing cleanup_worker.py to kill the service process instead of Chrome.
             for line in result.stdout.split('\n'):
-                if f':{port}' in line:
-                    if 'LISTENING' in line or 'ESTABLISHED' in line:
-                        parts = line.split()
-                        if parts:
-                            pid = int(parts[-1])
-                            state = 'LISTENING' if 'LISTENING' in line else 'ESTABLISHED'
-                            logger.debug(f"   Found PID {pid} for port {port} ({state})")
+                parts = line.split()
+                # netstat -ano columns: Proto LocalAddr ForeignAddr State PID
+                if len(parts) >= 5 and f':{port}' in parts[1]:
+                    if parts[3] in ('LISTENING', 'ESTABLISHED'):
+                        try:
+                            pid = int(parts[4])
+                            logger.debug(f"   Found PID {pid} for port {port} ({parts[3]})")
                             return pid
+                        except ValueError:
+                            pass
         else:
             # On Linux/Mac, use lsof
             result = subprocess.run(
@@ -292,17 +298,19 @@ def get_browser_process_id(session) -> Optional[int]:
                         timeout=5
                     )
 
-                    # Check for both LISTENING and ESTABLISHED states
-                    # Chrome might be connected (ESTABLISHED) rather than just listening
+                    # Match only lines where the CDP port is in the LOCAL address column.
+                    # See _get_pid_from_port for the full explanation of why matching
+                    # on any column would return the browser-use service's own PID.
                     for line in result.stdout.split('\n'):
-                        if f':{port}' in line:
-                            if 'LISTENING' in line or 'ESTABLISHED' in line:
-                                parts = line.split()
-                                if parts:
-                                    pid = int(parts[-1])
-                                    state = 'LISTENING' if 'LISTENING' in line else 'ESTABLISHED'
-                                    logger.info(f"   📍 Found browser PID via CDP port {port} ({state}): {pid}")
+                        parts = line.split()
+                        if len(parts) >= 5 and f':{port}' in parts[1]:
+                            if parts[3] in ('LISTENING', 'ESTABLISHED'):
+                                try:
+                                    pid = int(parts[4])
+                                    logger.info(f"   📍 Found browser PID via CDP port {port} ({parts[3]}): {pid}")
                                     return pid
+                                except ValueError:
+                                    pass
                     
                     # Log if port not found
                     logger.info(f"   ⚠️ Port {port} not found in netstat output (browser may have closed)")

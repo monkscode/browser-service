@@ -34,7 +34,8 @@ import os
 import sys
 
 # ---------------------------------------------------------------------------
-# Structured Logging — JSON output to stdout + rotating file handler.
+# Structured Logging — configures structlog with JSON or console output.
+# LOG_FORMAT=console → human-readable; unset → JSON (production default).
 # Must run before any logging calls and before setup_logging() in the entry
 # point is imported, so this block owns the root logger configuration.
 # ---------------------------------------------------------------------------
@@ -61,13 +62,24 @@ try:
         cache_logger_on_first_use=True,
     )
 
-    _json_formatter = structlog.stdlib.ProcessorFormatter(
-        processor=structlog.processors.JSONRenderer(),
+    _log_format = os.environ.get("LOG_FORMAT", "").lower()
+    _renderer = (
+        structlog.dev.ConsoleRenderer(colors=sys.stdout.isatty())
+        if _log_format == "console"
+        else structlog.processors.JSONRenderer()
+    )
+    _formatter = structlog.stdlib.ProcessorFormatter(
+        processor=_renderer,
         foreign_pre_chain=_shared_processors[:-1],  # exclude wrap_for_formatter
     )
 
+    import io as _io
+    if sys.platform.startswith('win') and hasattr(sys.stdout, 'buffer'):
+        sys.stdout = _io.TextIOWrapper(
+            sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True
+        )
     _console_handler = logging.StreamHandler(sys.stdout)
-    _console_handler.setFormatter(_json_formatter)
+    _console_handler.setFormatter(_formatter)
 
     _root = logging.getLogger()
     _root.handlers.clear()
@@ -82,7 +94,7 @@ try:
             backupCount=_LOG_BACKUP_COUNT,
             encoding="utf-8",
         )
-        _file_handler.setFormatter(_json_formatter)
+        _file_handler.setFormatter(_formatter)
         _root.addHandler(_file_handler)
     except OSError as _e:
         # Cannot create log dir or open file — stdout-only, warning is JSON-formatted

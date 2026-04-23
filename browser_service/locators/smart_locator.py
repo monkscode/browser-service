@@ -429,7 +429,20 @@ async def _validate_semantic_match(page, locator: str, expected_text: str) -> tu
                 actual_text = inner_text
         except Exception:
             pass
-        
+
+        # Reject container/wrapper elements: if the element's text is vastly longer than
+        # the expected text, it is a parent container (e.g. #page-container whose text_content
+        # includes the full page) rather than the specific target element.
+        # 40x is conservative — a genuine button or link rarely has >40× its label in text.
+        if expected_text and len(actual_text) > len(expected_text) * 40:
+            ratio = len(actual_text) // max(len(expected_text), 1)
+            logger.warning(
+                f"   ⚠️ Semantic match REJECTED: element text ({len(actual_text)} chars) "
+                f"is {ratio}x longer than expected '{expected_text}' "
+                f"— likely a container element, not the target"
+            )
+            return False, actual_text
+
         # Check for placeholder/value for inputs
         try:
             tag = await element.evaluate("el => el.tagName.toLowerCase()")

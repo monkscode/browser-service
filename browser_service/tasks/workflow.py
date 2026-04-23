@@ -411,8 +411,12 @@ def process_workflow_task(
 
             if enable_custom_actions_flag:
                 logger.info("🔧 Attempting to register custom actions...")
-                # Pass None for page since the custom action will get it from browser_session during execution
-                custom_actions_enabled = register_custom_actions(agent, page=None)
+                # Pass None for page since the custom action will get it from browser_session during execution.
+                # Pass elements so the action handler can set is_done=True automatically when all
+                # expected element IDs have been processed, terminating the agent loop without
+                # relying on the LLM to call done() with the correct JSON format.
+                custom_actions_enabled = register_custom_actions(agent, page=None, elements=elements)
+
 
                 if custom_actions_enabled:
                     logger.info("✅ Custom actions registered successfully")

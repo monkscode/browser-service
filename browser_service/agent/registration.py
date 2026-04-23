@@ -31,6 +31,7 @@ Usage:
 """
 
 import asyncio
+import json
 import logging
 import re
 from typing import Optional
@@ -121,6 +122,60 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
             iframe_ordinal += 1
     
     return None, None
+
+
+def _find_smallest_containing_element(selector_map, coords, viewport_area, skip_tag=None):
+    """
+    Find the selector_map element with the smallest bounding box containing coords.
+
+    Skips elements whose bounding box covers more than 80% of the viewport — these
+    are page wrappers (<body>, #page-container) not specific interactive targets.
+    When the LLM provides wrong coordinates, only wrappers match, so skipping them
+    lets the text-based strategies in smart_locator.py take over.
+
+    Args:
+        selector_map: browser-use selector_map (idx → EnhancedDOMTreeNode)
+        coords: (x, y) tuple in page-absolute pixels
+        viewport_area: viewport_w * viewport_h, used for the wrapper threshold
+        skip_tag: optional uppercase tag name to always skip (e.g. 'IFRAME' when
+                  looking for an element nested inside an iframe — we want the
+                  contained element, not the iframe itself)
+
+    Returns:
+        (idx, dom_node) of the best match, or (None, None) if no match found
+    """
+    if not selector_map or not coords:
+        return None, None
+
+    x, y = coords
+    wrapper_threshold = viewport_area * 0.8
+    skip_tag_upper = skip_tag.upper() if skip_tag else None
+    best_match = (None, None)
+    best_area = float('inf')
+
+    for idx, elem in selector_map.items():
+        if not (hasattr(elem, 'absolute_position') and elem.absolute_position):
+            continue
+        pos = elem.absolute_position
+        if not (pos.x <= x <= pos.x + pos.width and pos.y <= y <= pos.y + pos.height):
+            continue
+        if skip_tag_upper and hasattr(elem, 'node_name') and elem.node_name.upper() == skip_tag_upper:
+            continue
+        area = pos.width * pos.height
+        if area <= 0:
+            continue
+        if area > wrapper_threshold:
+            logger.debug(
+                f"   ⏭️ Skipping [{idx}]: covers {area / viewport_area:.0%} of viewport "
+                f"(likely page wrapper)"
+            )
+            continue
+        if area < best_area:
+            best_area = area
+            best_match = (idx, elem)
+
+    return best_match
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # REMOVED: _sync_cleanup_playwright_cache, invalidate_playwright_cache
@@ -344,7 +399,7 @@ async def _get_active_page_from_browser(
     logger.error("❌ No page available - all strategies exhausted")
     return None
 
-def register_custom_actions(agent, page=None) -> bool:
+def register_custom_actions(agent, page=None, elements=None) -> bool:
     """
     Register custom actions with browser-use agent.
 
@@ -358,6 +413,10 @@ def register_custom_actions(agent, page=None) -> bool:
     Args:
         agent: Browser-use Agent instance
         page: Optional Playwright page object (used as fallback if browser_session doesn't provide one)
+        elements: Optional list of element specs [{"id": "elem_1", "action": "get_text", ...}].
+                  When provided, completion is tracked via a closure dict. Once all expected
+                  element IDs have been successfully processed, is_done=True is returned so the
+                  browser-use agent loop terminates automatically — no LLM call to done() needed.
 
     Returns:
         bool: True if registration succeeded, False otherwise
@@ -387,6 +446,22 @@ def register_custom_actions(agent, page=None) -> bool:
             custom_action_timeout = _nl_settings.CUSTOM_ACTION_TIMEOUT
         else:
             custom_action_timeout = 5
+
+        # ========================================
+        # COMPLETION TRACKING (closure variables)
+        # ========================================
+        # Build a map of expected element IDs → action types from the elements list.
+        # The inner action handler updates _completed_elements on each success and sets
+        # is_done=True once every expected element ID has been processed, terminating
+        # the browser-use agent loop without relying on the LLM to call done().
+        _element_specs: dict = {}  # element_id → action string
+        if elements:
+            for _i, _elem in enumerate(elements):
+                _eid = _elem.get("id", f"elem_unknown_{_i}")
+                _element_specs[_eid] = _elem.get("action", "get_text")
+        _expected_element_ids: set = set(_element_specs.keys())
+        _total_expected: int = len(_expected_element_ids)
+        _completed_elements: dict = {}  # element_id → best_locator (mutated by inner function)
 
         # Define parameter model for find_unique_locator action
         class FindUniqueLocatorParams(BaseModel):
@@ -589,23 +664,14 @@ def register_custom_actions(agent, page=None) -> bool:
                             logger.info(f"📊 Selector map has {len(selector_map)} elements")
                             logger.info(f"📊 Types: {dict(sorted(sample_types.items(), key=lambda x: -x[1]))}")
                             
-                            # Find element whose bounding box contains the coordinates
-                            best_match = None
-                            best_area = float('inf')  # Prefer smaller (more specific) elements
-                            
-                            for idx, elem in selector_map.items():
-                                if hasattr(elem, 'absolute_position') and elem.absolute_position:
-                                    pos = elem.absolute_position
-                                    # Check if coordinates are within bounding box
-                                    if (pos.x <= scaled_x <= pos.x + pos.width and
-                                        pos.y <= scaled_y <= pos.y + pos.height):
-                                        area = pos.width * pos.height
-                                        if area < best_area and area > 0:
-                                            best_area = area
-                                            best_match = (idx, elem)
-                            
-                            if best_match:
-                                idx, dom_node = best_match
+                            viewport_area = viewport_w * viewport_h
+                            idx, dom_node = _find_smallest_containing_element(
+                                selector_map,
+                                (scaled_x, scaled_y),
+                                viewport_area,
+                            )
+
+                            if dom_node is not None:
                                 logger.info(f"   ✅ Found element [{idx}] at coordinates!")
                                 elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
                                 logger.info(f"   📝 Element tag: <{elem_tag}>")
@@ -841,29 +907,19 @@ def register_custom_actions(agent, page=None) -> bool:
                             logger.info(f"   📊 Selector map has {len(selector_map)} elements")
                             
                             try:
-                                # Find element by coordinates in selector_map
-                                # (find smallest bounding box containing coords)
+                                # Find element by coordinates in selector_map — skip the iframe
+                                # itself (we want the contained element) and page wrappers
+                                # (see _find_smallest_containing_element for wrapper rationale).
                                 if selector_map:
-                                    best_match = None
-                                    best_area = float('inf')
-                                    
-                                    for idx, elem in selector_map.items():
-                                        if hasattr(elem, 'absolute_position') and elem.absolute_position:
-                                            pos = elem.absolute_position
-                                            # Check if coordinates are within bounding box
-                                            if (pos.x <= final_x <= pos.x + pos.width and
-                                                pos.y <= final_y <= pos.y + pos.height):
-                                                area = pos.width * pos.height
-                                                # Skip iframe itself - we want element inside
-                                                elem_tag = elem.node_name.upper() if hasattr(elem, 'node_name') else ''
-                                                if elem_tag == 'IFRAME':
-                                                    continue
-                                                if area < best_area and area > 0:
-                                                    best_area = area
-                                                    best_match = (idx, elem)
-                                    
-                                    if best_match:
-                                        idx, dom_node = best_match
+                                    viewport_area = viewport_w * viewport_h
+                                    idx, dom_node = _find_smallest_containing_element(
+                                        selector_map,
+                                        (final_x, final_y),
+                                        viewport_area,
+                                        skip_tag='IFRAME',
+                                    )
+
+                                    if dom_node is not None:
                                         logger.info(f"   ✅ Found element [{idx}] inside iframe!")
                                         elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
                                         logger.info(f"   📝 Element tag: <{elem_tag}>")
@@ -934,22 +990,58 @@ def register_custom_actions(agent, page=None) -> bool:
                     count = result.get('count', 0)
                     validation_method = result.get('validation_method', 'playwright')
 
-                    # Success message for agent - CLEAR and UNAMBIGUOUS
-                    # Include explicit confirmation that this is the CORRECT and FINAL locator
-                    success_msg = (
-                        "✅ SUCCESS - LOCATOR VALIDATED BY PLAYWRIGHT\n"
-                        f"Element: {params.element_id}\n"
-                        f"Locator: {best_locator}\n"
-                        f"Validation Result: UNIQUE (count={count}, validated={validated})\n"
-                        f"Method: {validation_method} (deterministic validation)\n"
-                        "Status: COMPLETE AND CORRECT\n"
-                        "This locator is guaranteed unique and valid.\n"
-                        "Do NOT retry or attempt to find a different locator.\n"
-                        "Move to the next element immediately."
+                    # ========================================
+                    # COMPLETION TRACKING
+                    # ========================================
+                    # Record this element as done. Use the element_id as the dict key so
+                    # repeated calls for the same element overwrite rather than double-count.
+                    _completed_elements[params.element_id] = best_locator
+
+                    # Determine whether every expected element has been processed.
+                    # Guard: _total_expected == 0 means elements=None/[] was passed, so we
+                    # never auto-terminate (original behaviour preserved).
+                    all_elements_done = (
+                        _total_expected > 0
+                        and set(_completed_elements.keys()) >= _expected_element_ids
                     )
 
+                    # Success messages intentionally do NOT prescribe "move to next" —
+                    # that would cause the LLM to skip the element's interactive action
+                    # (click/input/submit) needed to advance the page. SEQUENTIAL_PROCESSING_RULES
+                    # in the workflow prompt owns the per-element action flow. We only assert the
+                    # locator is final (cost guard against re-finding the same locator).
+                    if all_elements_done:
+                        elements_found_json = json.dumps(
+                            [
+                                {"element_id": eid, "best_locator": loc,
+                                 "found": True, "validated": True, "count": 1}
+                                for eid, loc in _completed_elements.items()
+                            ]
+                        )
+                        success_msg = (
+                            f"✅ LOCATOR VALIDATED BY PLAYWRIGHT\n"
+                            f"Element: {params.element_id}\n"
+                            f"Locator: {best_locator}\n"
+                            f"Status: FINAL — do not call find_unique_locator again for this element.\n"
+                            f"All {_total_expected} locators found. "
+                            f'Call done() with: {{"elements_found": {elements_found_json}}}'
+                        )
+                    else:
+                        success_msg = (
+                            f"✅ LOCATOR VALIDATED BY PLAYWRIGHT\n"
+                            f"Element: {params.element_id}\n"
+                            f"Locator: {best_locator}\n"
+                            f"Status: FINAL — do not call find_unique_locator again for this element.\n"
+                            f"Next step: perform this element's action (input/click/submit) as specified "
+                            f"in SEQUENTIAL_PROCESSING_RULES if interactive, otherwise proceed to the next element."
+                        )
+                    # Keep long_term_memory minimal — it persists across every subsequent agent
+                    # step. Embedding action guidance here would bias future decisions.
+                    long_term = f"{params.element_id} validated = {best_locator}"
+
                     logger.info(f"✅ Custom action succeeded: {best_locator}")
-                    
+                    logger.info(f"   Completion: {len(_completed_elements)}/{_total_expected} all_done={all_elements_done}")
+
                     # Log if this was a fallback success (no element_index provided)
                     if element_index_was_none:
                         logger.info(f"")
@@ -962,15 +1054,11 @@ def register_custom_actions(agent, page=None) -> bool:
                         logger.info(f"{'='*80}")
                         logger.info(f"")
 
-                    # CRITICAL FIX: Do NOT set success=True when is_done=False
-                    # ActionResult validation rule: success can only be True when is_done=True
-                    # For regular actions that succeed, leave success as None (default)
                     action_result = ActionResult(
                         extracted_content=success_msg,
-                        long_term_memory=f"✅ VALIDATED: {params.element_id} = {best_locator} (Playwright confirmed count=1, unique=True). This is the CORRECT locator. Do NOT retry.",
+                        long_term_memory=long_term,
                         metadata=result,
-                        is_done=False  # Don't mark as done, let agent continue with other elements
-                        # success is None by default for successful actions that aren't done
+                        is_done=all_elements_done,
                     )
 
                 else:

@@ -429,7 +429,27 @@ async def _validate_semantic_match(page, locator: str, expected_text: str) -> tu
                 actual_text = inner_text
         except Exception:
             pass
-        
+
+        # Reject container/wrapper elements: if the element's text is vastly longer than
+        # the expected text, it is a parent container (e.g. #page-container whose text_content
+        # includes the full page) rather than the specific target element.
+        # 40x is the ratio floor; 500 chars is the absolute floor so short expected text
+        # (e.g. "OK", "A") does not falsely reject legitimate rows / menu items.
+        normalized_expected_text = expected_text.strip() if expected_text else ""
+        if normalized_expected_text:
+            container_text_threshold = max(len(normalized_expected_text) * 40, 500)
+            if len(actual_text) > container_text_threshold:
+                ratio = len(actual_text) / len(normalized_expected_text)
+                logger.warning(
+                    "   ⚠️ Semantic match REJECTED: element text (%d chars) "
+                    "is %.1fx longer than expected text (%d chars) "
+                    "— likely a container element, not the target",
+                    len(actual_text), ratio, len(normalized_expected_text),
+                )
+                # Truncate returned text so downstream loggers (which emit actual_text
+                # verbatim) cannot dump multi-megabyte container payloads into log files.
+                return False, actual_text[:MAX_TEXT_DISPLAY_LENGTH]
+
         # Check for placeholder/value for inputs
         try:
             tag = await element.evaluate("el => el.tagName.toLowerCase()")

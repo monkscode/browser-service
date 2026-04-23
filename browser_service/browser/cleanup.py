@@ -108,14 +108,18 @@ def _get_pid_from_port(port: str) -> Optional[int]:
             for line in result.stdout.split('\n'):
                 parts = line.split()
                 # netstat -ano columns: Proto LocalAddr ForeignAddr State PID
-                if len(parts) >= 5 and f':{port}' in parts[1]:
-                    if parts[3] in ('LISTENING', 'ESTABLISHED'):
-                        try:
-                            pid = int(parts[4])
-                            logger.debug(f"   Found PID {pid} for port {port} ({parts[3]})")
-                            return pid
-                        except ValueError:
-                            pass
+                if len(parts) < 5:
+                    continue
+                # Exact port match on the local address to avoid substring collisions
+                # (e.g. port 9222 matching 127.0.0.1:92220). Restrict to TCP rows.
+                local_port = parts[1].rsplit(':', 1)[-1]
+                if parts[0] == 'TCP' and local_port == port and parts[3] in ('LISTENING', 'ESTABLISHED'):
+                    try:
+                        pid = int(parts[4])
+                        logger.debug("   Found PID %s for port %s (%s)", pid, port, parts[3])
+                        return pid
+                    except ValueError:
+                        pass
         else:
             # On Linux/Mac, use lsof
             result = subprocess.run(
@@ -303,14 +307,21 @@ def get_browser_process_id(session) -> Optional[int]:
                     # on any column would return the browser-use service's own PID.
                     for line in result.stdout.split('\n'):
                         parts = line.split()
-                        if len(parts) >= 5 and f':{port}' in parts[1]:
-                            if parts[3] in ('LISTENING', 'ESTABLISHED'):
-                                try:
-                                    pid = int(parts[4])
-                                    logger.info(f"   📍 Found browser PID via CDP port {port} ({parts[3]}): {pid}")
-                                    return pid
-                                except ValueError:
-                                    pass
+                        if len(parts) < 5:
+                            continue
+                        # Exact port match on the local address to avoid substring collisions
+                        # (e.g. port 9222 matching 127.0.0.1:92220). Restrict to TCP rows.
+                        local_port = parts[1].rsplit(':', 1)[-1]
+                        if parts[0] == 'TCP' and local_port == port and parts[3] in ('LISTENING', 'ESTABLISHED'):
+                            try:
+                                pid = int(parts[4])
+                                logger.info(
+                                    "   📍 Found browser PID via CDP port %s (%s): %s",
+                                    port, parts[3], pid,
+                                )
+                                return pid
+                            except ValueError:
+                                pass
                     
                     # Log if port not found
                     logger.info(f"   ⚠️ Port {port} not found in netstat output (browser may have closed)")

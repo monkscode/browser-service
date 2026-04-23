@@ -73,11 +73,15 @@ try:
         foreign_pre_chain=_shared_processors[:-1],  # exclude wrap_for_formatter
     )
 
-    import io as _io
-    if sys.platform.startswith('win') and hasattr(sys.stdout, 'buffer'):
-        sys.stdout = _io.TextIOWrapper(
-            sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True
-        )
+    # Ensure UTF-8 on Windows without replacing sys.stdout: reconfigure() mutates
+    # the existing object in-place (Python 3.7+), preserving references held by
+    # test frameworks (pytest capsys), log handlers, or embedded hosts.
+    if sys.platform.startswith('win') and hasattr(sys.stdout, 'reconfigure'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace', line_buffering=True)
+        except (ValueError, AttributeError):
+            pass
+
     _console_handler = logging.StreamHandler(sys.stdout)
     _console_handler.setFormatter(_formatter)
 

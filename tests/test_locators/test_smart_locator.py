@@ -11,7 +11,6 @@ import pytest
 from browser_service.locators.smart_locator import (
     _escape_css_selector,
     is_dropdown_element,
-    PRIORITY_CANDIDATE,
     PRIORITY_ID,
     PRIORITY_TEST_ID,
     PRIORITY_NAME,
@@ -152,9 +151,6 @@ class TestIsDropdownElement:
 class TestPriorityOrdering:
     """Priority constants must be ordered correctly (lower = higher priority)."""
 
-    def test_candidate_is_highest_priority(self):
-        assert PRIORITY_CANDIDATE < PRIORITY_ID
-
     def test_id_beats_test_id(self):
         assert PRIORITY_ID < PRIORITY_TEST_ID
 
@@ -178,14 +174,14 @@ class TestPriorityOrdering:
 
     def test_all_priorities_are_non_negative(self):
         priorities = [
-            PRIORITY_CANDIDATE, PRIORITY_ID, PRIORITY_TEST_ID, PRIORITY_NAME,
+            PRIORITY_ID, PRIORITY_TEST_ID, PRIORITY_NAME,
             PRIORITY_ARIA_LABEL, PRIORITY_TEXT, PRIORITY_ROLE, PRIORITY_CSS_CLASS,
         ]
         assert all(p >= 0 for p in priorities)
 
     def test_all_priorities_are_unique(self):
         priorities = [
-            PRIORITY_CANDIDATE, PRIORITY_ID, PRIORITY_TEST_ID, PRIORITY_NAME,
+            PRIORITY_ID, PRIORITY_TEST_ID, PRIORITY_NAME,
             PRIORITY_ARIA_LABEL, PRIORITY_TEXT, PRIORITY_ROLE, PRIORITY_CSS_CLASS,
         ]
         assert len(set(priorities)) == len(priorities)

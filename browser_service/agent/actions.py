@@ -435,7 +435,6 @@ async def find_unique_locator_action(
                     element_id=element_id,
                     element_description=element_description,
                     expected_text=expected_text,  # Pass expected_text for semantic validation
-                    candidate_locator=None,  # Already validated above, so pass None
                     library_type=config.robot_library,  # Use configured library type
                     element_data=element_data,  # Pass element attributes from browser-use DOM
                     is_collection=is_collection  # Pass collection flag for multi-element detection

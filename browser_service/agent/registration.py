@@ -178,13 +178,6 @@ def _find_smallest_containing_element(selector_map, coords, viewport_area, skip_
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# REMOVED: _sync_cleanup_playwright_cache, invalidate_playwright_cache
-# No module-level Playwright cache exists. Each custom action creates and
-# destroys its own connection. See find_unique_locator handler below.
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # CDP URL AND PAGE RETRIEVAL HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 # These helper functions consolidate the fallback strategy chains into
@@ -399,7 +392,7 @@ async def _get_active_page_from_browser(
     logger.error("❌ No page available - all strategies exhausted")
     return None
 
-def register_custom_actions(agent, page=None, elements=None) -> bool:
+def register_custom_actions(agent, page=None, elements=None, workflow_id: str = "") -> bool:
     """
     Register custom actions with browser-use agent.
 
@@ -672,6 +665,15 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             )
 
                             if dom_node is not None:
+                                try:
+                                    stable_hash = dom_node.compute_stable_hash()
+                                    logger.info(
+                                        f"📊 LOCATOR_PROBE workflow_id={workflow_id} "
+                                        f"stable_hash={stable_hash} "
+                                        f"element_id={params.element_id}"
+                                    )
+                                except Exception:
+                                    pass
                                 logger.info(f"   ✅ Found element [{idx}] at coordinates!")
                                 elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
                                 logger.info(f"   📝 Element tag: <{elem_tag}>")

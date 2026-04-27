@@ -38,6 +38,9 @@ from browser_service.prompts.templates import (
     NUMERIC_IDS_WARNING,
     EDGE_CASE_HANDLING,
     COMPLETION_CRITERIA_EXTENDED,
+    WORKFLOW_STEPS_LEGACY,
+    COMPLETION_CRITERIA_LEGACY,
+    UNIQUENESS_REQUIREMENT,
 )
 
 
@@ -151,8 +154,6 @@ APPLICATION-SPECIFIC HINTS:
 """
 
     if include_custom_action:
-        # NEW WORKFLOW: Use custom action for locator finding
-        # Build prompt using templates for maintainability
         prompt = f"""You are completing a web automation workflow.
 {client_hints_section}
 USER'S GOAL: {user_query}
@@ -179,144 +180,13 @@ ELEMENTS TO FIND:
 {COMPLETION_CRITERIA_EXTENDED}
 """
     else:
-        # LEGACY WORKFLOW: Use JavaScript validation (backward compatibility)
-        prompt = f"""
-You are completing a web automation workflow.
+        prompt = f"""You are completing a web automation workflow.
 {client_hints_section}
 USER'S GOAL: {user_query}
-
-WORKFLOW STEPS:
-1. Navigate to {url}
-2. Find each element listed below using your vision
-3. For EACH element, return its center coordinates (x, y)
-
+{WORKFLOW_STEPS_LEGACY.format(url=url)}
 ELEMENTS TO FIND:
 {elements_str}
-
-CRITICAL INSTRUCTIONS:
-1. Use your vision to identify each element on the page
-2. For EACH element, use execute_js to get its DOM ID and coordinates
-3. Execute this JavaScript for each element you find:
-   ```javascript
-   (function() {{
-     const element = document.querySelector('YOUR_SELECTOR_HERE');
-     if (element) {{
-       const rect = element.getBoundingClientRect();
-       const domId = element.id || '';
-       const domName = element.name || '';
-       const domClass = element.className || '';
-       const domTestId = element.getAttribute('data-testid') || '';
-
-       // VALIDATE LOCATORS: Check uniqueness
-       const locators = [];
-
-       // Check ID locator
-       if (domId) {{
-         // Always use attribute selector for IDs (handles numeric IDs correctly)
-         const idCount = document.querySelectorAll(`[id="${{domId}}"]`).length;
-         locators.push({{
-           type: 'id',
-           locator: `id=${{domId}}`,
-           count: idCount,
-           unique: idCount === 1,
-           validated: true,
-           note: 'Using [id="..."] selector (works with numeric IDs)'
-         }});
-       }}
-
-       // Check name locator
-       if (domName) {{
-         const nameCount = document.querySelectorAll(`[name="${{domName}}"]`).length;
-         locators.push({{
-           type: 'name',
-           locator: `name=${{domName}}`,
-           count: nameCount,
-           unique: nameCount === 1,
-           validated: true
-         }});
-       }}
-
-       // Check data-testid locator
-       if (domTestId) {{
-         const testIdCount = document.querySelectorAll(`[data-testid="${{domTestId}}"]`).length;
-         locators.push({{
-           type: 'data-testid',
-           locator: `data-testid=${{domTestId}}`,
-           count: testIdCount,
-           unique: testIdCount === 1,
-           validated: true
-         }});
-       }}
-
-       // Check CSS class locator
-       if (domClass) {{
-         const firstClass = domClass.split(' ')[0];
-         const tagName = element.tagName.toLowerCase();
-         const cssCount = document.querySelectorAll(`${{tagName}}.${{firstClass}}`).length;
-         locators.push({{
-           type: 'css-class',
-           locator: `${{tagName}}.${{firstClass}}`,
-           count: cssCount,
-           unique: cssCount === 1,
-           validated: true
-         }});
-       }}
-
-       return JSON.stringify({{
-         element_id: "REPLACE_WITH_ELEM_ID_FROM_LIST",
-         found: true,
-         coordinates: {{ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }},
-         element_type: element.tagName.toLowerCase(),
-         visible_text: element.textContent.trim().substring(0, 100),
-         dom_id: domId,
-         dom_attributes: {{
-           id: domId,
-           name: domName,
-           class: domClass,
-           'data-testid': domTestId
-         }},
-         locators: locators
-       }});
-     }}
-     return JSON.stringify({{ element_id: "REPLACE_WITH_ELEM_ID", found: false }});
-   }})()
-   ```
-
-4. **CRITICAL VALIDATION STEP:** After executing JavaScript for each element, CHECK the locators:
-   - Look at the "locators" array in the JavaScript result
-   - Find locators where "unique": true AND "count": 1
-   - If NO unique locator found for an element, try a DIFFERENT selector and execute JavaScript again
-   - Keep trying different selectors until you find a unique locator (count=1)
-
-5. ONLY call done() when ALL elements have at least ONE unique locator (count=1)
-   ```json
-   {{
-     "workflow_completed": true,
-     "elements_found": [
-       {{ "element_id": "elem_1", "found": true, "coordinates": {{"x": 450, "y": 320}}, "dom_id": "search-input", ... }},
-       {{ "element_id": "elem_2", "found": true, "coordinates": {{"x": 650, "y": 520}}, "dom_id": "product-link", ... }}
-     ]
-   }}
-   ```
-
-CRITICAL RULES:
-- You MUST execute JavaScript for EACH element to get its DOM attributes
-- You MUST CHECK if locators are unique (count=1) in the JavaScript result
-- If a locator is NOT unique (count>1), try a DIFFERENT selector (more specific)
-- ONLY call done() when ALL elements have at least ONE unique locator
-- You MUST include the element_id from the list above in each result
-- You MUST call done() with the complete JSON structure
-- DO NOT just say "I found it" - you MUST return the structured JSON
-- The JSON MUST include all elements from the list above
-
-UNIQUENESS REQUIREMENT:
-- A locator is ONLY valid if count=1 (unique)
-- If count>1, the locator matches multiple elements and is NOT usable
-- You MUST find a unique locator for each element before calling done()
-- Try more specific selectors: id > data-testid > name > specific CSS > XPath
-
-Your final done() call MUST include the complete JSON with all elements_found data!
-REMEMBER: ONLY call done() when ALL elements have at least ONE unique locator (count=1)!
+{UNIQUENESS_REQUIREMENT}
+{COMPLETION_CRITERIA_LEGACY}
 """
-
     return prompt.strip()

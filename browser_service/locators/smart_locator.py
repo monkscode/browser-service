@@ -27,7 +27,6 @@ INNER_TEXT_PREFERENCE_THRESHOLD = 1.0  # Use inner_text if shorter (more relevan
 MAX_CHECKBOX_LABEL_LENGTH = 30  # Maximum label length for checkbox/radio detection heuristic
 
 # Locator priorities (lower = better)
-PRIORITY_CANDIDATE = 0  # Agent-provided candidate locators
 PRIORITY_ID = 1  # Native ID attribute
 PRIORITY_TEST_ID = 2  # data-testid, data-test, data-qa
 PRIORITY_NAME = 3  # name attribute
@@ -3091,98 +3090,6 @@ async def _generate_locators_from_element_data(
     
     logger.info(f"   ⚠️ ELEMENT-DATA: No unique locator found, falling back to other strategies")
     return None
-
-
-async def _validate_candidate_locator(
-    page,
-    candidate_locator: str,
-    element_id: str,
-    element_description: str,
-    expected_text: Optional[str],
-    x: float,
-    y: float
-) -> Optional[dict]:
-    """
-    Validate an agent-provided candidate locator.
-    
-    Args:
-        page: Playwright page object
-        candidate_locator: The locator suggested by the agent
-        element_id: Element identifier
-        element_description: Element description
-        expected_text: Expected text for semantic validation
-        x, y: Coordinates (for result dict)
-        
-    Returns:
-        Complete result dict if valid, None if invalid/failed
-    """
-    logger.info(f"🔍 Step 0: Validating candidate locator: {candidate_locator}")
-    try:
-        # Use shared conversion function from browser_service.locators
-        from browser_service.locators import convert_to_playwright_locator
-        
-        playwright_locator, was_converted = convert_to_playwright_locator(candidate_locator)
-        
-        if was_converted:
-            logger.info(f"   Converted to Playwright format: {playwright_locator}")
-        
-        count = await page.locator(playwright_locator).count()
-        
-        if count == 1:
-            # SEMANTIC VALIDATION: Verify we found the RIGHT element
-            semantic_match = True
-            actual_text = ""
-            if expected_text:
-                semantic_match, actual_text = await _validate_semantic_match(page, playwright_locator, expected_text)
-                if not semantic_match:
-                    logger.warning(f"⚠️ Candidate locator is unique BUT text doesn't match!")
-                    logger.warning(f"   Expected: '{expected_text}'")
-                    logger.warning(f"   Actual: '{actual_text}'")
-                    logger.info("   Continuing to find correct element...")
-                    return None  # Continue to try other approaches
-                else:
-                    logger.info(f"✅ Candidate locator is unique AND semantically correct")
-            
-            if semantic_match:
-                logger.info(f"✅ Candidate locator is unique: {playwright_locator}")
-                return {
-                    'element_id': element_id,
-                    'description': element_description,
-                    'found': True,
-                    'best_locator': playwright_locator,
-                    'all_locators': [{
-                        'type': 'candidate',
-                        'locator': playwright_locator,
-                        'priority': PRIORITY_CANDIDATE,
-                        'strategy': 'Agent-provided candidate' + (' (converted)' if was_converted else ''),
-                        'count': count,
-                        'unique': True,
-                        'valid': True,
-                        'validated': True,
-                        'semantic_match': semantic_match,
-                        'validation_method': 'playwright'
-                    }],
-                    'element_info': {'actual_text': actual_text} if actual_text else {},
-                    'coordinates': {'x': x, 'y': y},
-                    'validation_summary': {
-                        'total_generated': 1,
-                        'valid': 1,
-                        'unique': 1,
-                        'validated': 1,
-                        'best_type': 'candidate',
-                        'best_strategy': 'Agent-provided candidate',
-                        'validation_method': 'playwright'
-                    },
-                    'semantic_match': semantic_match
-                }
-        else:
-            logger.info(f"⚠️ Candidate locator not unique (count={count}): {playwright_locator}")
-    except Exception as e:
-        logger.warning(f"⚠️ Candidate locator validation failed: {e}")
-    
-    return None
-
-
 async def find_unique_locator_at_coordinates(
     page,
     x: float,
@@ -3190,7 +3097,6 @@ async def find_unique_locator_at_coordinates(
     element_id: str,
     element_description: str,
     expected_text: Optional[str] = None,
-    candidate_locator: Optional[str] = None,
     library_type: str = "browser",
     element_data: Optional[dict] = None,  # Element attributes from browser-use DOM (id, class, text, etc.)
     search_context=None,  # Either page or frame_locator for iframe context
@@ -3202,10 +3108,9 @@ async def find_unique_locator_at_coordinates(
 
     Strategy Priority (Semantic-First):
     0. ELEMENT DATA: If element_data is provided (from browser-use DOM), generate locators from those attributes
-    1. Candidate locator (if provided) - Agent's suggestion
-    2. TEXT-FIRST: Semantic locators from expected_text - Most reliable, uses actual visible text
-    3. SEMANTIC: Locators from description - Fallback when expected_text not available
-    4. COORDINATE: Coordinate-based extraction + 21 strategies - Last resort when semantic fails
+    1. TEXT-FIRST: Semantic locators from expected_text - Most reliable, uses actual visible text
+    2. SEMANTIC: Locators from description - Fallback when expected_text not available
+    3. COORDINATE: Coordinate-based extraction + 21 strategies - Last resort when semantic fails
 
     The semantic-first approach is more reliable because:
     - Doesn't depend on viewport size or layout (centered layouts won't break it)
@@ -3230,7 +3135,6 @@ async def find_unique_locator_at_coordinates(
         element_description: Human-readable description (primary source for semantic locators)
         expected_text: The actual visible text AI sees on the element (e.g., "Submit", "Nike Air Max 270").
                       Used for semantic validation AND for text-first locator search.
-        candidate_locator: Optional locator to validate first (e.g., "id=search-input")
         library_type: "browser" or "selenium" - determines locator format
         element_data: Optional dict with element attributes from browser-use DOM:
                      {"tagName": "a", "id": "", "textContent": "Services", "href": "/services", ...}
@@ -3335,29 +3239,6 @@ async def find_unique_locator_at_coordinates(
             }
             # Add iframe prefix to best_locator AND all_locators
             return _apply_iframe_prefix_to_result(result)
-
-
-
-    
-    # ========================================
-    # STEP 0.1: Validate candidate locator (if provided)
-    # ========================================
-    if candidate_locator:
-        result = await _validate_candidate_locator(
-            search_context, candidate_locator, element_id, element_description, 
-            expected_text, x, y
-        )
-        if result:
-            # Add approach metrics for pattern analysis
-            result['approach_metrics'] = {
-                **_approach_metrics_base,
-                'locator_approach': 'candidate',
-                'fallback_depth': 2,
-                'success': True,
-            }
-            # Add iframe prefix to best_locator AND all_locators
-            return _apply_iframe_prefix_to_result(result)
-    
     # ========================================
     # STEP 0.5: Collection detection (hybrid: is_collection flag + keyword fallback)
     # ========================================

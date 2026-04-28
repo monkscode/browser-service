@@ -26,7 +26,7 @@ from .validation import (
     is_already_playwright_selector,
     PLAYWRIGHT_NATIVE_ENGINES
 )
-from .smart_locator import find_unique_locator_at_coordinates
+from .smart_locator import find_unique_locator_at_coordinates, validate_semantic_match
 
 __all__ = [
     'validate_locator_playwright',
@@ -34,5 +34,6 @@ __all__ = [
     'is_already_playwright_selector',
     'PLAYWRIGHT_NATIVE_ENGINES',
     'find_unique_locator_at_coordinates',
+    'validate_semantic_match',
 ]
 

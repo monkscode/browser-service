@@ -20,9 +20,6 @@ MIN_TEXT_LENGTH = 2  # Minimum text length to use for text-based locators
 MAX_TEXT_DISPLAY_LENGTH = 50  # Maximum text length to display in logs (for actual text)
 MAX_TEXT_CONTENT_LENGTH = 100  # Maximum text content to extract from elements
 
-# Text comparison thresholds  
-INNER_TEXT_PREFERENCE_THRESHOLD = 1.0  # Use inner_text if shorter (more relevant); 1.0 = always prefer if shorter
-
 # Checkbox label matching
 MAX_CHECKBOX_LABEL_LENGTH = 30  # Maximum label length for checkbox/radio detection heuristic
 
@@ -388,97 +385,166 @@ SHADOW_DOM_ELEMENT_DATA_JS = f"""
 """
 
 
-async def _validate_semantic_match(page, locator: str, expected_text: str) -> tuple[bool, str]:
+async def validate_semantic_match(
+    node=None,
+    expected_text: Optional[str] = None,
+    *,
+    page=None,
+    locator: Optional[str] = None,
+) -> tuple[bool, str]:
     """
-    Validate that the element found by the locator contains the expected text.
-    
-    This is the KEY validation that prevents "unique but wrong element" bugs.
-    We check if the actual element text contains the expected text (case-insensitive).
-    
-    Args:
-        page: Playwright page object
-        locator: The locator string to validate
-        expected_text: The text AI expects to see on the element
-        
-    Returns:
-        Tuple of (is_match: bool, actual_text: str)
-        - is_match: True if expected_text is found in actual text (case-insensitive)
-        - actual_text: The actual text content of the element
+    Semantic validation that the matched element is the one the user meant.
+
+    Primary path (node is not None): read the canonical "what the LLM saw for this node"
+    surface that browser-use 0.12.6 pre-populates on every selector_map entry.
+    Probe 16 confirmed this distinguishes target from a wrong-sibling for text-bearing
+    buttons, bare inputs, and icon-/aria-only elements — zero CDP round-trips.
+
+    Fallback path (page + locator): count check then evaluate() on the located element.
+    Returns (False, ...) immediately when count != 1; otherwise one evaluate() call (~2ms,
+    probe 05 pattern). Works with both Playwright Page and FrameLocator callers.
+
+    Probe 18 FAIL carve-out: SVG-only icon buttons (demoqa.com pattern) have empty
+    haystacks — no text, no aria-label, no placeholder. When haystack is empty AND
+    the tag is interactive, accept rather than reject to avoid regressions on nameless
+    icon elements common in SPA table UIs.
+
+    The `if not expected_text: return True` short-circuit has been removed. New
+    behaviour: when expected_text is absent, accept only if the haystack is also empty
+    (truly anonymous element). In practice Stages 0 and 5 guard with `if expected_text:`
+    before calling this function, so the branch is only reachable from Change C, which
+    also guards — keeping the branch as a safe no-op.
+
+    Returns (is_match, observed_text).
     """
+    _INTERACTIVE_TAGS = ("a", "button", "input", "select", "textarea")
+    haystack = ""
+    observed_text = ""
+    node_tag = ""
+    _haystack_has_content = False  # True when at least one part is non-empty
+    _primary_text_len = 0          # Full text length for container ratio check
+    _haystack_parts_list: list = []  # Individual fields for per-field word matching
+
+    if node is not None:
+        # Primary path — zero CDP round-trips. Read pre-computed attrs.
+        node_tag = (
+            getattr(node, "tag_name", None)
+            or getattr(node, "node_name", "")
+            or ""
+        ).lower()
+        ax = getattr(node, "ax_node", None)
+        ax_name = (
+            getattr(getattr(ax, "name", None), "value", getattr(ax, "name", ""))
+            or ""
+        )
+        meaningful = ""
+        try:
+            meaningful = node.get_meaningful_text_for_llm() or ""
+        except Exception:
+            pass
+        attrs = node.attributes or {}
+        haystack_parts = [
+            ax_name,
+            meaningful,
+            attrs.get("placeholder", ""),
+            attrs.get("aria-label", ""),
+            attrs.get("value", ""),
+            (getattr(node, "node_value", None) or ""),
+        ]
+        _haystack_has_content = any(str(p).strip() for p in haystack_parts)
+        haystack = " | ".join(str(p) for p in haystack_parts).lower()
+        observed_text = (meaningful or ax_name).strip()
+        _primary_text_len = len(meaningful)
+        _haystack_parts_list = [str(p).lower() for p in haystack_parts]
+
+    elif page is not None and locator:
+        # Legacy fallback — one evaluate() on the located element.
+        # page.locator() works with both Playwright Page and FrameLocator.
+        try:
+            el = page.locator(locator)
+            count = await el.count()
+            if count != 1:
+                return False, f"[Element count={count}, expected 1]"
+            info = await el.evaluate(
+                """el => {
+                    const tc = (el.textContent || '').trim();
+                    return {
+                        tag: el.tagName.toLowerCase(),
+                        textContent: tc.slice(0, 500),
+                        textContentLength: tc.length,
+                        innerText: (el.innerText || '').trim().slice(0, 500),
+                        placeholder: el.getAttribute('placeholder') || '',
+                        ariaLabel: el.getAttribute('aria-label') || '',
+                        value: el.value || ''
+                    };
+                }"""
+            )
+            node_tag = info.get("tag", "")
+            parts = [
+                info.get("textContent", ""),
+                info.get("innerText", ""),
+                info.get("placeholder", ""),
+                info.get("ariaLabel", ""),
+                info.get("value", ""),
+            ]
+            _haystack_has_content = any(p.strip() for p in parts)
+            haystack = " | ".join(parts).lower()
+            observed_text = (
+                info.get("innerText")
+                or info.get("textContent")
+                or info.get("ariaLabel")
+                or ""
+            ).strip()
+            _primary_text_len = info.get("textContentLength", len(info.get("textContent", "")))
+            _haystack_parts_list = [p.lower() for p in parts]
+        except Exception as e:
+            logger.warning(f"   ⚠️ Semantic validation error: {e}")
+            return False, f"[Error: {e}]"
+
     if not expected_text:
-        return True, ""  # No expected text means no validation needed
-    
-    try:
-        element = page.locator(locator)
-        count = await element.count()
-        
-        if count != 1:
-            return False, f"[Element count={count}, expected 1]"
-        
-        # Get the actual text content
-        actual_text = await element.text_content() or ""
-        actual_text = actual_text.strip()
-        
-        # Also try inner_text which may be more accurate for visible text
-        try:
-            inner_text = await element.inner_text() or ""
-            inner_text = inner_text.strip()
-            # Use inner_text if it's shorter (usually more relevant)
-            if inner_text and len(inner_text) < len(actual_text) * INNER_TEXT_PREFERENCE_THRESHOLD:
-                actual_text = inner_text
-        except Exception:
-            pass
+        # Short-circuit removed. Accept only when haystack is also empty
+        # (truly anonymous element — nothing semantic to compare against).
+        return (not _haystack_has_content, observed_text)
 
-        # Reject container/wrapper elements: if the element's text is vastly longer than
-        # the expected text, it is a parent container (e.g. #page-container whose text_content
-        # includes the full page) rather than the specific target element.
-        # 40x is the ratio floor; 500 chars is the absolute floor so short expected text
-        # (e.g. "OK", "A") does not falsely reject legitimate rows / menu items.
-        normalized_expected_text = expected_text.strip() if expected_text else ""
-        if normalized_expected_text:
-            container_text_threshold = max(len(normalized_expected_text) * 40, 500)
-            if len(actual_text) > container_text_threshold:
-                ratio = len(actual_text) / len(normalized_expected_text)
-                logger.warning(
-                    "   ⚠️ Semantic match REJECTED: element text (%d chars) "
-                    "is %.1fx longer than expected text (%d chars) "
-                    "— likely a container element, not the target",
-                    len(actual_text), ratio, len(normalized_expected_text),
-                )
-                # Truncate returned text so downstream loggers (which emit actual_text
-                # verbatim) cannot dump multi-megabyte container payloads into log files.
-                return False, actual_text[:MAX_TEXT_DISPLAY_LENGTH]
+    # Container rejection: an element whose text surface far exceeds the search term
+    # is almost certainly a layout container that incidentally contains the text.
+    # _primary_text_len reflects DOM children text (get_all_children_text fallback);
+    # elements where get_meaningful_text_for_llm() returns an attribute value (aria-label,
+    # value, placeholder) will have a short _primary_text_len and are unaffected.
+    _container_threshold = max(len(expected_text) * 40, 500)
+    if _primary_text_len > _container_threshold:
+        return False, observed_text
 
-        # Check for placeholder/value for inputs
-        try:
-            tag = await element.evaluate("el => el.tagName.toLowerCase()")
-            if tag == 'input':
-                placeholder = await element.get_attribute('placeholder') or ""
-                value = await element.get_attribute('value') or ""
-                # For inputs, check placeholder or value as well
-                if placeholder and expected_text.lower() in placeholder.lower():
-                    return True, placeholder
-                if value and expected_text.lower() in value.lower():
-                    return True, value
-        except Exception:
-            pass
-        
-        # Case-insensitive substring match
-        expected_lower = expected_text.lower().strip()
-        actual_lower = actual_text.lower()
-        
-        is_match = expected_lower in actual_lower
-        
-        if is_match:
-            logger.info(f"   ✅ Semantic match: expected '{expected_text}' found in '{actual_text[:MAX_TEXT_DISPLAY_LENGTH]}...'")
-        else:
-            logger.warning(f"   ❌ Semantic MISMATCH: expected '{expected_text}', got '{actual_text[:MAX_TEXT_CONTENT_LENGTH]}'")
-        
-        return is_match, actual_text
-        
-    except Exception as e:
-        logger.warning(f"   ⚠️ Semantic validation error: {e}")
-        return False, f"[Error: {e}]"
+    # Probe 18 carve-out: SVG-icon-only interactive elements have no semantic surface.
+    # Accepting avoids silent regression on nameless icon buttons/links.
+    if not _haystack_has_content and node_tag in _INTERACTIVE_TAGS:
+        logger.debug(f"   ℹ️ Empty haystack for <{node_tag}> — accepting (probe 18 carve-out)")
+        return (True, observed_text)
+
+    needle = expected_text.lower().strip()
+
+    if needle in haystack:
+        logger.info(f"   ✅ Semantic match: '{expected_text}' found in element surface")
+        return (True, observed_text)
+
+    # Word-level soft match — all significant words must appear in the same field.
+    # Handles "login email" matching "Enter your login email" within one field.
+    # Per-field prevents cross-field false positives: "delete" (meaningful) + "row"
+    # (aria-label) no longer combine to match "delete row".
+    words = [w for w in needle.split() if len(w) >= 2]
+    if words and any(
+        all(w in field for w in words)
+        for field in _haystack_parts_list
+        if field.strip()
+    ):
+        logger.info(f"   ✅ Semantic match (word-level): '{expected_text}' matched")
+        return (True, observed_text)
+
+    logger.warning(
+        f"   ❌ Semantic MISMATCH: expected '{expected_text}', "
+        f"got '{observed_text[:MAX_TEXT_CONTENT_LENGTH]}'"
+    )
+    return (False, observed_text)
 
 
 # ========================================
@@ -2556,7 +2622,7 @@ async def _find_table_cell_by_structured_info(
                 
                 if expected_text:
                     # Validate that expected_text is somewhere in this cell
-                    is_match, actual_text = await _validate_semantic_match(page, cell_locator, expected_text)
+                    is_match, actual_text = await validate_semantic_match(None, expected_text, page=page, locator=cell_locator)
                     
                     if not is_match:
                         logger.info(f"   ⚠️ Locator found but text mismatch: {cell_locator}")
@@ -2994,7 +3060,7 @@ async def _generate_locators_from_element_data(
                 validation_method = "text"
                 
                 if expected_text:
-                    semantic_match, actual_text = await _validate_semantic_match(search_context, locator, expected_text)
+                    semantic_match, actual_text = await validate_semantic_match(None, expected_text, page=search_context, locator=locator)
                     
                     if not semantic_match:
                         # For DROPDOWNS: Use coordinate-based validation instead of text
@@ -3090,6 +3156,8 @@ async def _generate_locators_from_element_data(
     
     logger.info(f"   ⚠️ ELEMENT-DATA: No unique locator found, falling back to other strategies")
     return None
+
+
 async def find_unique_locator_at_coordinates(
     page,
     x: float,
@@ -3101,7 +3169,8 @@ async def find_unique_locator_at_coordinates(
     element_data: Optional[dict] = None,  # Element attributes from browser-use DOM (id, class, text, etc.)
     search_context=None,  # Either page or frame_locator for iframe context
     iframe_context: Optional[str] = None,  # Iframe locator (e.g., 'iframe[id="main"]') for composite locators
-    is_collection: Optional[bool] = None  # Collection flag for multi-element detection
+    is_collection: Optional[bool] = None,  # Collection flag for multi-element detection
+    browser_session=None,  # BrowserSession for resolved_node lookup (DELTA 1)
 ) -> dict:
     """
     Find a unique locator for an element using a semantic-first approach.
@@ -3155,11 +3224,22 @@ async def find_unique_locator_at_coordinates(
     if iframe_context:
         logger.info(f"   🖼️ Iframe context: {iframe_context}")
     logger.info(f"   Coordinates: ({x}, {y}) [fallback]")
-    
+
+    # DELTA 1: Resolve the DOM node at (x, y) once via get_dom_element_at_coordinates.
+    # Cache-hit path returns a fully-populated selector_map node (children_nodes is a list).
+    # CDP-fallback path (element not in cache) returns a minimal node with children_nodes=None
+    # and ax_node=None — Step 5 routes such nodes to the slow per-locator evaluate() path.
+    resolved_node = None
+    if browser_session is not None and expected_text:
+        try:
+            resolved_node = await browser_session.get_dom_element_at_coordinates(int(x), int(y))
+        except Exception:
+            resolved_node = None
+
     # ========================================
     # SEARCH CONTEXT: Use iframe context if provided
     # ========================================
-    # search_context is either page (for main page elements) or 
+    # search_context is either page (for main page elements) or
     # frame_locator (for elements inside iframes)
     if search_context is None:
         search_context = page
@@ -3427,7 +3507,7 @@ async def find_unique_locator_at_coordinates(
             semantic_match = True
             actual_text = ""
             if expected_text:
-                semantic_match, actual_text = await _validate_semantic_match(search_context, semantic_locator, expected_text)
+                semantic_match, actual_text = await validate_semantic_match(None, expected_text, page=search_context, locator=semantic_locator)
                 if not semantic_match:
                     logger.warning(f"⚠️ Description-based locator found BUT text doesn't match!")
                     logger.warning(f"   Expected: '{expected_text}'")
@@ -4122,17 +4202,36 @@ async def find_unique_locator_at_coordinates(
         # If expected_text is provided, find a locator that ALSO matches semantically
         if expected_text:
             logger.info(f"🔍 Checking semantic match for {len(sorted_locators)} unique locators...")
-            
-            for loc in sorted_locators:
-                is_match, text = await _validate_semantic_match(page, loc['locator'], expected_text)
-                loc['semantic_match'] = is_match
-                loc['actual_text'] = text
-                
-                if is_match and best_locator_obj is None:
-                    best_locator_obj = loc
-                    semantic_match = True
-                    actual_text = text
-                    logger.info(f"   ✅ Found semantically matching locator: {loc['locator']}")
+
+            if resolved_node is not None and resolved_node.children_nodes is not None:
+                # Fast path: resolved_node is a cache-hit node with full AX/text data.
+                # All Stage 3-4 candidates target the same element — one check covers all.
+                # CDP fallback nodes (children_nodes=None) are excluded here because their
+                # text content is incomplete, which triggers the Probe 18 carve-out and
+                # accepts any interactive element regardless of expected_text.
+                is_match, actual_text = await validate_semantic_match(resolved_node, expected_text)
+                semantic_match = is_match
+                if is_match:
+                    for loc in sorted_locators:
+                        loc['semantic_match'] = True
+                        loc['actual_text'] = actual_text
+                    best_locator_obj = sorted_locators[0]
+                    logger.info(f"   ✅ Found semantically matching locator: {best_locator_obj['locator']}")
+                else:
+                    for loc in sorted_locators:
+                        loc['semantic_match'] = False
+                        loc['actual_text'] = actual_text
+            else:
+                # Slow path: no resolved node, or CDP fallback node (children_nodes=None).
+                # CDP fallback nodes have incomplete text data; evaluate() each candidate.
+                for loc in sorted_locators:
+                    is_match, text = await validate_semantic_match(None, expected_text, page=page, locator=loc['locator'])
+                    loc['semantic_match'] = is_match
+                    loc['actual_text'] = text
+                    if is_match and best_locator_obj is None:
+                        best_locator_obj = loc
+                        actual_text = text
+                        logger.info(f"   ✅ Found semantically matching locator: {loc['locator']}")
             
             # If no semantic match found, DO NOT return wrong locator - return failure instead
             if best_locator_obj is None:

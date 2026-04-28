@@ -15,11 +15,11 @@ The registration process:
 4. Handles page object retrieval from browser_session via CDP
 5. Converts results to ActionResult format for the agent
 
-Playwright Connection Lifecycle:
-- Each custom action call creates a fresh Playwright connection via CDP
-- The connection is destroyed after the action completes (in finally blocks)
-- No module-level cache exists — each concurrent task uses its own connection
-- This ensures isolation when multiple tasks run simultaneously
+Playwright Connection Lifecycle (Day 04 — lazy, once-per-run):
+- Playwright is connected lazily on the first find_unique_locator call within agent.run()
+- The connection is reused for every subsequent call in the same run (one connect per workflow)
+- Torn down by _teardown_playwright() called from the workflow finally block after agent.run() returns
+- Each concurrent workflow has its own pw_cache closure — no shared state between workflows
 
 Usage:
     from browser_service.agent.registration import register_custom_actions
@@ -260,138 +260,6 @@ def _get_cdp_url_from_session(browser_session) -> Optional[str]:
     return None
 
 
-async def _get_active_page_from_browser(
-    connected_browser, 
-    browser_session, 
-    fallback_page,
-    created_new_instance: bool = False
-):
-    """
-    Get active Playwright page using multiple fallback strategies.
-    
-    Strategies (in priority order):
-    1. CDP browser contexts[0].pages[0] (primary for CDP connections)
-    2. browser_session.get_pages()[0] (async method)
-    3. browser_session.page (direct attribute)
-    4. browser_session.get_current_page() (async method)
-    5. browser_session.context.pages[0] (context attribute)
-    6. browser_session.browser.contexts[0].pages[0] (nested browser access)
-    7. Fallback page passed during registration
-    
-    Args:
-        connected_browser: Playwright browser connected via CDP (may be None)
-        browser_session: The browser-use session object
-        fallback_page: Page object passed during registration (last resort)
-        created_new_instance: Whether this is a freshly created CDP connection
-        
-    Returns:
-        Active Playwright page object, or None if all strategies fail
-    """
-    active_page = None
-    
-    # ════════════════════════════════════════════════════════════════════
-    # Strategy 1: CDP contexts (PRIMARY - use when we have CDP connection)
-    # ════════════════════════════════════════════════════════════════════
-    if connected_browser:
-        try:
-            contexts = connected_browser.contexts
-            if contexts:
-                logger.debug(f"CDP browser has {len(contexts)} context(s)")
-                for idx, ctx in enumerate(contexts):
-                    logger.debug(f"  Context[{idx}] has {len(ctx.pages)} page(s)")
-                
-                context = contexts[0]
-                if context.pages:
-                    active_page = context.pages[0]
-                    page_url = active_page.url
-                    
-                    # Wait for DOM to be ready on new connections
-                    if created_new_instance:
-                        try:
-                            await active_page.wait_for_load_state('domcontentloaded', timeout=5000)
-                            logger.info("✅ Page DOM is ready for locator queries")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Page load state wait: {e}")
-                        logger.info(f"✅ Connected to page via CDP: {page_url}")
-                    else:
-                        logger.info(f"♻️ Reusing cached CDP page: {page_url}")
-                    
-                    return active_page
-                else:
-                    logger.debug("CDP context has no pages")
-            else:
-                logger.debug("CDP browser has no contexts")
-        except Exception as e:
-            logger.debug(f"Strategy 1 (CDP contexts): {e}")
-    
-    # ════════════════════════════════════════════════════════════════════
-    # Strategies 2-6: browser_session fallbacks (when CDP not available)
-    # ════════════════════════════════════════════════════════════════════
-    
-    # Strategy 2: get_pages() async method
-    if hasattr(browser_session, 'get_pages'):
-        try:
-            pages = await browser_session.get_pages()
-            if pages and len(pages) > 0:
-                active_page = pages[0]
-                logger.info(f"✅ Got page from browser_session.get_pages() ({len(pages)} total)")
-                return active_page
-        except Exception as e:
-            logger.debug(f"Strategy 2 (get_pages): {e}")
-    
-    # Strategy 3: Direct .page attribute
-    if hasattr(browser_session, 'page') and browser_session.page is not None:
-        try:
-            active_page = browser_session.page
-            logger.info("✅ Got page from browser_session.page")
-            return active_page
-        except Exception as e:
-            logger.debug(f"Strategy 3 (.page): {e}")
-    
-    # Strategy 4: get_current_page() async method
-    if hasattr(browser_session, 'get_current_page'):
-        try:
-            active_page = await browser_session.get_current_page()
-            if active_page:
-                logger.info("✅ Got page from browser_session.get_current_page()")
-                return active_page
-        except Exception as e:
-            logger.debug(f"Strategy 4 (get_current_page): {e}")
-    
-    # Strategy 5: context.pages attribute
-    if hasattr(browser_session, 'context') and browser_session.context is not None:
-        try:
-            pages = browser_session.context.pages
-            if pages and len(pages) > 0:
-                active_page = pages[0]
-                logger.info(f"✅ Got page from browser_session.context.pages ({len(pages)} total)")
-                return active_page
-        except Exception as e:
-            logger.debug(f"Strategy 5 (context.pages): {e}")
-    
-    # Strategy 6: browser.contexts[0].pages
-    if hasattr(browser_session, 'browser') and browser_session.browser is not None:
-        try:
-            contexts = browser_session.browser.contexts
-            if contexts and len(contexts) > 0:
-                pages = contexts[0].pages
-                if pages and len(pages) > 0:
-                    active_page = pages[0]
-                    logger.info("✅ Got page from browser_session.browser.contexts[0].pages")
-                    return active_page
-        except Exception as e:
-            logger.debug(f"Strategy 6 (browser.contexts): {e}")
-    
-    # ════════════════════════════════════════════════════════════════════
-    # Strategy 7: Fallback page (last resort)
-    # ════════════════════════════════════════════════════════════════════
-    if fallback_page:
-        logger.warning("⚠️ All page strategies failed, using fallback page")
-        return fallback_page
-    
-    logger.error("❌ No page available - all strategies exhausted")
-    return None
-
 def register_custom_actions(agent, page=None, elements=None, workflow_id: str = "") -> bool:
     """
     Register custom actions with browser-use agent.
@@ -399,13 +267,11 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
     This function registers the find_unique_locator custom action that allows
     the agent to call deterministic Python code for locator finding and validation.
 
-    The custom action will get the page object from browser_session during execution,
-    ensuring we use the SAME browser that's already open. This is the key strategy:
-    validate locators using the existing browser_use browser (no new instance needed).
-
     Args:
         agent: Browser-use Agent instance
-        page: Optional Playwright page object (used as fallback if browser_session doesn't provide one)
+        page: Unused — kept for API compatibility. The Playwright page is obtained
+              lazily via CDP inside the handler (_ensure_playwright). Do not rely on
+              this parameter.
         elements: Optional list of element specs [{"id": "elem_1", "action": "get_text", ...}].
                   When provided, completion is tracked via a closure dict. Once all expected
                   element IDs have been successfully processed, is_done=True is returned so the
@@ -455,6 +321,100 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
         _expected_element_ids: set = set(_element_specs.keys())
         _total_expected: int = len(_expected_element_ids)
         _completed_elements: dict = {}  # element_id → best_locator (mutated by inner function)
+
+        # ========================================
+        # PER-RUN PLAYWRIGHT CACHE (Change A — Day 04)
+        # ========================================
+        # One Playwright connection per agent.run() invocation, opened lazily on the
+        # first find_unique_locator call and reused for every subsequent call in the same
+        # run. Torn down by _teardown_playwright() in the workflow finally block.
+        pw_cache: dict = {"instance": None, "browser": None, "page": None}
+
+        async def _ensure_playwright(bs):
+            """
+            Lazy connect on first call; reuse on subsequent calls within the same run.
+
+            Probe 20 (day-04-preflight) FAILED: session.reconnect() does not recover
+            from BrowserStopEvent teardown (session was already destroyed before the
+            probe could run). Per the spec FAIL path (option a), a stale connection
+            mid-run is treated as fatal — RuntimeError is raised so the agent surfaces
+            the error and downstream pipelines can retry the workflow.
+            """
+            if pw_cache["page"] is not None:
+                # Health-check the cached connection before reusing it.
+                # Primary: browser-use's CDP liveness flag (no round-trip).
+                # Secondary: lightweight CDP round-trip to confirm Playwright side is alive.
+                try:
+                    if bs is not None and not bs.is_cdp_connected:
+                        raise RuntimeError("session.is_cdp_connected is False")
+                    await pw_cache["page"].evaluate("1")  # minimal CDP round-trip
+                    return pw_cache["page"]
+                except Exception as exc:
+                    logger.warning(f"Stale Playwright connection ({exc}); tearing down.")
+                    # Probe 20 FAIL: reconnect() cannot recover from BrowserStopEvent
+                    # teardown. Surface as fatal rather than attempting reconnect.
+                    try:
+                        if pw_cache["browser"] is not None:
+                            await pw_cache["browser"].close()
+                    except Exception:
+                        pass
+                    try:
+                        if pw_cache["instance"] is not None:
+                            await pw_cache["instance"].stop()
+                    except Exception:
+                        pass
+                    pw_cache.update({"instance": None, "browser": None, "page": None})
+                    raise RuntimeError(
+                        f"Playwright connection became stale mid-run ({exc}). "
+                        "Probe 20 confirmed reconnect() cannot recover from "
+                        "BrowserStopEvent teardown — surfacing error to agent."
+                    )
+
+            # Fresh connect (first call this run).
+            from playwright.async_api import async_playwright as _async_playwright
+            cdp_url = _get_cdp_url_from_session(bs)
+            if not cdp_url:
+                raise RuntimeError("No CDP URL on browser_session — cannot connect Playwright")
+            instance = await _async_playwright().start()
+            try:
+                connected = await instance.chromium.connect_over_cdp(cdp_url)
+                contexts = connected.contexts
+                if not contexts or not contexts[0].pages:
+                    raise RuntimeError(
+                        f"CDP browser has no usable page "
+                        f"(contexts={len(contexts)}, "
+                        f"pages={len(contexts[0].pages) if contexts else 0})"
+                    )
+                page_obj = contexts[0].pages[0]
+                try:
+                    await page_obj.wait_for_load_state("domcontentloaded", timeout=5000)
+                except Exception as e:
+                    logger.warning(f"wait_for_load_state: {e}")
+            except Exception:
+                # connect_over_cdp (or page retrieval) failed — stop the instance we
+                # already started so it doesn't leak, then re-raise to the caller.
+                try:
+                    await instance.stop()
+                except Exception:
+                    pass
+                raise
+            pw_cache.update({"instance": instance, "browser": connected, "page": page_obj})
+            logger.info("✅ Playwright connected (lazy, once-per-run)")
+            return page_obj
+
+        async def _teardown_playwright():
+            """Called from the workflow finally block when agent.run() returns."""
+            try:
+                if pw_cache["browser"] is not None:
+                    await pw_cache["browser"].close()
+            except Exception as e:
+                logger.debug(f"Playwright browser close during teardown: {e}")
+            try:
+                if pw_cache["instance"] is not None:
+                    await pw_cache["instance"].stop()
+            except Exception as e:
+                logger.debug(f"Playwright instance stop during teardown: {e}")
+            pw_cache.update({"instance": None, "browser": None, "page": None})
 
         # Define parameter model for find_unique_locator action
         class FindUniqueLocatorParams(BaseModel):
@@ -667,13 +627,14 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                             if dom_node is not None:
                                 try:
                                     stable_hash = dom_node.compute_stable_hash()
+                                except Exception as e:
+                                    logger.debug(f"   ⚠️ compute_stable_hash failed: {e}")
+                                else:
                                     logger.info(
-                                        f"📊 LOCATOR_PROBE workflow_id={workflow_id} "
+                                        f"📊 LOCATOR_PROBE workflow_id={workflow_id or 'unknown'} "
                                         f"stable_hash={stable_hash} "
                                         f"element_id={params.element_id}"
                                     )
-                                except Exception:
-                                    pass
                                 logger.info(f"   ✅ Found element [{idx}] at coordinates!")
                                 elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
                                 logger.info(f"   📝 Element tag: <{elem_tag}>")
@@ -730,144 +691,8 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
 
 
 
-                # IMPORTANT: browser-use now uses CDP (Chrome DevTools Protocol) instead of Playwright.
-                # Each custom action call creates a fresh Playwright connection and destroys it
-                # after use. This ensures isolation between concurrent tasks — no shared state.
-
-                active_page = None
-                playwright_instance = None
-                connected_browser = None
-                created_new_instance = False
-
-                try:
-                    logger.info("🔍 Attempting to retrieve page from browser_session via CDP...")
-                    logger.info(f"   browser_session type: {type(browser_session)}")
-
-                    # ════════════════════════════════════════════════════════════════════
-                    # GET CDP URL (using consolidated helper function)
-                    # ════════════════════════════════════════════════════════════════════
-                    cdp_url = _get_cdp_url_from_session(browser_session)
-
-                    # ════════════════════════════════════════════════════════════════════
-                    # CONNECT PLAYWRIGHT VIA CDP (per-call, no module-level cache)
-                    # ════════════════════════════════════════════════════════════════════
-                    if cdp_url:
-                        try:
-                            from playwright.async_api import async_playwright
-
-                            logger.info("🔌 Connecting Playwright to browser-use's browser via CDP...")
-                            playwright_instance = await async_playwright().start()
-                            connected_browser = await playwright_instance.chromium.connect_over_cdp(cdp_url)
-                            created_new_instance = True
-                            logger.info("✅ Playwright connected via CDP (per-call instance)")
-
-                        except Exception as e:
-                            logger.error(f"❌ Failed to connect Playwright via CDP: {e}")
-                            import traceback
-                            logger.debug(traceback.format_exc())
-                    else:
-                        # Log available attributes for debugging when CDP URL not found
-                        logger.info(f"   browser_session attributes: {[attr for attr in dir(browser_session) if not attr.startswith('_')][:20]}")
-
-                    # ════════════════════════════════════════════════════════════════════
-                    # GET ACTIVE PAGE (using consolidated helper function)
-                    # ════════════════════════════════════════════════════════════════════
-                    active_page = await _get_active_page_from_browser(
-                        connected_browser=connected_browser,
-                        browser_session=browser_session,
-                        fallback_page=page,
-                        created_new_instance=created_new_instance
-                    )
-
-                except Exception as e:
-                    logger.error(f"❌ Error getting page from browser_session: {e}", exc_info=True)
-                    active_page = page  # Use the page passed during registration as fallback
-                    if active_page:
-                        logger.info(f"   Fallback page type: {type(active_page)}")
-
-
-                # Unwrap browser-use Page wrapper to get actual Playwright page
-                if active_page and not hasattr(active_page, 'locator'):
-                    logger.warning(f"⚠️ Page object is a browser-use wrapper: {type(active_page)}")
-                    logger.info("   Attempting to unwrap to get Playwright page...")
-
-                    # browser-use wraps the Playwright page in browser_use.actor.page.Page
-                    # Try multiple strategies to get the underlying Playwright page
-                    playwright_page = None
-
-                    # Strategy 1: Check for .page attribute
-                    if hasattr(active_page, 'page') and active_page.page is not None:
-                        playwright_page = active_page.page
-                        logger.info("✅ Unwrapped page from wrapper.page")
-
-                    # Strategy 2: Check for ._page attribute
-                    elif hasattr(active_page, '_page') and active_page._page is not None:
-                        playwright_page = active_page._page
-                        logger.info("✅ Unwrapped page from wrapper._page")
-
-                    # Strategy 3: Check for ._client attribute (CDP client)
-                    elif hasattr(active_page, '_client') and active_page._client is not None:
-                        # _client might be the CDP client, try to get page from it
-                        client = active_page._client
-                        if hasattr(client, 'page') and client.page is not None:
-                            playwright_page = client.page
-                            logger.info("✅ Unwrapped page from wrapper._client.page")
-                        else:
-                            logger.warning("   _client exists but has no page attribute")
-
-                    # Strategy 4: Check for ._browser_session attribute
-                    elif hasattr(active_page, '_browser_session') and active_page._browser_session is not None:
-                        # Try to get page from the browser session
-                        session = active_page._browser_session
-                        if hasattr(session, 'page') and session.page is not None:
-                            playwright_page = session.page
-                            logger.info("✅ Unwrapped page from wrapper._browser_session.page")
-                        elif hasattr(session, 'get_current_page'):
-                            try:
-                                playwright_page = await session.get_current_page()
-                                logger.info("✅ Unwrapped page from wrapper._browser_session.get_current_page()")
-                            except Exception as e:
-                                logger.warning(f"   Failed to get page from _browser_session: {e}")
-
-                    # Strategy 5: Use the wrapper directly if it has evaluate method
-                    # browser-use Page wrapper might proxy Playwright methods
-                    elif hasattr(active_page, 'evaluate'):
-                        logger.info("⚠️ Using browser-use Page wrapper directly (has evaluate method)")
-                        logger.info("   This wrapper might proxy Playwright methods")
-                        playwright_page = active_page  # Use wrapper as-is
-
-                    if playwright_page:
-                        logger.info(f"   Playwright page type: {type(playwright_page)}")
-                        active_page = playwright_page
-                    else:
-                        logger.error("❌ Could not unwrap browser-use Page wrapper!")
-                        logger.error(f"   Wrapper attributes: {[attr for attr in dir(active_page) if not attr.startswith('__')][:20]}")
-                        active_page = None
-
-                # Final verification: ensure we have a page with required methods
-                if active_page:
-                    required_methods = ['locator', 'evaluate', 'evaluate_handle']
-                    missing_methods = [m for m in required_methods if not hasattr(active_page, m)]
-
-                    if missing_methods:
-                        logger.error(f"❌ Page object is missing required methods: {missing_methods}")
-                        logger.error(f"   Type: {type(active_page)}")
-                        logger.error(f"   Available methods: {[attr for attr in dir(active_page) if not attr.startswith('_')][:30]}")
-                        active_page = None
-                    else:
-                        logger.info(f"✅ Page object has all required methods: {required_methods}")
-                        logger.info(f"   Page type: {type(active_page)}")
-                        
-                        # CRITICAL: Test page connectivity by running a simple evaluation
-                        # This detects stale connections where the CDP page is no longer responsive
-                        try:
-                            test_result = await active_page.evaluate("() => document.body ? 'connected' : null")
-                            if test_result != 'connected':
-                                logger.warning("⚠️ Page connectivity test returned unexpected result, may be stale")
-                        except Exception as connectivity_err:
-                            logger.error(f"❌ Page connectivity test FAILED: {connectivity_err}")
-                            logger.info("🔄 Stale connection detected, falling back...")
-                            active_page = page  # Fall back to the page passed during registration
+                # Lazy connect: one Playwright connection per agent.run(), reused across all calls.
+                active_page = await _ensure_playwright(browser_session)
 
                 try:
                     final_x, final_y = scaled_x, scaled_y
@@ -883,8 +708,7 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                     # ========================================
                     iframe_context = None
                     if selector_map:
-                        # Note: _iframe_id unpacked but unused (only iframe_context needed for locator)
-                        iframe_context, _iframe_id = _detect_iframe_context(
+                        iframe_context, _ = _detect_iframe_context(
                             selector_map, (final_x, final_y)
                         )
                         if iframe_context:
@@ -954,7 +778,8 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                             element_data=element_data_from_index,  # Pass element attributes from DOM
                             page=active_page,
                             iframe_context=iframe_context,  # Pass iframe context if detected
-                            is_collection=params.is_collection  # Pass collection flag for multi-element detection
+                            is_collection=params.is_collection,  # Pass collection flag for multi-element detection
+                            browser_session=browser_session,  # For resolved_node lookup (DELTA 1)
                         ),
                         timeout=custom_action_timeout
                     )
@@ -1109,31 +934,24 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
 
                 return action_result
 
+            except RuntimeError as e:
+                # RuntimeError from _ensure_playwright means the browser connection is
+                # dead (stale CDP or failed fresh connect). Surfacing as is_done=True
+                # so the agent terminates immediately rather than burning remaining
+                # steps retrying against a permanently unavailable browser.
+                error_msg = f"Error in find_unique_locator custom action: {str(e)}"
+                logger.error(f"❌ {error_msg}", exc_info=True)
+                return ActionResult(error=error_msg, is_done=True)
             except Exception as e:
                 error_msg = f"Error in find_unique_locator custom action: {str(e)}"
                 logger.error(f"❌ {error_msg}", exc_info=True)
                 return ActionResult(error=error_msg)
 
-            finally:
-                # Always clean up the per-call Playwright connection.
-                # Consolidated into a single finally block so cleanup is guaranteed
-                # regardless of how the try block exits (return, exception, timeout).
-                if connected_browser:
-                    try:
-                        logger.info("🧹 Closing per-call Playwright CDP connection...")
-                        await connected_browser.close()
-                    except Exception as e:
-                        logger.warning(f"⚠️ Error closing Playwright browser: {e}")
-
-                if playwright_instance:
-                    try:
-                        logger.info("🧹 Stopping per-call Playwright instance...")
-                        await playwright_instance.stop()
-                    except Exception as e:
-                        logger.warning(f"⚠️ Error stopping Playwright instance: {e}")
+        # Expose teardown so the workflow finally block can close the shared connection.
+        agent._pw_teardown = _teardown_playwright
 
         logger.info("✅ Custom action 'find_unique_locator' registered successfully")
-        logger.info("   Agent can now call: find_unique_locator(x, y, element_id, element_description, candidate_locator)")
+        logger.info("   Agent can now call: find_unique_locator(x, y, element_id, element_description, expected_text, candidate_locator, element_index, is_collection)")
         return True
 
     except Exception as e:

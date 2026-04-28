@@ -20,6 +20,7 @@ Usage:
         y=320.8,
         element_id="elem_1",
         element_description="Search input box",
+        expected_text="Search",
         candidate_locator="id=search-input",
         page=playwright_page
     )
@@ -96,7 +97,8 @@ async def find_unique_locator_action(
     element_data: Optional[Dict[str, Any]] = None,  # Element attributes from browser-use DOM
     page=None,
     iframe_context: Optional[str] = None,  # Iframe locator if element is inside an iframe
-    is_collection: Optional[bool] = None  # Collection flag for multi-element detection
+    is_collection: Optional[bool] = None,  # Collection flag for multi-element detection
+    browser_session=None,  # BrowserSession for resolved_node lookup in smart_locator
 ) -> Dict[str, Any]:
     """
     Custom action that agent can call to find and validate unique locator.
@@ -237,6 +239,12 @@ async def find_unique_locator_action(
             logger.info("🔍 VALIDATING CANDIDATE LOCATOR")
             logger.info(f"   Locator: {candidate_locator}")
             logger.info("   Method: Playwright page.locator().count()")
+            # Scope candidate validation to the iframe when one is detected.
+            # Mirrors the search_context pattern in Step 2 (smart locator path).
+            # Without this, page.locator() would search the main frame only,
+            # causing silent false-rejection (count==0) or false-acceptance
+            # (count==1 matching an unrelated main-frame element with the same selector).
+            search_root = page.frame_locator(iframe_context) if iframe_context else page
 
             try:
                 # Validate candidate locator syntax
@@ -261,7 +269,7 @@ async def find_unique_locator_action(
                         logger.warning(f"   DEBUG: Could not get page URL: {debug_e}")
 
                     # Try to validate with Playwright
-                    count = await page.locator(playwright_locator).count()
+                    count = await search_root.locator(playwright_locator).count()
                     logger.info(f"   DEBUG: page.locator('{playwright_locator}').count() returned: {count}")
 
                     # Log detailed validation results
@@ -276,91 +284,110 @@ async def find_unique_locator_action(
                     logger.info("      - validation_method: playwright")
 
                     if count == 1:
-                        # Candidate is valid and unique!
-                        # Use the converted locator for Browser Library compatibility
-                        final_locator = playwright_locator
+                        # Close the "unique but semantically wrong" hole (probe 06).
+                        # Validate the RESOLVED element — what playwright_locator actually
+                        # resolves to on the page — not the intended element from element_data
+                        # (audit Issue 2b). Guard with expected_text so we accept on uniqueness
+                        # alone when no semantic hint is available (audit Issue 5).
+                        _semantic_ok = True
+                        if expected_text:
+                            from browser_service.locators import validate_semantic_match
+                            _semantic_ok, _observed = await validate_semantic_match(
+                                None, expected_text, page=search_root, locator=playwright_locator
+                            )
+                            if not _semantic_ok:
+                                logger.info(
+                                    f"⚠️ Candidate locator UNIQUE but semantically wrong "
+                                    f"(expected={expected_text!r}, observed={_observed!r}); "
+                                    f"falling through to smart locator finder."
+                                )
 
-                        logger.info("")
-                        logger.info(f"{'='*80}")
-                        logger.info("✅ CANDIDATE LOCATOR IS UNIQUE - Using it directly!")
-                        logger.info(f"{'='*80}")
-                        logger.info("   Skipping 21 strategies (not needed)")
-                        logger.info(f"   Original: {candidate_locator}")
-                        if was_converted:
-                            logger.info(f"   Converted: {final_locator} (Browser Library compatible)")
-                        logger.info("   Type: candidate")
-                        logger.info("   Priority: 0 (agent-provided)")
-                        logger.info(f"{'='*80}")
-                        logger.info("")
+                        if _semantic_ok:
+                            # Candidate is valid, unique, and semantically correct.
+                            # Use the converted locator for Browser Library compatibility.
+                            final_locator = playwright_locator
 
-                        locator_lower = final_locator.lower().lstrip()
+                            logger.info("")
+                            logger.info(f"{'='*80}")
+                            logger.info("✅ CANDIDATE LOCATOR IS UNIQUE AND SEMANTIC MATCH - Using directly!")
+                            logger.info(f"{'='*80}")
+                            logger.info("   Skipping 21 strategies (not needed)")
+                            logger.info(f"   Original: {candidate_locator}")
+                            if was_converted:
+                                logger.info(f"   Converted: {final_locator} (Browser Library compatible)")
+                            logger.info("   Type: candidate")
+                            logger.info("   Priority: 0 (agent-provided)")
+                            logger.info(f"{'='*80}")
+                            logger.info("")
 
-                        # Extract element metadata from DOM data (available via element_data param)
-                        elem_tag = ''
-                        elem_has_text = False
-                        elem_data_available = False
-                        if element_data:
-                            elem_tag = element_data.get('tagName', '').lower()
-                            text_content = element_data.get('textContent', '') or element_data.get('text', '')
-                            elem_has_text = bool(text_content and text_content.strip())
-                            elem_data_available = True
+                            locator_lower = final_locator.lower().lstrip()
 
-                        return {
-                            'element_id': element_id,
-                            'description': element_description,
-                            'found': True,
-                            'best_locator': final_locator,  # Use converted locator
-                            'all_locators': [{
-                                'type': 'candidate',
-                                'locator': final_locator,  # Use converted locator
-                                'priority': 0,
-                                'strategy': 'Agent-provided candidate (converted for Browser Library)' if was_converted else 'Agent-provided candidate',
+                            # Extract element metadata from DOM data (available via element_data param)
+                            elem_tag = ''
+                            elem_has_text = False
+                            elem_data_available = False
+                            if element_data:
+                                elem_tag = element_data.get('tagName', '').lower()
+                                text_content = element_data.get('textContent', '') or element_data.get('text', '')
+                                elem_has_text = bool(text_content and text_content.strip())
+                                elem_data_available = True
+
+                            return {
+                                'element_id': element_id,
+                                'description': element_description,
+                                'found': True,
+                                'best_locator': final_locator,  # Use converted locator
+                                'all_locators': [{
+                                    'type': 'candidate',
+                                    'locator': final_locator,  # Use converted locator
+                                    'priority': 0,
+                                    'strategy': 'Agent-provided candidate (converted for Browser Library)' if was_converted else 'Agent-provided candidate',
+                                    'count': count,
+                                    'unique': True,
+                                    'valid': True,
+                                    'validated': True,
+                                    'validation_method': 'playwright'
+                                }],
+                                'element_info': {},
+                                'coordinates': {'x': x, 'y': y},
+                                'validation_summary': {
+                                    'total_generated': 1,
+                                    'valid': 1,
+                                    'unique': 1,
+                                    'validated': 1,
+                                    'not_found': 0,
+                                    'not_unique': 0,
+                                    'errors': 0,
+                                    'best_type': 'candidate',
+                                    'best_strategy': 'Agent-provided candidate',
+                                    'validation_method': 'playwright'
+                                },
+                                # Add validation data at result level
+                                'validated': True,
                                 'count': count,
                                 'unique': True,
                                 'valid': True,
-                                'validated': True,
-                                'validation_method': 'playwright'
-                            }],
-                            'element_info': {},
-                            'coordinates': {'x': x, 'y': y},
-                            'validation_summary': {
-                                'total_generated': 1,
-                                'valid': 1,
-                                'unique': 1,
-                                'validated': 1,
-                                'not_found': 0,
-                                'not_unique': 0,
-                                'errors': 0,
-                                'best_type': 'candidate',
-                                'best_strategy': 'Agent-provided candidate',
-                                'validation_method': 'playwright'
-                            },
-                            # Add validation data at result level
-                            'validated': True,
-                            'count': count,
-                            'unique': True,
-                            'valid': True,
-                            'validation_method': 'playwright',
-                            # Per-element approach metrics for pattern analysis
-                            'approach_metrics': {
-                                'locator_approach': 'actions_candidate',
-                                'fallback_depth': 0,  # Best case - candidate worked
-                                'success': True,
-                                'element_tag': elem_tag,
-                                'has_id': (
-                                    locator_lower.startswith('#')
-                                    or '[id=' in locator_lower
-                                    or (
-                                        'id=' in locator_lower
-                                        and not any(k in locator_lower for k in ('data-testid=', 'data-test=', 'data-qa='))
-                                    )
-                                ),
-                                'has_text_content': elem_has_text,
-                                'element_data_available': elem_data_available,
-                                'is_collection': is_collection is True,
-                                'is_in_iframe': bool(iframe_context),
+                                'validation_method': 'playwright',
+                                # Per-element approach metrics for pattern analysis
+                                'approach_metrics': {
+                                    'locator_approach': 'actions_candidate',
+                                    'fallback_depth': 0,  # Best case - candidate worked
+                                    'success': True,
+                                    'element_tag': elem_tag,
+                                    'has_id': (
+                                        locator_lower.startswith('#')
+                                        or '[id=' in locator_lower
+                                        or (
+                                            'id=' in locator_lower
+                                            and not any(k in locator_lower for k in ('data-testid=', 'data-test=', 'data-qa='))
+                                        )
+                                    ),
+                                    'has_text_content': elem_has_text,
+                                    'element_data_available': elem_data_available,
+                                    'is_collection': is_collection is True,
+                                    'is_in_iframe': bool(iframe_context),
+                                }
                             }
-                        }
                     elif count > 1:
                         logger.info(f"   ⚠️ Candidate locator NOT UNIQUE (matches {count} elements)")
                         logger.info("   🔄 Continuing with smart locator finder to find unique locator...")
@@ -437,7 +464,8 @@ async def find_unique_locator_action(
                     expected_text=expected_text,  # Pass expected_text for semantic validation
                     library_type=config.robot_library,  # Use configured library type
                     element_data=element_data,  # Pass element attributes from browser-use DOM
-                    is_collection=is_collection  # Pass collection flag for multi-element detection
+                    is_collection=is_collection,  # Pass collection flag for multi-element detection
+                    browser_session=browser_session,  # For resolved_node lookup (DELTA 1)
                 ),
                 timeout=custom_action_timeout
             )

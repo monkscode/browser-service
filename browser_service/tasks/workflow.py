@@ -460,8 +460,13 @@ def process_workflow_task(
                 logger.info("⚠️ Agent has no tools registered")
 
             start_time = time.time()
-            agent_result = await agent.run(max_steps=dynamic_max_steps)
-            execution_time = time.time() - start_time
+            try:
+                agent_result = await agent.run(max_steps=dynamic_max_steps)
+            finally:
+                execution_time = time.time() - start_time
+                teardown = getattr(agent, '_pw_teardown', None)
+                if teardown:
+                    await teardown()  # best-effort; close/stop errors are logged and suppressed
 
             logger.info(f"✅ Agent completed in {execution_time:.1f}s")
 

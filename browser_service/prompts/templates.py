@@ -254,8 +254,9 @@ PARAMETERS:
     ⚠️ This MUST match the description from the list (e.g., "all visible rows in the table body")
     ⚠️ DO NOT rewrite or simplify the description - it's used for collection detection!
     ⚠️ Preserve keywords like "all", "rows", "cells", "items", "each" - these are CRITICAL!
-  • expected_text (str, optional but HIGHLY RECOMMENDED): The ACTUAL visible text you see on the element.
-    This is CRITICAL for validation - we use it to verify we found the RIGHT element.
+  • expected_text (str, optional): The ACTUAL visible text you see on the element.
+    ⚠️ PROVIDE THIS whenever the element has visible text, a label, or a placeholder.
+    Only omit for icon-only elements that have absolutely no visible text or label.
     Examples: "Submit", "Add to Cart", "Nike Air Max 270", "Search"
     ⚠️ For buttons/links: Use the exact button/link text you see
     ⚠️ For inputs: Use the placeholder or label text if visible

@@ -404,34 +404,24 @@ async def validate_semantic_match(
     Returns (False, ...) immediately when count != 1; otherwise one evaluate() call (~2ms,
     probe 05 pattern). Works with both Playwright Page and FrameLocator callers.
 
-    Probe 18 FAIL carve-out: SVG-only icon buttons (demoqa.com pattern) have empty
-    haystacks — no text, no aria-label, no placeholder. When haystack is empty AND
-    the tag is interactive, accept rather than reject to avoid regressions on nameless
-    icon elements common in SPA table UIs.
-
-    The `if not expected_text: return True` short-circuit has been removed. New
-    behaviour: when expected_text is absent, accept only if the haystack is also empty
-    (truly anonymous element). In practice Stages 0 and 5 guard with `if expected_text:`
-    before calling this function, so the branch is only reachable from Change C, which
-    also guards — keeping the branch as a safe no-op.
+    Anonymous-element behaviour: when expected_text is absent, accept only if the
+    haystack is also empty (truly anonymous element — nothing semantic to compare).
+    When expected_text IS provided, a match is required regardless of element type;
+    nameless icon buttons are accepted only when no expected_text is supplied by the
+    caller, so the caller must omit expected_text for icon-only elements rather than
+    relying on a blanket carve-out that would accept any interactive element for
+    arbitrary text queries.
 
     Returns (is_match, observed_text).
     """
-    _INTERACTIVE_TAGS = ("a", "button", "input", "select", "textarea")
     haystack = ""
     observed_text = ""
-    node_tag = ""
     _haystack_has_content = False  # True when at least one part is non-empty
     _primary_text_len = 0          # Full text length for container ratio check
     _haystack_parts_list: list = []  # Individual fields for per-field word matching
 
     if node is not None:
         # Primary path — zero CDP round-trips. Read pre-computed attrs.
-        node_tag = (
-            getattr(node, "tag_name", None)
-            or getattr(node, "node_name", "")
-            or ""
-        ).lower()
         ax = getattr(node, "ax_node", None)
         ax_name = (
             getattr(getattr(ax, "name", None), "value", getattr(ax, "name", ""))
@@ -469,7 +459,6 @@ async def validate_semantic_match(
                 """el => {
                     const tc = (el.textContent || '').trim();
                     return {
-                        tag: el.tagName.toLowerCase(),
                         textContent: tc.slice(0, 500),
                         textContentLength: tc.length,
                         innerText: (el.innerText || '').trim().slice(0, 500),
@@ -479,7 +468,6 @@ async def validate_semantic_match(
                     };
                 }"""
             )
-            node_tag = info.get("tag", "")
             parts = [
                 info.get("textContent", ""),
                 info.get("innerText", ""),
@@ -514,12 +502,6 @@ async def validate_semantic_match(
     _container_threshold = max(len(expected_text) * 40, 500)
     if _primary_text_len > _container_threshold:
         return False, observed_text
-
-    # Probe 18 carve-out: SVG-icon-only interactive elements have no semantic surface.
-    # Accepting avoids silent regression on nameless icon buttons/links.
-    if not _haystack_has_content and node_tag in _INTERACTIVE_TAGS:
-        logger.debug(f"   ℹ️ Empty haystack for <{node_tag}> — accepting (probe 18 carve-out)")
-        return (True, observed_text)
 
     needle = expected_text.lower().strip()
 
@@ -4203,35 +4185,99 @@ async def find_unique_locator_at_coordinates(
         if expected_text:
             logger.info(f"🔍 Checking semantic match for {len(sorted_locators)} unique locators...")
 
+            # _fast_path_resolved: True once a definitive decision is reached in the
+            # fast path (either "matched + identity confirmed" or "semantic mismatch").
+            # When it stays False, the slow per-locator path runs below.
+            _fast_path_resolved = False
+
             if resolved_node is not None and resolved_node.children_nodes is not None:
-                # Fast path: resolved_node is a cache-hit node with full AX/text data.
-                # All Stage 3-4 candidates target the same element — one check covers all.
-                # CDP fallback nodes (children_nodes=None) are excluded here because their
-                # text content is incomplete, which triggers the Probe 18 carve-out and
-                # accepts any interactive element regardless of expected_text.
+                # Fast path: cache-hit node has full AX/text data — one semantic check
+                # covers all candidates without CDP round-trips.
+                # CDP fallback nodes (children_nodes=None) have incomplete text data
+                # and are routed to the slow path instead.
                 is_match, actual_text = await validate_semantic_match(resolved_node, expected_text)
                 semantic_match = is_match
                 if is_match:
-                    for loc in sorted_locators:
-                        loc['semantic_match'] = True
-                        loc['actual_text'] = actual_text
-                    best_locator_obj = sorted_locators[0]
-                    logger.info(f"   ✅ Found semantically matching locator: {best_locator_obj['locator']}")
+                    # The element at (x, y) matches expected_text. Now verify that the
+                    # top-priority locator resolves to that same element. A locator
+                    # generated from text or attributes can uniquely match a *different*
+                    # element on the page while the resolved_node proves only the element
+                    # at (x, y) is correct.
+                    _best = sorted_locators[0]
+                    _identity_ok = False
+                    try:
+                        bbox = await search_context.locator(_best['locator']).bounding_box()
+                        if bbox is not None:
+                            _TOL = 2.0  # pixels — accounts for subpixel coord rounding
+                            _identity_ok = (
+                                bbox['x'] - _TOL <= x <= bbox['x'] + bbox['width'] + _TOL
+                                and bbox['y'] - _TOL <= y <= bbox['y'] + bbox['height'] + _TOL
+                            )
+                    except Exception:
+                        pass  # bounding_box() failed; fall through to slow path
+
+                    if _identity_ok:
+                        for loc in sorted_locators:
+                            loc['semantic_match'] = True
+                            loc['actual_text'] = actual_text
+                        best_locator_obj = _best
+                        _fast_path_resolved = True
+                        logger.info(
+                            f"   ✅ Semantically matched and identity verified: {_best['locator']}"
+                        )
+                    else:
+                        logger.warning(
+                            f"   ⚠️ Fast path: {_best['locator']!r} doesn't contain "
+                            f"({x}, {y}) — checking each locator individually"
+                        )
+                        # _fast_path_resolved stays False; slow path will run below
                 else:
+                    # Element at (x, y) doesn't match expected_text — no locator for a
+                    # different element can fix this; mark all and skip the slow path.
                     for loc in sorted_locators:
                         loc['semantic_match'] = False
                         loc['actual_text'] = actual_text
-            else:
-                # Slow path: no resolved node, or CDP fallback node (children_nodes=None).
-                # CDP fallback nodes have incomplete text data; evaluate() each candidate.
-                for loc in sorted_locators:
-                    is_match, text = await validate_semantic_match(None, expected_text, page=page, locator=loc['locator'])
-                    loc['semantic_match'] = is_match
-                    loc['actual_text'] = text
-                    if is_match and best_locator_obj is None:
-                        best_locator_obj = loc
-                        actual_text = text
-                        logger.info(f"   ✅ Found semantically matching locator: {loc['locator']}")
+                    _fast_path_resolved = True
+
+            if not _fast_path_resolved:
+                if resolved_node is not None and resolved_node.children_nodes is not None:
+                    # Identity-fail slow path: resolved_node already confirmed the element
+                    # at (x, y) has the expected text, so semantic match is proven.
+                    # We only need to find which unique locator resolves to that same element.
+                    # One bounding_box() call per locator — cheaper than evaluate() + bounding_box().
+                    for loc in sorted_locators:
+                        _slow_bbox_ok = False
+                        try:
+                            _bb = await search_context.locator(loc['locator']).bounding_box()
+                            if _bb is not None:
+                                _TOL = 2.0
+                                _slow_bbox_ok = (
+                                    _bb['x'] - _TOL <= x <= _bb['x'] + _bb['width'] + _TOL
+                                    and _bb['y'] - _TOL <= y <= _bb['y'] + _bb['height'] + _TOL
+                                )
+                        except Exception as _bbox_err:
+                            logger.debug(f"   bounding_box() error for {loc['locator']!r}: {_bbox_err}")
+                        loc['semantic_match'] = _slow_bbox_ok
+                        loc['actual_text'] = actual_text  # already set from node check
+                        if _slow_bbox_ok and best_locator_obj is None:
+                            best_locator_obj = loc
+                            logger.info(
+                                f"   ✅ Spatially verified locator "
+                                f"(semantic confirmed by node): {loc['locator']}"
+                            )
+                            break
+                else:
+                    # Standard slow path: no resolved node or CDP fallback node —
+                    # evaluate each candidate locator directly for text content.
+                    for loc in sorted_locators:
+                        is_match, text = await validate_semantic_match(None, expected_text, page=search_context, locator=loc['locator'])
+                        loc['semantic_match'] = is_match
+                        loc['actual_text'] = text
+                        if is_match and best_locator_obj is None:
+                            best_locator_obj = loc
+                            actual_text = text
+                            logger.info(f"   ✅ Found semantically matching locator: {loc['locator']}")
+                            break
             
             # If no semantic match found, DO NOT return wrong locator - return failure instead
             if best_locator_obj is None:

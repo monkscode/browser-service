@@ -39,6 +39,30 @@ from typing import Optional
 # Get logger
 logger = logging.getLogger(__name__)
 
+
+class _PlaywrightConnectionError(RuntimeError):
+    """Raised exclusively by _ensure_playwright when the CDP session is dead or unreachable.
+
+    Keeping this separate from RuntimeError prevents unrelated RuntimeErrors raised
+    inside the find_unique_locator action body from being misidentified as dead-browser
+    signals, which would terminate the agent prematurely with is_done=True.
+    """
+
+
+def _select_best_page(browser):
+    """Return the most recently opened non-blank page across all CDP contexts, or None.
+
+    Iterates contexts and pages in reverse (most-recently-opened last) so that the
+    active tab is preferred when Chrome exposes an empty leading context or when a
+    new tab was opened after the initial connect.
+    """
+    for ctx in reversed(browser.contexts):
+        for pg in reversed(ctx.pages):
+            if pg.url and pg.url not in ("about:blank", ""):
+                return pg
+    return None
+
+
 def _extract_dom_node_attributes(dom_node) -> dict:
     """
     Extract standard attributes from a browser-use DOM node.
@@ -337,8 +361,8 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
             Probe 20 (day-04-preflight) FAILED: session.reconnect() does not recover
             from BrowserStopEvent teardown (session was already destroyed before the
             probe could run). Per the spec FAIL path (option a), a stale connection
-            mid-run is treated as fatal — RuntimeError is raised so the agent surfaces
-            the error and downstream pipelines can retry the workflow.
+            mid-run is treated as fatal — _PlaywrightConnectionError is raised so the
+            agent surfaces the error and downstream pipelines can retry the workflow.
             """
             if pw_cache["page"] is not None:
                 # Health-check the cached connection before reusing it.
@@ -346,9 +370,8 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                 # Secondary: lightweight CDP round-trip to confirm Playwright side is alive.
                 try:
                     if bs is not None and not bs.is_cdp_connected:
-                        raise RuntimeError("session.is_cdp_connected is False")
+                        raise _PlaywrightConnectionError("session.is_cdp_connected is False")
                     await pw_cache["page"].evaluate("1")  # minimal CDP round-trip
-                    return pw_cache["page"]
                 except Exception as exc:
                     logger.warning(f"Stale Playwright connection ({exc}); tearing down.")
                     # Probe 20 FAIL: reconnect() cannot recover from BrowserStopEvent
@@ -364,28 +387,51 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                     except Exception:
                         pass
                     pw_cache.update({"instance": None, "browser": None, "page": None})
-                    raise RuntimeError(
+                    raise _PlaywrightConnectionError(
                         f"Playwright connection became stale mid-run ({exc}). "
                         "Probe 20 confirmed reconnect() cannot recover from "
                         "BrowserStopEvent teardown — surfacing error to agent."
                     )
 
+                # Connection is alive. Re-select if the cached page became blank
+                # (e.g. Chrome exposed an empty leading context on connect, or a new
+                # tab was opened and the original page navigated away to about:blank).
+                _cached_url = pw_cache["page"].url
+                if not _cached_url or _cached_url == "about:blank":
+                    _better = _select_best_page(pw_cache["browser"])
+                    if _better is not None:
+                        logger.info(
+                            f"Playwright: re-selected active page "
+                            f"({_cached_url!r} → {_better.url!r})"
+                        )
+                        pw_cache["page"] = _better
+                return pw_cache["page"]
+
             # Fresh connect (first call this run).
             from playwright.async_api import async_playwright as _async_playwright
             cdp_url = _get_cdp_url_from_session(bs)
             if not cdp_url:
-                raise RuntimeError("No CDP URL on browser_session — cannot connect Playwright")
+                raise _PlaywrightConnectionError("No CDP URL on browser_session — cannot connect Playwright")
             instance = await _async_playwright().start()
             try:
                 connected = await instance.chromium.connect_over_cdp(cdp_url)
-                contexts = connected.contexts
-                if not contexts or not contexts[0].pages:
-                    raise RuntimeError(
-                        f"CDP browser has no usable page "
-                        f"(contexts={len(contexts)}, "
-                        f"pages={len(contexts[0].pages) if contexts else 0})"
+                # Select the most recently opened non-blank page. Chrome sometimes
+                # exposes an empty leading context before the real tab is ready.
+                page_obj = _select_best_page(connected)
+                if page_obj is None:
+                    # No non-blank page yet — fall back to first available page or fail.
+                    contexts = connected.contexts
+                    if not contexts or not contexts[0].pages:
+                        raise _PlaywrightConnectionError(
+                            f"CDP browser has no usable page "
+                            f"(contexts={len(contexts)}, "
+                            f"pages={len(contexts[0].pages) if contexts else 0})"
+                        )
+                    page_obj = contexts[0].pages[0]
+                    logger.warning(
+                        f"No non-blank page found; using contexts[0].pages[0] "
+                        f"({page_obj.url!r})"
                     )
-                page_obj = contexts[0].pages[0]
                 try:
                     await page_obj.wait_for_load_state("domcontentloaded", timeout=5000)
                 except Exception as e:
@@ -934,11 +980,11 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
 
                 return action_result
 
-            except RuntimeError as e:
-                # RuntimeError from _ensure_playwright means the browser connection is
-                # dead (stale CDP or failed fresh connect). Surfacing as is_done=True
-                # so the agent terminates immediately rather than burning remaining
-                # steps retrying against a permanently unavailable browser.
+            except _PlaywrightConnectionError as e:
+                # _PlaywrightConnectionError from _ensure_playwright means the browser
+                # connection is dead (stale CDP or failed fresh connect). Surface as
+                # is_done=True so the agent stops immediately rather than burning steps
+                # retrying against a permanently unavailable browser.
                 error_msg = f"Error in find_unique_locator custom action: {str(e)}"
                 logger.error(f"❌ {error_msg}", exc_info=True)
                 return ActionResult(error=error_msg, is_done=True)

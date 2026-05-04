@@ -29,6 +29,8 @@ import re
 import structlog
 from typing import TYPE_CHECKING, Optional
 
+from .base import build_locator_result
+
 if TYPE_CHECKING:
     from ..classifier import ElementTypeInfo
 
@@ -187,8 +189,7 @@ async def _find_collection_locator(page, element_data: dict, collection_class: s
 
     # Strategy 3: Class-based locator with common container patterns
     container_patterns = [
-        f'.{collection_class}',  # Direct class selector
-        f'[class*="{collection_class}"]',  # Contains class
+        f'.{collection_class}',  # Token-exact class selector
     ]
 
     # Try adding common parent containers
@@ -345,8 +346,6 @@ async def _find_collection_by_text_traversal(page, expected_text: str) -> Option
             # Validate the locator
             try:
                 count = await page.locator(locator).count()
-                # Return when count >= 1 (even single element for explicit collections)
-                # STEP 0.5 will decide whether to use it based on explicit_collection flag
                 if count >= 1:
                     logger.info("collection.traversal_locator_validated", locator=locator, count=count)
                     return {
@@ -411,56 +410,47 @@ async def find_locator(
             search_context, expected_text
         )
 
-        if text_result and text_result.get("locator"):
+        if (
+            text_result
+            and text_result.get("locator")
+            and text_result.get("count", 0) > 1
+        ):
             collection_locator = text_result["locator"]
             count = text_result["count"]
 
             logger.info("collection.locator_found_text_traversal", locator=collection_locator, count=count)
             logger.info("collection.skip_semantic_validation")
 
-            return {
-                "element_id": element_id,
-                "description": element_description,
-                "found": True,
-                "best_locator": collection_locator,
-                "element_type": "collection",
-                "count": count,
-                "quality_score": 90,
-                "unique": False,
-                "valid": True,
-                "validated": True,
-                "all_locators": [{
-                    "type": "collection",
-                    "locator": collection_locator,
-                    "priority": 0,
-                    "quality_score": 90,
-                    "strategy": "Text-traversal collection locator",
-                    "count": count,
-                    "unique": False,
-                    "valid": True,
-                    "validation_method": "playwright",
-                }],
-                "element_info": {
+            result = build_locator_result(
+                element_id=element_id,
+                description=element_description,
+                best_locator=collection_locator,
+                element_type="collection",
+                strategy_name="Text-traversal collection locator",
+                classifier_confidence=type_info.confidence,
+                classifier_signals=type_info.signals,
+                unique=False,
+                count=count,
+                all_locator_extra={"quality_score": 90},
+                validation_summary_extra={
+                    "multi_element": True,
+                    "collection_count": count,
+                },
+                quality_score=90,
+                element_info={
                     "tagName": text_result.get("tag", ""),
                     "className": text_result.get("row_class", ""),
                     "collection_class": text_result.get("row_class", ""),
                     "source": "text_traversal",
                 },
-                "validation_summary": {
-                    "total_generated": 1,
-                    "valid": 1,
-                    "unique": 0,
-                    "multi_element": True,
-                    "collection_count": count,
-                    "best_type": "collection",
-                    "best_strategy": "Text-traversal collection locator",
-                    "validation_method": "playwright",
-                },
-                "validation_method": "playwright",
-                "semantic_match": True,
-                "classifier_confidence": type_info.confidence,
-                "classifier_signals": list(type_info.signals),
-            }
+            )
+            result["count"] = count
+            return result
+        elif text_result:
+            logger.info(
+                "collection.traversal_single_match_rejected",
+                count=text_result.get("count", 0),
+            )
         else:
             logger.info("collection.traversal_miss_fallback_to_element_data")
 
@@ -510,46 +500,28 @@ async def find_locator(
 
     logger.info("collection.locator_found", locator=collection_locator, count=count)
 
-    return {
-        "element_id": element_id,
-        "description": element_description,
-        "found": True,
-        "best_locator": collection_locator,
-        "element_type": "collection",
-        "count": count,
-        "quality_score": 85,
-        "unique": False,
-        "valid": True,
-        "validated": True,
-        "all_locators": [{
-            "type": "collection",
-            "locator": collection_locator,
-            "priority": 0,
-            "quality_score": 85,
-            "strategy": "Element-data collection locator",
-            "count": count,
-            "unique": False,
-            "valid": True,
-            "validation_method": "playwright",
-        }],
-        "element_info": {
+    result = build_locator_result(
+        element_id=element_id,
+        description=element_description,
+        best_locator=collection_locator,
+        element_type="collection",
+        strategy_name="Element-data collection locator",
+        classifier_confidence=type_info.confidence,
+        classifier_signals=type_info.signals,
+        unique=False,
+        count=count,
+        all_locator_extra={"quality_score": 85},
+        validation_summary_extra={
+            "multi_element": True,
+            "collection_count": count,
+        },
+        quality_score=85,
+        element_info={
             "tagName": element_data.get("tagName", ""),
             "className": element_data.get("className", ""),
             "collection_class": collection_class,
             "source": "element_data_collection",
         },
-        "validation_summary": {
-            "total_generated": 1,
-            "valid": 1,
-            "unique": 0,
-            "multi_element": True,
-            "collection_count": count,
-            "best_type": "collection",
-            "best_strategy": "Element-data collection locator",
-            "validation_method": "playwright",
-        },
-        "validation_method": "playwright",
-        "semantic_match": True,
-        "classifier_confidence": type_info.confidence,
-        "classifier_signals": list(type_info.signals),
-    }
+    )
+    result["count"] = count
+    return result

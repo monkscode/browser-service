@@ -382,8 +382,8 @@ def _tier1_vote(
         signal_log.append(f"tagName={tag}=>collection(+{_TIER1_HIGH_WEIGHT})")
 
     # role signals (+3) — Tier 0 already caught combobox/listbox/switch/etc.
-    # Remaining role-based collection hints are row/listitem/grid.
-    if role in ("row", "listitem", "grid"):
+    # Remaining role-based collection hints: row/grid always; listitem only outside nav context.
+    if role in ("row", "grid") or (role == "listitem" and not has_nav_class):
         votes["collection"] += _TIER1_HIGH_WEIGHT
         signal_log.append(f"role={role}=>collection(+{_TIER1_HIGH_WEIGHT})")
 

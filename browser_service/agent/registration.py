@@ -380,19 +380,19 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                     try:
                         if pw_cache["browser"] is not None:
                             await pw_cache["browser"].close()
-                    except Exception:
-                        pass
+                    except Exception as cleanup_exc:
+                        logger.debug(f"browser.close() failed during stale-connection cleanup: {cleanup_exc}")
                     try:
                         if pw_cache["instance"] is not None:
                             await pw_cache["instance"].stop()
-                    except Exception:
-                        pass
+                    except Exception as cleanup_exc:
+                        logger.debug(f"instance.stop() failed during stale-connection cleanup: {cleanup_exc}")
                     pw_cache.update({"instance": None, "browser": None, "page": None})
                     raise _PlaywrightConnectionError(
                         f"Playwright connection became stale mid-run ({exc}). "
                         "Probe 20 confirmed reconnect() cannot recover from "
                         "BrowserStopEvent teardown — surfacing error to agent."
-                    )
+                    ) from exc
 
                 # Connection is alive. Re-select if the cached page became blank
                 # (e.g. Chrome exposed an empty leading context on connect, or a new

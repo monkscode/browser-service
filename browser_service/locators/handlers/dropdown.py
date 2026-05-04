@@ -8,8 +8,8 @@ select, vue-select, ant-design, material-ui) fall through to the generic
 21-strategy path until a real bug forces a specialized implementation.
 
 Tom Select strategies (in priority order):
-    1a — Direct id-anchored input:    css=#{select_id}-ts-control
-    1b — Adjacent-sibling fallback:   css=#{select_id} + .ts-wrapper .ts-control
+    1a — Direct id-anchored input:    css=[id="{input_id}"]
+    1b — Adjacent-sibling fallback:   css=[id="{select_id}"] + .ts-wrapper .ts-control
     2  — Label-text traversal:        xpath=//label[normalize-space()=$L]/following::div[contains(@class,'ts-wrapper')][1]//div[contains(@class,'ts-control')]
     3  — Form-group ancestor:         xpath=//*[contains(@class,'form-group')][.//label[contains(normalize-space(),$L)]]//div[contains(@class,'ts-control')]
     4  — Coord-based DOM walk:        positional locator scoped to the wrapper containing the click coords
@@ -32,6 +32,8 @@ import re
 import structlog
 from typing import TYPE_CHECKING, Optional
 
+from .base import build_locator_result
+
 if TYPE_CHECKING:
     from ..classifier import ElementTypeInfo
 
@@ -53,6 +55,12 @@ _DESCRIPTION_UI_SUFFIXES: tuple[str, ...] = (
 
 _TS_CONTROL_SUFFIX = "-ts-control"
 _AUTO_GENERATED_SELECT_PREFIX = "tomselect-"
+
+
+def _css_id_attr(value: str) -> str:
+    """Return a CSS attribute selector for an id that is safe for ids containing CSS-special characters."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'[id="{escaped}"]'
 
 
 def _normalize_label_or_description(text: Optional[str]) -> str:
@@ -449,7 +457,7 @@ async def _tom_select(
     # ---- Strategy 1a: id-anchored input ----
     if has_real_input_id:
         result = await _validate_and_build_result(
-            locator=f"css=#{input_id}",
+            locator=f"css={_css_id_attr(input_id)}",
             strategy_name="Tom Select Strategy 1a (id-anchored input)",
             element_id=element_id,
             element_description=element_description,
@@ -463,7 +471,7 @@ async def _tom_select(
     # ---- Strategy 1b: adjacent-sibling fallback ----
     if has_real_select_id:
         result = await _validate_and_build_result(
-            locator=f"css=#{select_id} + .ts-wrapper .ts-control",
+            locator=f"css={_css_id_attr(select_id)} + .ts-wrapper .ts-control",
             strategy_name="Tom Select Strategy 1b (adjacent sibling)",
             element_id=element_id,
             element_description=element_description,
@@ -719,37 +727,15 @@ async def _validate_and_build_result(
 
     logger.info("tom_select.strategy_succeeded", strategy=strategy_name, locator=locator)
 
-    return {
-        "element_id": element_id,
-        "description": element_description,
-        "found": True,
-        "best_locator": locator,
-        "element_type": "dropdown",
-        "dropdown_framework": "tom-select",
-        "select_id": select_id,
-        "unique": True,
-        "valid": True,
-        "validated": True,
-        "all_locators": [{
-            "type": "dropdown",
-            "locator": locator,
-            "priority": 0,
-            "strategy": strategy_name,
-            "count": count,
-            "unique": True,
-            "valid": True,
-            "validation_method": "playwright",
-        }],
-        "validation_summary": {
-            "total_generated": 1,
-            "valid": 1,
-            "unique": 1,
-            "best_type": "dropdown",
-            "best_strategy": strategy_name,
-            "validation_method": "playwright",
-        },
-        "validation_method": "playwright",
-        "semantic_match": True,
-        "classifier_confidence": type_info.confidence,
-        "classifier_signals": list(type_info.signals),
-    }
+    return build_locator_result(
+        element_id=element_id,
+        description=element_description,
+        best_locator=locator,
+        element_type="dropdown",
+        strategy_name=strategy_name,
+        classifier_confidence=type_info.confidence,
+        classifier_signals=type_info.signals,
+        count=count,
+        dropdown_framework="tom-select",
+        select_id=select_id,
+    )

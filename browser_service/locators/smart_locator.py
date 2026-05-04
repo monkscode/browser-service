@@ -2295,7 +2295,9 @@ async def _generate_locators_from_element_data(
             page=page,
             suspected_type=suspected_type,
             coords=confirmed_coords,
-            candidate_xpath=element_data.get("xpath") or None,
+            candidate_xpath=(
+                None if iframe_context else element_data.get("xpath") or None
+            ),
         )
         logger.info(
             f"   🔍 DOM probe ({probe_mode}, {suspected_type}): "

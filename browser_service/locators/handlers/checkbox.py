@@ -41,6 +41,8 @@ import re
 import structlog
 from typing import TYPE_CHECKING, Optional
 
+from .base import build_locator_result
+
 if TYPE_CHECKING:
     from ..classifier import ElementTypeInfo
 
@@ -159,11 +161,14 @@ async def _try_element_data_attrs(
         candidates.append((f"id={el_id}", "id-anchored"))
     if el_name and el_value and primary_type == "radio":
         candidates.append((
-            f'[name="{el_name}"][value="{el_value}"]',
+            f'input[type="radio"][name="{el_name}"][value="{el_value}"]',
             "name+value (radio)",
         ))
     if el_name:
-        candidates.append((f'[name="{el_name}"]', "name-anchored"))
+        candidates.append((
+            f'input[type="{primary_type}"][name="{el_name}"]',
+            "name-anchored",
+        ))
 
     for locator, name in candidates:
         if await _locator_unique(search_context, locator):
@@ -209,7 +214,7 @@ async def _locator_unique(search_context, locator: str) -> bool:
 
 
 # ----------------------------------------------------------------------
-# Result construction (mirrors handlers.dropdown._validate_and_build_result)
+# Result construction
 # ----------------------------------------------------------------------
 
 
@@ -221,40 +226,17 @@ def _build_result(
     type_info: "ElementTypeInfo",
     element_type: str,
 ) -> dict:
-    """Standard handler result-dict shape — matches the dropdown handler."""
-    return {
-        "element_id": element_id,
-        "description": element_description,
-        "found": True,
-        "best_locator": locator,
-        "element_type": element_type,
-        "framework": type_info.framework,
-        "unique": True,
-        "valid": True,
-        "validated": True,
-        "all_locators": [{
-            "type": element_type,
-            "locator": locator,
-            "priority": 0,
-            "strategy": strategy_name,
-            "count": 1,
-            "unique": True,
-            "valid": True,
-            "validation_method": "playwright",
-        }],
-        "validation_summary": {
-            "total_generated": 1,
-            "valid": 1,
-            "unique": 1,
-            "best_type": element_type,
-            "best_strategy": strategy_name,
-            "validation_method": "playwright",
-        },
-        "validation_method": "playwright",
-        "semantic_match": True,
-        "classifier_confidence": type_info.confidence,
-        "classifier_signals": list(type_info.signals),
-    }
+    """Standard handler result-dict shape — delegates to base.build_locator_result."""
+    return build_locator_result(
+        element_id=element_id,
+        description=element_description,
+        best_locator=locator,
+        element_type=element_type,
+        strategy_name=strategy_name,
+        classifier_confidence=type_info.confidence,
+        classifier_signals=type_info.signals,
+        framework=type_info.framework,
+    )
 
 
 # ======================================================================

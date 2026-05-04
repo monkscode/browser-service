@@ -88,7 +88,7 @@ class TestStrategy1AttributeAnchors:
 
     @pytest.mark.asyncio
     async def test_name_value_anchored_radio(self):
-        ctx = _mock_search_context({'[name="plan"][value="pro"]': 1})
+        ctx = _mock_search_context({'input[type="radio"][name="plan"][value="pro"]': 1})
         result = await find_locator(
             page=ctx,
             element_data={
@@ -104,12 +104,12 @@ class TestStrategy1AttributeAnchors:
             confirmed_coords=None,
         )
         assert result is not None
-        assert result["best_locator"] == '[name="plan"][value="pro"]'
+        assert result["best_locator"] == 'input[type="radio"][name="plan"][value="pro"]'
         assert result["element_type"] == "radio"
 
     @pytest.mark.asyncio
     async def test_name_only_anchored_when_value_missing(self):
-        ctx = _mock_search_context({'[name="remember"]': 1})
+        ctx = _mock_search_context({'input[type="checkbox"][name="remember"]': 1})
         result = await find_locator(
             page=ctx,
             element_data={"tagName": "input", "type": "checkbox", "name": "remember"},
@@ -122,7 +122,7 @@ class TestStrategy1AttributeAnchors:
             confirmed_coords=None,
         )
         assert result is not None
-        assert result["best_locator"] == '[name="remember"]'
+        assert result["best_locator"] == 'input[type="checkbox"][name="remember"]'
 
     @pytest.mark.asyncio
     async def test_id_takes_priority_over_name(self):
@@ -151,7 +151,7 @@ class TestStrategy1AttributeAnchors:
         # falls through to the next candidate.
         ctx = _mock_search_context({
             "id=missing": 0,
-            '[name="plan"][value="basic"]': 1,
+            'input[type="radio"][name="plan"][value="basic"]': 1,
         })
         result = await find_locator(
             page=ctx,
@@ -168,7 +168,7 @@ class TestStrategy1AttributeAnchors:
             confirmed_coords=None,
         )
         assert result is not None
-        assert result["best_locator"] == '[name="plan"][value="basic"]'
+        assert result["best_locator"] == 'input[type="radio"][name="plan"][value="basic"]'
 
 
 # ======================================================================

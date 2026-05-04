@@ -275,7 +275,7 @@ async def test_tom_select_no_signals_returns_none():
 async def test_strategy_1a_uses_input_id_from_element_data():
     """
     element_data carries id='permission_id-ts-control' → derive select_id
-    'permission_id' (real) → Strategy 1a uses css=#permission_id-ts-control.
+    'permission_id' (real) → Strategy 1a uses css=[id="permission_id-ts-control"].
     """
     ctx = _make_search_context(count_value=1)
     result = await find_locator(
@@ -294,7 +294,7 @@ async def test_strategy_1a_uses_input_id_from_element_data():
         confirmed_coords=None,
     )
     assert result is not None
-    assert result["best_locator"] == "css=#permission_id-ts-control"
+    assert result["best_locator"] == 'css=[id="permission_id-ts-control"]'
     assert result["element_type"] == "dropdown"
     assert result["dropdown_framework"] == "tom-select"
     assert result["select_id"] == "permission_id"
@@ -348,7 +348,7 @@ async def test_strategy_1a_via_coord_probe():
         confirmed_coords=(420, 380),
     )
     assert result is not None
-    assert result["best_locator"] == "css=#currency_id-ts-control"
+    assert result["best_locator"] == 'css=[id="currency_id-ts-control"]'
     assert result["select_id"] == "currency_id"
 
 

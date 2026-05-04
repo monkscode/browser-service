@@ -278,7 +278,12 @@ _PROBE_JS = r"""
             if (tag === 'LI') out.push({ signal: 'tag:li', framework: 'list-item' });
             if (tag === 'TBODY' || tag === 'THEAD') out.push({ signal: `tag:${tag.toLowerCase()}`, framework: '' });
             if (role === 'row') out.push({ signal: 'role:row', framework: 'table-row' });
-            if (role === 'listitem') out.push({ signal: 'role:listitem', framework: 'list-item' });
+            if (role === 'listitem') {
+                const navPrefixes = ['nav-', 'menu-', 'tab-', 'breadcrumb-', 'pagination-', 'dropdown-'];
+                const liCls = ((el.className && el.className.toString && el.className.toString()) || '').toLowerCase();
+                const isNavLi = liCls.split(/\s+/).some(c => navPrefixes.some(p => c.startsWith(p)));
+                if (!isNavLi) out.push({ signal: 'role:listitem', framework: 'list-item' });
+            }
             if (role === 'grid' || role === 'gridcell') out.push({ signal: `role:${role}`, framework: '' });
         }
         return out;
@@ -288,16 +293,20 @@ _PROBE_JS = r"""
     const allSignals = [];
     let framework = '';
     let anchor = null;
+    let anchorLabel = '';
 
     for (const { el, label } of queue) {
         const matches = checksFor(el, suspectedType);
         for (const m of matches) {
             allSignals.push(`${label}:${m.signal}`);
             if (m.framework && !framework) framework = m.framework;
-            // Prefer the first non-self anchor when self matched, since the
-            // outer wrapper is usually the better re-anchor target. But
-            // never drop self as a fallback.
-            if (!anchor) anchor = el;
+            // Prefer a wrapper/ancestor anchor over the self anchor: the outer
+            // element is usually the better re-anchor target for handler
+            // re-targeting. Upgrade if self matched first and a non-self fires later.
+            if (!anchor || (anchorLabel.startsWith('self') && !label.startsWith('self'))) {
+                anchor = el;
+                anchorLabel = label;
+            }
         }
     }
 

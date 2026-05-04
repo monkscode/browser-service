@@ -490,7 +490,8 @@ async def validate_semantic_match(
             logger.warning(f"   ⚠️ Semantic validation error: {e}")
             return False, f"[Error: {e}]"
 
-    if not expected_text:
+    needle = (expected_text or "").strip().lower()
+    if not needle:
         # Short-circuit removed. Accept only when haystack is also empty
         # (truly anonymous element — nothing semantic to compare against).
         return (not _haystack_has_content, observed_text)
@@ -503,8 +504,6 @@ async def validate_semantic_match(
     _container_threshold = max(len(expected_text) * 40, 500)
     if _primary_text_len > _container_threshold:
         return False, observed_text
-
-    needle = expected_text.lower().strip()
 
     if needle in haystack:
         logger.info(f"   ✅ Semantic match: '{expected_text}' found in element surface")
@@ -2240,8 +2239,7 @@ async def _generate_locators_from_element_data(
     if attrs_found:
         logger.info(f"   Available attributes: {', '.join(attrs_found)}")
     else:
-        logger.info(f"   ⚠️ No usable attributes found in element_data")
-        return None
+        logger.info(f"   ⚠️ No usable attributes — falling back to classifier/probe path")
     
     # ========================================
     # CLASSIFIER + DOM PROBE + PER-TYPE DISPATCHER

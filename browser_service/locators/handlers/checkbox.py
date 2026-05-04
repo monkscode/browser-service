@@ -317,7 +317,7 @@ async def find_checkbox_or_radio_by_label(
                         if checkbox_id:
                             final_locator = f"id={checkbox_id}"
                         elif checkbox_name:
-                            final_locator = f'[name="{checkbox_name}"]'
+                            final_locator = f'input[type="checkbox"][name="{checkbox_name}"]'
                         else:
                             final_locator = nested_checkbox
 
@@ -345,11 +345,11 @@ async def find_checkbox_or_radio_by_label(
                             final_locator = f"id={radio_id}"
                         elif radio_name and radio_value:
                             final_locator = (
-                                f'[name="{radio_name}"]'
+                                f'input[type="radio"][name="{radio_name}"]'
                                 f'[value="{radio_value}"]'
                             )
                         elif radio_name:
-                            final_locator = f'[name="{radio_name}"]'
+                            final_locator = f'input[type="radio"][name="{radio_name}"]'
                         else:
                             final_locator = nested_radio
 
@@ -386,10 +386,11 @@ async def find_checkbox_or_radio_by_label(
                         final_locator = f"id={input_id}"
                     elif input_name and input_value:
                         final_locator = (
-                            f'[name="{input_name}"][value="{input_value}"]'
+                            f'input[type="{input_type}"][name="{input_name}"]'
+                            f'[value="{input_value}"]'
                         )
                     elif input_name:
-                        final_locator = f'[name="{input_name}"]'
+                        final_locator = f'input[type="{input_type}"][name="{input_name}"]'
                     else:
                         continue
 
@@ -430,11 +431,11 @@ async def find_checkbox_or_radio_by_label(
                             and input_value
                         ):
                             final_locator = (
-                                f'[name="{input_name}"]'
+                                f'input[type="radio"][name="{input_name}"]'
                                 f'[value="{input_value}"]'
                             )
                         elif input_name:
-                            final_locator = f'[name="{input_name}"]'
+                            final_locator = f'input[type="{input_type}"][name="{input_name}"]'
                         else:
                             final_locator = (
                                 f'{all_selector}:nth-of-type({index})'

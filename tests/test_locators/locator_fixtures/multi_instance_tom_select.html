@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Adversarial — multi-instance Tom Select scoping</title>
+  <style>
+    body { font-family: sans-serif; padding: 1rem; }
+    .form-group { display: inline-block; width: 240px; margin: 0 1rem 1rem 0; vertical-align: top; }
+    label { display: block; font-weight: 600; margin-bottom: 4px; }
+    .ts-hidden-accessible { position: absolute; left: -9999px; }
+    .ts-wrapper { border: 1px solid #ccc; padding: 6px; min-height: 32px; cursor: pointer; }
+    .ts-control { display: flex; gap: 4px; }
+    .ts-control input { border: 0; outline: 0; flex: 1; min-width: 4ch; }
+  </style>
+</head>
+<body>
+  <h1>Multi-instance Tom Select form</h1>
+
+  <div class="form-group">
+    <label class="form-label">Country *</label>
+    <div class="tom-select-custom">
+      <select name="country_id" id="country_id" class="js-select tomselected ts-hidden-accessible">
+        <option value="88">India</option>
+      </select>
+      <div class="ts-wrapper">
+        <div class="ts-control">
+          <div data-value="88" class="item">India</div>
+          <input role="combobox" id="country_id-ts-control" aria-controls="country_id-ts-dropdown">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label class="form-label">Currency *</label>
+    <div class="tom-select-custom">
+      <select name="currency_id" id="currency_id" class="js-select tomselected ts-hidden-accessible">
+        <option value="USD">USD</option>
+      </select>
+      <div class="ts-wrapper">
+        <div class="ts-control">
+          <div data-value="USD" class="item">USD</div>
+          <input role="combobox" id="currency_id-ts-control" aria-controls="currency_id-ts-dropdown">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label class="form-label">Rate Group *</label>
+    <div class="tom-select-custom">
+      <select name="pricelist_id" id="pricelist_id" class="js-select tomselected ts-hidden-accessible">
+        <option value="1">Default</option>
+      </select>
+      <div class="ts-wrapper">
+        <div class="ts-control">
+          <div data-value="1" class="item">Default</div>
+          <input role="combobox" id="pricelist_id-ts-control" aria-controls="pricelist_id-ts-dropdown">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label class="form-label">Billing Schedule</label>
+    <div class="tom-select-custom">
+      <select name="sweep_id" id="sweep_id" class="js-select tomselected ts-hidden-accessible">
+        <option value="monthly">Monthly</option>
+      </select>
+      <div class="ts-wrapper">
+        <div class="ts-control">
+          <div data-value="monthly" class="item">Monthly</div>
+          <input role="combobox" id="sweep_id-ts-control" aria-controls="sweep_id-ts-dropdown">
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

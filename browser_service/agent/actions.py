@@ -99,6 +99,8 @@ async def find_unique_locator_action(
     iframe_context: Optional[str] = None,  # Iframe locator if element is inside an iframe
     is_collection: Optional[bool] = None,  # Collection flag for multi-element detection
     browser_session=None,  # BrowserSession for resolved_node lookup in smart_locator
+    vision_type_hint: Optional[str] = None,  # LLM's visual type classification (any specialized type)
+    vision_framework_hint: Optional[str] = None,  # LLM's framework guess (any specialized type)
 ) -> Dict[str, Any]:
     """
     Custom action that agent can call to find and validate unique locator.
@@ -466,6 +468,8 @@ async def find_unique_locator_action(
                     element_data=element_data,  # Pass element attributes from browser-use DOM
                     is_collection=is_collection,  # Pass collection flag for multi-element detection
                     browser_session=browser_session,  # For resolved_node lookup (DELTA 1)
+                    vision_type_hint=vision_type_hint,  # LLM's visual classification (1 of 2 sources)
+                    vision_framework_hint=vision_framework_hint,  # LLM's framework guess
                 ),
                 timeout=custom_action_timeout
             )

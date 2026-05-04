@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Regression — nav-item must never be classified as a collection</title>
+  <style>
+    .navbar { display: flex; gap: 1rem; padding: 8px; background: #1d2939; color: #fff; }
+    .nav-item { padding: 4px 8px; }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-item">Dashboard</div>
+    <div class="nav-item">Reports</div>
+    <div class="nav-item">Settings</div>
+  </nav>
+  <p>Three sibling <code>.nav-item</code> elements. The collection detector
+  must not treat them as a structured collection — they are top-level
+  navigation. Phase 1.1 fix (per-token match + nav-prefix exclusion) keeps
+  them out of <code>_is_collection_element</code>.</p>
+</body>
+</html>

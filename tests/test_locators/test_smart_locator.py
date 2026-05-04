@@ -10,6 +10,7 @@ Tests deterministic helper functions that have no Playwright dependency:
 import pytest
 from browser_service.locators.smart_locator import (
     _escape_css_selector,
+    _is_collection_element,
     is_dropdown_element,
     PRIORITY_ID,
     PRIORITY_TEST_ID,
@@ -209,3 +210,138 @@ class TestDropdownConstants:
     def test_dropdown_css_patterns_are_strings(self):
         for pattern in DROPDOWN_CSS_PATTERNS:
             assert isinstance(pattern, str)
+
+
+class TestIsCollectionElement:
+    """Tests for _is_collection_element() — Method 3 per-token + nav-prefix exclusion (Bug 2)."""
+
+    # --- Method 1: Description keywords ---
+
+    def test_description_rows_keyword(self):
+        assert _is_collection_element({}, "all visible rows") is True
+
+    def test_description_items_keyword(self):
+        assert _is_collection_element({}, "list of items") is True
+
+    def test_description_no_keyword(self):
+        assert _is_collection_element({}, "submit button") is False
+
+    # --- Method 2: HTML collection tags ---
+
+    def test_tr_tag_is_collection(self):
+        assert _is_collection_element({"tagName": "tr"}, "row") is True
+
+    def test_li_tag_is_collection(self):
+        assert _is_collection_element({"tagName": "li"}, "menu entry") is True
+
+    def test_div_tag_alone_not_collection(self):
+        assert _is_collection_element({"tagName": "div", "className": ""}, "panel") is False
+
+    # --- Method 3: Class-token matching (Bug 2 — the regression we're guarding against) ---
+
+    def test_nav_item_is_NOT_collection(self):
+        """Bug 2 regression: 'nav-item' must not match the 'item' pattern."""
+        assert _is_collection_element(
+            {"tagName": "a", "className": "nav-item"}, "Customer option in Create menu"
+        ) is False
+
+    def test_nav_item_with_extra_classes_is_NOT_collection(self):
+        """Real ASTPP markup typically has additional bootstrap classes alongside nav-item."""
+        assert _is_collection_element(
+            {"tagName": "a", "className": "nav-item dropdown-item active"}, "Customer"
+        ) is False
+
+    def test_menu_item_is_NOT_collection(self):
+        """tagName=a so Method 2 (li/tr/option) doesn't fire — isolates Method 3 nav-prefix exclusion."""
+        assert _is_collection_element(
+            {"tagName": "a", "className": "menu-item"}, "settings link"
+        ) is False
+
+    def test_breadcrumb_item_is_NOT_collection(self):
+        """tagName left as 'span' so Method 2 doesn't fire — isolates Method 3 behavior."""
+        assert _is_collection_element(
+            {"tagName": "span", "className": "breadcrumb-item"}, "Home crumb"
+        ) is False
+
+    def test_pagination_item_is_NOT_collection(self):
+        assert _is_collection_element(
+            {"tagName": "span", "className": "pagination-item"}, "page 2"
+        ) is False
+
+    def test_dropdown_item_is_NOT_collection(self):
+        """dropdown-* items are menu chrome, not data collections."""
+        assert _is_collection_element(
+            {"tagName": "a", "className": "dropdown-item"}, "Customer"
+        ) is False
+
+    # Positive cases — real collection class tokens still match
+
+    def test_bare_row_class_is_collection(self):
+        """Bootstrap '.row' on a non-tr element — Method 3 should still match."""
+        assert _is_collection_element(
+            {"tagName": "div", "className": "row"}, "data row"
+        ) is True
+
+    def test_card_class_is_collection(self):
+        assert _is_collection_element(
+            {"tagName": "div", "className": "card mb-3"}, "product card"
+        ) is True
+
+    def test_grid_item_class_is_collection(self):
+        """Multi-word token 'grid-item' is in the pattern set verbatim."""
+        assert _is_collection_element(
+            {"tagName": "div", "className": "grid-item"}, "tile"
+        ) is True
+
+    def test_substring_only_match_is_NOT_collection(self):
+        """'rowboat' contains 'row' as substring but is not the 'row' token."""
+        assert _is_collection_element(
+            {"tagName": "div", "className": "rowboat"}, "decorative"
+        ) is False
+
+    def test_empty_class_and_tag_not_collection(self):
+        assert _is_collection_element(
+            {"tagName": "div", "className": ""}, "header"
+        ) is False
+
+
+class TestDropdownOverridesCollection:
+    """
+    Bug 3 guard: when both dropdown and collection signals fire on the same
+    element, dropdown must win. The guard added in
+    _generate_locators_from_element_data uses these two helpers as inputs;
+    these tests prove the helper inputs produce the right verdict for the
+    real Tom Select / collection-class overlap case.
+    """
+
+    def test_tom_select_wrapper_is_both_dropdown_and_collection(self):
+        """
+        Pre-fix Tom Select scenario — element_data carries 'form-group row'
+        because browser-use coords landed on the outer Bootstrap row.
+        _is_collection_element fires (legitimately, on the 'row' token), and
+        is_dropdown_element ALSO fires (description contains 'dropdown').
+        The guard in smart_locator.py uses is_dropdown_element to override.
+        """
+        element_data = {"tagName": "div", "className": "form-group row"}
+        description = "Rate Group dropdown"
+        assert _is_collection_element(element_data, description) is True
+        assert is_dropdown_element(element_data, description) is True
+
+    def test_tom_select_wrapper_with_ts_class_is_dropdown(self):
+        """When the wrapper class itself is .ts-wrapper, dropdown still wins."""
+        element_data = {"tagName": "div", "className": "ts-wrapper"}
+        description = "Country dropdown"
+        assert is_dropdown_element(element_data, description) is True
+
+    def test_pure_table_row_is_collection_not_dropdown(self):
+        """Negative control: a real table row with no dropdown signals stays a collection."""
+        element_data = {"tagName": "tr", "className": "data-row"}
+        description = "first data row"
+        assert _is_collection_element(element_data, description) is True
+        assert is_dropdown_element(element_data, description) is False
+
+    def test_combobox_role_overrides_collection_class(self):
+        """role=combobox is a high-confidence dropdown signal even on a div with collection-like classes."""
+        element_data = {"tagName": "div", "className": "row form-group", "role": "combobox"}
+        description = "country selector"
+        assert is_dropdown_element(element_data, description) is True

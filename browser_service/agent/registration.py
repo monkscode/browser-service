@@ -314,6 +314,7 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
         from browser_use.tools.service import Tools
         from browser_use.agent.views import ActionResult
         from pydantic import BaseModel, Field
+        from typing import Literal
 
         # Import the action implementation
         from browser_service.agent.actions import find_unique_locator_action
@@ -484,6 +485,48 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
             is_collection: Optional[bool] = Field(
                 default=None,
                 description="Set to true if this element represents a COLLECTION (e.g., table rows, list items). When true, returns multi-element locator instead of single-element locator."
+            )
+            # Vision-derived classification piggybacked on the per-step LLM
+            # call. The locator pipeline corroborates this against a live
+            # Playwright DOM probe before committing to a specialized
+            # handler — the hint is one of two required sources of truth,
+            # never unilateral. See docs/ELEMENT_TYPE_CLASSIFIER_ARCHITECTURE.md.
+            element_type: Optional[Literal[
+                "dropdown", "checkbox", "radio", "input", "button",
+                "link", "image", "label", "text-area", "table", "other",
+            ]] = Field(
+                default=None,
+                description=(
+                    "Based on what you SEE in the screenshot at these "
+                    "coordinates, which UI control type is this? Pick the "
+                    "best match from the listed values. Only set this when "
+                    "you are confident from visual inspection — leave blank "
+                    "if uncertain. The deterministic locator code uses this "
+                    "to route to a specialized handler."
+                )
+            )
+            framework_hint: Optional[Literal[
+                # Dropdown frameworks
+                "tom-select", "select2", "kendo", "react-select",
+                "vue-select", "ant-design", "material-ui",
+                # Table / grid frameworks
+                "datatables", "ag-grid", "material-table", "react-table",
+                # Generic — visible widget looks like a plain HTML control
+                "native",
+                # Vision sees a custom widget that doesn't match any of the above
+                "other",
+            ]] = Field(
+                default=None,
+                description=(
+                    "If the visible widget matches a known UI framework's "
+                    "appearance, name it. Applies to any specialized type "
+                    "(dropdown, checkbox, radio, table, etc.) — examples: "
+                    "Tom Select's pill-shaped tag input, Select2's caret, "
+                    "Material-UI's floating-label inputs, DataTables' "
+                    "search/pagination chrome, AG-Grid's cell editors. "
+                    "Pick 'native' for plain HTML controls without a "
+                    "framework wrapper. Leave blank if uncertain."
+                )
             )
 
         # Get or create Tools instance from agent
@@ -826,6 +869,8 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                             iframe_context=iframe_context,  # Pass iframe context if detected
                             is_collection=params.is_collection,  # Pass collection flag for multi-element detection
                             browser_session=browser_session,  # For resolved_node lookup (DELTA 1)
+                            vision_type_hint=params.element_type,  # LLM's visual type classification (1 of 2 sources)
+                            vision_framework_hint=params.framework_hint,  # LLM's framework guess (any specialized type)
                         ),
                         timeout=custom_action_timeout
                     )

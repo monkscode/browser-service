@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Bug 3 — ASTPP customer form (Tom Select)</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 1rem; }
+    .row { display: flex; flex-wrap: wrap; gap: 1rem; }
+    .form-group { width: 22%; min-width: 220px; margin-bottom: 1rem; }
+    label { display: block; font-weight: 600; margin-bottom: 4px; }
+    .ts-hidden-accessible { position: absolute; left: -9999px; top: -9999px; }
+    .ts-wrapper { position: relative; border: 1px solid #ccc; padding: 6px 8px; background: #fff;
+                  border-radius: 4px; min-height: 32px; cursor: pointer; }
+    .ts-control { display: flex; align-items: center; gap: 6px; min-height: 22px; }
+    .ts-control .item { color: #111; }
+    .ts-control input { border: 0; outline: 0; flex: 1; min-width: 4ch; background: transparent; }
+    .ts-dropdown { display: none; }
+    .invalid-feedback { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Customer creation</h1>
+  <form class="row">
+    <!-- Tom Select #1: real <select id="reseller"> + matching ts-control id -->
+    <div class="col-lg-3 col-md-4 form-group">
+      <label for="Reseller" class="form-label">Reseller</label>
+      <div class="tom-select-custom">
+        <select name="reseller_id" id="reseller" class="js-select tomselected ts-hidden-accessible">
+          <option value="0">Admin</option>
+        </select>
+        <div class="ts-wrapper has-items">
+          <div class="ts-control">
+            <div data-value="0" class="item">Admin</div>
+            <input role="combobox" aria-controls="reseller-ts-dropdown" id="reseller-ts-control">
+          </div>
+          <div class="ts-dropdown"><div role="listbox" id="reseller-ts-dropdown"></div></div>
+        </div>
+      </div>
+      <div class="invalid-feedback" id="reseller_id_error_div"></div>
+    </div>
+
+    <!-- Tom Select #2: real <select id="permission_id"> + label with required marker -->
+    <div class="col-lg-3 col-md-4 form-group">
+      <label for="Role&lt;span&gt; *&lt;/span&gt;" class="form-label">Role<span> *</span></label>
+      <div class="invalid-feedback" id="permission_id_error_div"></div>
+      <div class="tom-select-custom">
+        <select name="permission_id" id="permission_id" class="js-select tomselected ts-hidden-accessible">
+          <option value="4">Customer_permission</option>
+        </select>
+        <div class="ts-wrapper has-items">
+          <div class="ts-control">
+            <div data-value="4" class="item">Customer_permission</div>
+            <input role="combobox" aria-controls="permission_id-ts-dropdown" id="permission_id-ts-control">
+          </div>
+          <div class="ts-dropdown"><div role="listbox" id="permission_id-ts-dropdown"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tom Select #3: auto-generated id (no real <select id>) — Strategy 1a/1b
+         must NOT bind to tomselect-N; must fall through to label-text strategies. -->
+    <div class="col-lg-3 col-md-4 form-group">
+      <label for="Timezone&lt;span&gt; *&lt;/span&gt;" class="form-label">Timezone<span> *</span></label>
+      <div class="invalid-feedback" id="timezone_id_error_div"></div>
+      <div class="tom-select-custom">
+        <select name="timezone_id" id="tomselect-6" class="js-select tomselected ts-hidden-accessible">
+          <option value="194">Asia/Kolkata</option>
+        </select>
+        <div class="ts-wrapper has-items">
+          <div class="ts-control">
+            <div data-value="194" class="item">Asia/Kolkata</div>
+            <input role="combobox" aria-controls="tomselect-6-ts-dropdown" id="tomselect-6-ts-control">
+          </div>
+          <div class="ts-dropdown"><div role="listbox" id="tomselect-6-ts-dropdown"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tom Select #4: required currency -->
+    <div class="col-lg-3 col-md-4 form-group">
+      <label for="Currency&lt;span&gt; *&lt;/span&gt;" class="form-label">Currency<span> *</span></label>
+      <div class="tom-select-custom">
+        <select name="currency_id" id="currency_id" class="js-select tomselected ts-hidden-accessible">
+          <option value="USD">USD</option>
+        </select>
+        <div class="ts-wrapper has-items">
+          <div class="ts-control">
+            <div data-value="USD" class="item">USD</div>
+            <input role="combobox" aria-controls="currency_id-ts-dropdown" id="currency_id-ts-control">
+          </div>
+          <div class="ts-dropdown"><div role="listbox" id="currency_id-ts-dropdown"></div></div>
+        </div>
+      </div>
+    </div>
+  </form>
+</body>
+</html>

@@ -284,6 +284,474 @@ def _get_cdp_url_from_session(browser_session) -> Optional[str]:
     return None
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERACTION HELPERS (B0–C) — module-level so unit tests can import directly.
+# performed_actions and element_specs are passed as explicit parameters rather
+# than captured from a closure: this keeps concurrency isolation intact (each
+# workflow creates its own set/dict in register_custom_actions) while making
+# the dependency on mutable state visible at the call site and testable without
+# closure-piercing tricks.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_RF_SELECT_PREFIXES = frozenset({"label", "value", "text", "index"})
+
+
+def _strip_rf_select_prefix(value: str) -> str:
+    """Strip the Robot Framework Select Options By strategy prefix from a value string.
+
+    RF encodes the selection strategy as the first whitespace-separated token:
+        "label    default"       → "default"
+        "value    some_val"      → "some_val"
+        "text     My Option"     → "My Option"
+        "index    0"             → "0"
+        "United States"          → "United States"  (not an RF prefix — unchanged)
+        "default"                → "default"         (single token — unchanged)
+
+    Only strips when the first token is a known RF strategy keyword (label/value/text/index).
+    This prevents multi-word option text like "United States" from being incorrectly truncated.
+    Applied only to 'select' actions — never touches input/click values."""
+    if not value:
+        return value
+    parts = value.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() in _RF_SELECT_PREFIXES:
+        return parts[1].strip()
+    return value
+
+
+async def _wait_for_page_stability(active_page) -> None:
+    """Wait for page to stabilize after a click/submit/select that may trigger navigation.
+
+    domcontentloaded (not networkidle) — HTML parsed and DOM built is sufficient
+    for the next find_unique_locator call. Times out silently if the page is
+    already stable or no navigation occurred. asyncio.sleep(0) yields to the
+    event loop first so any pending CDP navigation events are dispatched before
+    wait_for_load_state checks the current load state — prevents the race where
+    the CDP click fires but navigation hasn't started yet when we check."""
+    try:
+        await asyncio.sleep(0)
+        await active_page.wait_for_load_state("domcontentloaded", timeout=5000)
+    except Exception:
+        pass
+
+
+
+async def _dispatch_browser_use_event(
+    browser_session, node, action: str, value: str, element_id: str, performed_actions: set
+):
+    """Attempt the interaction via browser-use's built-in event bus (preferred path).
+
+    Returns (note, status) on success or not_applicable.
+    Returns (None, None) as the universal fall-through signal — Playwright path retries.
+    performed_actions.add() is called ONLY on confirmed success, never on fall-through."""
+    from browser_use.browser.events import TypeTextEvent, ClickElementEvent, SelectDropdownOptionEvent
+    try:
+        if action in ("input", "type"):
+            if not value:
+                return "", "not_applicable"
+            event = browser_session.event_bus.dispatch(TypeTextEvent(node=node, text=value, clear=True))
+            await event
+            await event.event_result(raise_if_any=True, raise_if_none=False)
+            # TypeTextEvent types via CDP key events (character-by-character) — reliable if no exception raised.
+            # Returns {input_x, input_y, actual_value} (0.12.6). Built-in concatenation-detection retry
+            # self-corrects append-instead-of-replace without caller intervention. No explicit verification needed.
+            performed_actions.add(element_id)
+            return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}'", "auto_ok"
+
+        elif action in ("click", "submit"):
+            event = browser_session.event_bus.dispatch(ClickElementEvent(node=node))
+            await event
+            click_meta = await event.event_result(raise_if_any=True, raise_if_none=False)
+            if isinstance(click_meta, dict) and "validation_error" in click_meta:
+                # browser-use rejected click (file input or <select> element).
+                # Fall through to Playwright which may handle these differently.
+                return None, None
+            performed_actions.add(element_id)
+            return "\n✅ AUTO-ACTION COMPLETE: Clicked element", "auto_ok"
+
+        elif action == "select":
+            if not value:
+                return "", "not_applicable"
+            event = browser_session.event_bus.dispatch(SelectDropdownOptionEvent(node=node, text=value))
+            await event
+            sel = await event.event_result(raise_if_any=True, raise_if_none=False)
+            if isinstance(sel, dict) and sel.get("success") == "true":
+                performed_actions.add(element_id)
+                return f"\n✅ AUTO-SELECT: Selected '{value}'", "auto_ok"
+            # Any failure (Tom Select sibling pattern, option not found, unrecognised element, etc.)
+            # — fall through to Playwright which has a wider selection strategy.
+            # Do NOT add to performed_actions here; Playwright path will handle it.
+            return None, None
+
+        elif action in ("check", "uncheck"):
+            # browser-use has no dedicated check/uncheck event — verified from source.
+            # ClickElementEvent is a blind toggle with no state awareness (just clicks coordinates).
+            # Fall through to Playwright's loc.check() / loc.uncheck() which are state-aware.
+            return None, None
+
+    except Exception as e:
+        # Unexpected error in event path — log and fall through to Playwright.
+        logger.warning(f"   AUTO-ACTION event path error for {element_id} ({action}): {e}")
+        return None, None
+
+
+async def _do_interaction_playwright(
+    active_page, locator_str: str, action: str, value: str, element_id: str, performed_actions: set,
+    dropdown_framework: str = "", select_id: str | None = None,
+):
+    """Playwright fallback with layered retry chains.
+
+    Each action type runs through multiple strategies in order, stopping at first success.
+    All strategies exhausted → auto_failed. performed_actions.add() only on confirmed success."""
+    try:
+        loc = active_page.locator(locator_str)
+        if action in ("input", "type"):
+            if not value:
+                return "", "not_applicable"
+
+            # Tier 1: fill() — fires input/change events
+            try:
+                await loc.fill(value, timeout=5000)
+                try:
+                    actual = await loc.input_value(timeout=2000)
+                    if actual == value:
+                        performed_actions.add(element_id)
+                        return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (fill, verified)", "auto_ok"
+                    # Mismatch — fall through to Tier 2
+                except Exception:
+                    # input_value() unsupported (e.g. contenteditable) — accept fill result
+                    performed_actions.add(element_id)
+                    return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (fill, unverified)", "auto_partial"
+            except Exception:
+                pass
+
+            # Tier 2: triple_click + Control+a + press_sequentially — fires key events, better for reactive frameworks.
+            # Control+a after triple_click ensures full selection on contenteditable: triple_click selects
+            # only the clicked paragraph; Control+a selects all content across paragraphs. No-op on
+            # <input>/<textarea> where triple_click already selects everything.
+            try:
+                await loc.triple_click(timeout=3000)
+                await loc.press("Control+a")
+                await loc.press_sequentially(value, delay=20)
+                try:
+                    actual = await loc.input_value(timeout=2000)
+                    performed_actions.add(element_id)
+                    return (
+                        (f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (key events, verified)", "auto_ok")
+                        if actual == value
+                        else (f"\n⚠️ AUTO-ACTION: Typed '{value}' but field shows '{actual}' (key events)", "auto_partial")
+                    )
+                except Exception:
+                    performed_actions.add(element_id)
+                    return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (key events, unverified)", "auto_partial"
+            except Exception:
+                pass
+
+            # Tier 3: JS value assignment + dispatch events — last resort
+            try:
+                await loc.evaluate(
+                    "(el, v) => { el.value = v; el.dispatchEvent(new Event('input', {bubbles: true})); el.dispatchEvent(new Event('change', {bubbles: true})); }",
+                    value,
+                )
+                performed_actions.add(element_id)
+                return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (JS, unverified)", "auto_partial"
+            except Exception as e:
+                return f"\n⚠️ AUTO-ACTION FAILED (input): all strategies exhausted — {e}", "auto_failed"
+
+        elif action in ("click", "submit"):
+            # Tier 1: standard click
+            try:
+                await loc.click(timeout=5000)
+                performed_actions.add(element_id)
+                return "\n✅ AUTO-ACTION COMPLETE: Clicked", "auto_ok"
+            except Exception:
+                pass
+
+            # Tier 2: force click — bypasses visibility/actionability (element under overlay)
+            try:
+                await loc.click(force=True, timeout=5000)
+                performed_actions.add(element_id)
+                return "\n✅ AUTO-ACTION COMPLETE: Clicked (force)", "auto_ok"
+            except Exception:
+                pass
+
+            # Tier 3: JS click — bypasses all Playwright checks and overlays
+            try:
+                await loc.evaluate("el => el.click()")
+                performed_actions.add(element_id)
+                return "\n✅ AUTO-ACTION COMPLETE: Clicked (JS)", "auto_ok"
+            except Exception as e:
+                return f"\n⚠️ AUTO-ACTION FAILED (click): all strategies exhausted — {e}", "auto_failed"
+
+        elif action == "select":
+            if not value:
+                return "", "not_applicable"
+
+            # Tom Select: JavaScript is the only reliable path.
+            # The underlying <select> is hidden (display:none) so native select_option() always
+            # fails. Run JS strategies before click-to-open — no wasted timeout attempts on
+            # native options that are structurally guaranteed to fail.
+            if dropdown_framework == "tom-select":
+                # Tier 0 (preferred): direct getElementById when select_id is known.
+                # Bypasses all DOM traversal — most reliable path, zero UI interaction needed.
+                if select_id:
+                    try:
+                        diag = await active_page.evaluate(
+                            """(args) => {
+                                try {
+                                    const select = document.getElementById(args.selectId);
+                                    if (!select) return 'no_select';
+                                    const ts = select.tomselect || select._tomSelect;
+                                    if (!ts) return 'no_ts';
+                                    const v = args.value;
+                                    const opt = Array.from(select.options).find(
+                                        o => o.text.trim() === v
+                                          || o.value === v
+                                          || o.text.trim().toLowerCase() === v.toLowerCase()
+                                    );
+                                    if (!opt) return 'no_opt';
+                                    ts.setValue(opt.value, false);
+                                    select.dispatchEvent(new Event('change', {bubbles: true}));
+                                    return 'ok';
+                                } catch(e) {
+                                    return 'error:' + e.message;
+                                }
+                            }""",
+                            {"selectId": select_id, "value": value},
+                        )
+                        if diag == "ok":
+                            performed_actions.add(element_id)
+                            return f"\n✅ AUTO-SELECT: Selected '{value}' (Tom Select JS via select_id)", "auto_ok"
+                        else:
+                            logger.info(f"   ⚠️ tom_select.tier0_js_failed: reason={diag} select_id={select_id!r} value={value!r}")
+                    except Exception as e:
+                        logger.warning(f"   ⚠️ tom_select.tier0_exception: select_id={select_id!r} error={e}")
+
+                # Tier 0b: locator-based traversal when select_id is unavailable.
+                # Standard Tom Select DOM has <select> as the *previous sibling* of .ts-wrapper,
+                # not a child. The old wrapper.querySelector('select') returned null for this
+                # structure — fixed here by checking previousElementSibling first.
+                try:
+                    diag = await loc.evaluate(
+                        """(el, targetText) => {
+                            try {
+                                const wrapper = el.closest('.ts-wrapper') || el.parentElement;
+                                if (!wrapper) return 'no_wrapper';
+                                let select = null;
+                                if (wrapper.previousElementSibling && wrapper.previousElementSibling.tagName === 'SELECT')
+                                    select = wrapper.previousElementSibling;
+                                if (!select && wrapper.parentElement)
+                                    select = wrapper.parentElement.querySelector('select');
+                                if (!select) return 'no_select';
+                                const ts = select.tomselect || select._tomSelect;
+                                if (!ts) return 'no_ts';
+                                const opt = Array.from(select.options).find(
+                                    o => o.text.trim() === targetText
+                                      || o.value === targetText
+                                      || o.text.trim().toLowerCase() === targetText.toLowerCase()
+                                );
+                                if (!opt) return 'no_opt';
+                                ts.setValue(opt.value, false);
+                                select.dispatchEvent(new Event('change', {bubbles: true}));
+                                return 'ok';
+                            } catch(e) {
+                                return 'error:' + e.message;
+                            }
+                        }""",
+                        value,
+                    )
+                    if diag == "ok":
+                        performed_actions.add(element_id)
+                        return f"\n✅ AUTO-SELECT: Selected '{value}' (Tom Select JS via locator)", "auto_ok"
+                    else:
+                        logger.info(f"   ⚠️ tom_select.tier0b_js_failed: reason={diag} locator={locator_str!r} value={value!r}")
+                except Exception as e:
+                    logger.warning(f"   ⚠️ tom_select.tier0b_exception: locator={locator_str!r} error={e}")
+
+                # Fall through to click-to-open as last resort for Tom Select.
+
+            else:
+                # Non-Tom-Select: try native select_option first.
+
+                # Tier 1a: native <select> by visible label text
+                try:
+                    await loc.select_option(label=value, timeout=2000)
+                    performed_actions.add(element_id)
+                    return f"\n✅ AUTO-SELECT: Selected '{value}' (native label)", "auto_ok"
+                except Exception:
+                    pass
+
+                # Tier 1b: native <select> by HTML value attribute
+                try:
+                    await loc.select_option(value=value, timeout=2000)
+                    performed_actions.add(element_id)
+                    return f"\n✅ AUTO-SELECT: Selected '{value}' (native value attr)", "auto_ok"
+                except Exception:
+                    pass
+
+            # Tier 2: click-to-open — last resort for Tom Select, primary UI path for all others
+            # (Select2, ARIA listbox, Bootstrap select, any custom dropdown).
+            dropdown_opened = False
+            try:
+                await loc.click(timeout=3000)
+                dropdown_opened = True
+
+                # Adaptive wait: block until any dropdown container is actually visible.
+                # Let wait_for_selector raise on timeout — the outer except catches it and
+                # falls through to the final auto_failed return below.
+                container_selectors = (
+                    ".ts-dropdown-content, [role='listbox'], "
+                    ".select2-results__options, .dropdown-menu"
+                )
+                await active_page.wait_for_selector(
+                    container_selectors, state="visible", timeout=2000
+                )
+
+                parent = loc.locator("..")
+                option_selectors = [
+                    ".ts-dropdown-content",
+                    "[role='listbox']",
+                    ".select2-results__options",
+                    ".dropdown-menu",
+                ]
+
+                # Exact match — parent-scoped first to avoid multi-dropdown ambiguity,
+                # then page-global as fallback. .first.click() directly — no count() check
+                # needed; absent/uninteractable raises and except continues to next strategy.
+                for scope in [parent, active_page]:
+                    for sel in option_selectors:
+                        try:
+                            await scope.locator(sel).get_by_text(value, exact=True).first.click(timeout=1500)
+                            dropdown_opened = False
+                            performed_actions.add(element_id)
+                            return f"\n✅ AUTO-SELECT: Selected '{value}' (click-to-open, exact, {sel})", "auto_ok"
+                        except Exception:
+                            continue
+
+                # Partial match — handles minor whitespace/casing differences in option text
+                for scope in [parent, active_page]:
+                    for sel in option_selectors:
+                        try:
+                            await scope.locator(sel).get_by_text(value).first.click(timeout=1500)
+                            dropdown_opened = False
+                            performed_actions.add(element_id)
+                            return f"\n✅ AUTO-SELECT: Selected '{value}' (click-to-open, partial, {sel})", "auto_ok"
+                        except Exception:
+                            continue
+
+            except Exception:
+                pass
+            finally:
+                # Always close dropdown on exit — an open dropdown overlays the page and
+                # blocks all subsequent element interactions.
+                if dropdown_opened:
+                    try:
+                        await active_page.keyboard.press("Escape")
+                        await active_page.wait_for_timeout(100)
+                    except Exception:
+                        pass
+
+            return f"\n⚠️ AUTO-SELECT FAILED: all strategies exhausted for '{value}'", "auto_failed"
+
+        elif action == "check":
+            # State-aware: only clicks if not already checked
+            try:
+                await loc.check(timeout=5000)
+                performed_actions.add(element_id)
+                return "\n✅ AUTO-ACTION COMPLETE: Checked", "auto_ok"
+            except Exception as e:
+                return f"\n⚠️ AUTO-ACTION FAILED (check): {e}", "auto_failed"
+
+        elif action == "uncheck":
+            # State-aware: only clicks if currently checked
+            try:
+                await loc.uncheck(timeout=5000)
+                performed_actions.add(element_id)
+                return "\n✅ AUTO-ACTION COMPLETE: Unchecked", "auto_ok"
+            except Exception as e:
+                return f"\n⚠️ AUTO-ACTION FAILED (uncheck): {e}", "auto_failed"
+
+    except Exception as e:
+        return f"\n⚠️ AUTO-ACTION FAILED ({action}): {e}", "auto_failed"
+
+
+async def _do_interaction(
+    browser_session,
+    active_page,
+    locator_str: str,
+    element_id: str,
+    element_index: int | None,
+    element_specs: dict,
+    performed_actions: set,
+    dropdown_framework: str = "",
+    select_id: str | None = None,
+):
+    """Orchestrate the interaction for one element — event path first, Playwright fallback second.
+
+    Returns (note, status, action, value). action and value are returned alongside note/status
+    so the caller never needs to re-read element_specs independently (single source of truth)."""
+    if element_id in performed_actions:
+        return "", "not_applicable", "", ""
+    spec = element_specs.get(element_id, {})
+    action = spec.get("action", "get_text")
+    value  = spec.get("value", "")
+    if action not in ("input", "type", "click", "submit", "select", "check", "uncheck"):
+        return "", "not_applicable", action, value
+
+    # Tom Select: the ts-control is an <input>, so the agent labels it "input"/"type".
+    # Typing into it filters the dropdown but never commits a selection.
+    # Remap to "select" so the JS setValue() path runs instead of TypeTextEvent.
+    if dropdown_framework == "tom-select" and action in ("input", "type"):
+        action = "select"
+
+    # Strip Robot Framework "label    X" / "value    X" strategy prefix so the
+    # bare option text reaches JS comparisons and get_by_text() calls.
+    if action == "select":
+        raw_value = value
+        value = _strip_rf_select_prefix(value)
+        if value != raw_value:
+            prefix = raw_value.split(None, 1)[0]
+            logger.info(f"   🔧 RF prefix stripped for {element_id}: '{raw_value}' → '{value}' (prefix='{prefix}')")
+        else:
+            parts = raw_value.split(None, 1)
+            if len(parts) == 2:
+                logger.info(f"   ℹ️  select value for {element_id}: '{value}' (first token '{parts[0]}' not an RF prefix — kept as-is)")
+            else:
+                logger.debug(f"   ℹ️  select value for {element_id}: '{value}' (single token — no prefix possible)")
+
+    # check/uncheck skip the event path entirely — browser-use has no state-aware check event.
+    # Tom Select skips it too: SelectDropdownOptionEvent targets native <select> elements;
+    # the indexed node is the ts-control <input>, so the event always returns (None, None).
+    # Calling get_element_by_index() (a real CDP round-trip) only to get (None, None) from
+    # _dispatch_browser_use_event is wasteful. Playwright's loc.check() / loc.uncheck() are
+    # state-aware; go there directly without any event-path overhead.
+    if action not in ("check", "uncheck") and dropdown_framework != "tom-select":
+        if element_index is not None and browser_session is not None:
+            try:
+                node = await asyncio.wait_for(
+                    browser_session.get_element_by_index(element_index),
+                    timeout=10,
+                )
+                if node is not None:
+                    note, status = await _dispatch_browser_use_event(
+                        browser_session, node, action, value, element_id, performed_actions
+                    )
+                    if note is not None:  # None = fall-through signal; Playwright handles it
+                        if action in ("click", "submit", "select") and status == "auto_ok":
+                            await _wait_for_page_stability(active_page)
+                        return note, status, action, value
+            except Exception as e:
+                logger.warning(f"   AUTO-ACTION event path failed for {element_id}: {e}")
+
+    # Fallback: Playwright layered retry chain (always used for check/uncheck; fallback for others)
+    note, status = await _do_interaction_playwright(
+        active_page, locator_str, action, value, element_id, performed_actions,
+        dropdown_framework=dropdown_framework, select_id=select_id,
+    )
+    if action in ("click", "submit", "select") and status == "auto_ok":
+        await _wait_for_page_stability(active_page)
+    return note, status, action, value
+
+
 def register_custom_actions(agent, page=None, elements=None, workflow_id: str = "") -> bool:
     """
     Register custom actions with browser-use agent.
@@ -338,14 +806,18 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
         # The inner action handler updates _completed_elements on each success and sets
         # is_done=True once every expected element ID has been processed, terminating
         # the browser-use agent loop without relying on the LLM to call done().
-        _element_specs: dict = {}  # element_id → action string
+        _element_specs: dict = {}
         if elements:
             for _i, _elem in enumerate(elements):
                 _eid = _elem.get("id", f"elem_unknown_{_i}")
-                _element_specs[_eid] = _elem.get("action", "get_text")
+                _element_specs[_eid] = {
+                    "action": _elem.get("action", "get_text"),
+                    "value": _elem.get("value", "") or "",
+                }
         _expected_element_ids: set = set(_element_specs.keys())
         _total_expected: int = len(_expected_element_ids)
         _completed_elements: dict = {}  # element_id → best_locator (mutated by inner function)
+        _performed_actions: set = set()  # idempotency guard — per register_custom_actions() call = per workflow
 
         # ========================================
         # PER-RUN PLAYWRIGHT CACHE (Change A — Day 04)
@@ -923,11 +1395,76 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                         and set(_completed_elements.keys()) >= _expected_element_ids
                     )
 
-                    # Success messages intentionally do NOT prescribe "move to next" —
-                    # that would cause the LLM to skip the element's interactive action
-                    # (click/input/submit) needed to advance the page. SEQUENTIAL_PROCESSING_RULES
-                    # in the workflow prompt owns the per-element action flow. We only assert the
-                    # locator is final (cost guard against re-finding the same locator).
+                    # Reached only on locator-find success — best_locator is non-None by construction here.
+                    # Unpack 4-tuple — action and value come from _do_interaction directly so this block
+                    # never needs to re-read _element_specs. Single source of truth for action/value.
+                    interaction_note, interaction_status, _action, _value = await _do_interaction(
+                        browser_session, active_page, best_locator, params.element_id, params.element_index,
+                        _element_specs, _performed_actions,
+                        dropdown_framework=result.get("dropdown_framework") or "",
+                        select_id=result.get("select_id") or None,
+                    )
+                    result["interaction_status"] = interaction_status
+                    _idx = params.element_index
+
+                    # Build display_note for the success message.
+                    # On auto_failed with element_index: name the exact browser-use native action + index.
+                    # On auto_failed without element_index: provide the validated locator.
+                    # On success/not_applicable: pass interaction_note through unchanged.
+                    if interaction_status == "auto_failed":
+                        if _action in ("click", "submit"):
+                            if _idx is not None:
+                                display_note = (
+                                    f"\n⚠️ Automated click failed — all strategies exhausted. "
+                                    f"FALLBACK REQUIRED: Call click_element(index={_idx}). "
+                                    f"After clicking, wait for page updates — this may navigate to a new page."
+                                )
+                            else:
+                                display_note = (
+                                    f"\n⚠️ Automated click failed — all strategies exhausted. "
+                                    f"Validated locator: {best_locator} | Action required: click. "
+                                    f"Assess the current page state and use any available browser-use action "
+                                    f"to complete this click. If no available action can complete it, proceed "
+                                    f"to the next element — Robot Framework will handle it at execution time."
+                                )
+                        elif _action in ("input", "type"):
+                            if _idx is not None:
+                                display_note = (
+                                    f"\n⚠️ Automated input failed — all strategies exhausted. "
+                                    f'FALLBACK REQUIRED: Call input_text(index={_idx}, text="{_value}").'
+                                )
+                            else:
+                                display_note = (
+                                    f"\n⚠️ Automated input failed — all strategies exhausted. "
+                                    f'Validated locator: {best_locator} | Action required: input "{_value}". '
+                                    f"Assess the current page state and use any available browser-use action "
+                                    f"to type this value. If no available action can complete it, proceed "
+                                    f"to the next element — Robot Framework will handle it at execution time."
+                                )
+                        elif _action == "select":
+                            if _idx is not None:
+                                display_note = (
+                                    f"\n⚠️ Automated select failed — all strategies exhausted. "
+                                    f'FALLBACK REQUIRED: Call select_dropdown_option(index={_idx}, text="{_value}").'
+                                )
+                            else:
+                                display_note = (
+                                    f"\n⚠️ Automated select failed — all strategies exhausted. "
+                                    f'Validated locator: {best_locator} | Action required: select "{_value}". '
+                                    f"Assess the current page state and use any available browser-use action "
+                                    f"to select this option. If no available action can complete it, proceed "
+                                    f"to the next element — Robot Framework will handle it at execution time."
+                                )
+                        else:
+                            display_note = (
+                                "\n⚠️ Automated interaction failed — all strategies exhausted. "
+                                "Locator is valid. Proceed to the next element."
+                            )
+                    else:
+                        display_note = interaction_note  # ✅ message, empty string, or "not_applicable"
+
+                    # Interactions are now performed inside _do_interaction (see Change C above).
+                    # SEQUENTIAL_PROCESSING_RULES no longer owns interaction execution.
                     if all_elements_done:
                         elements_found_json = json.dumps(
                             [
@@ -939,8 +1476,8 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                         success_msg = (
                             f"✅ LOCATOR VALIDATED BY PLAYWRIGHT\n"
                             f"Element: {params.element_id}\n"
-                            f"Locator: {best_locator}\n"
-                            f"Status: FINAL — do not call find_unique_locator again for this element.\n"
+                            f"Locator: {best_locator}"
+                            f"{display_note}\n"
                             f"All {_total_expected} locators found. "
                             f'Call done() with: {{"elements_found": {elements_found_json}}}'
                         )
@@ -948,10 +1485,9 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                         success_msg = (
                             f"✅ LOCATOR VALIDATED BY PLAYWRIGHT\n"
                             f"Element: {params.element_id}\n"
-                            f"Locator: {best_locator}\n"
-                            f"Status: FINAL — do not call find_unique_locator again for this element.\n"
-                            f"Next step: perform this element's action (input/click/submit) as specified "
-                            f"in SEQUENTIAL_PROCESSING_RULES if interactive, otherwise proceed to the next element."
+                            f"Locator: {best_locator}"
+                            f"{display_note}\n"
+                            f"Proceed to the next element."
                         )
                     # Keep long_term_memory minimal — it persists across every subsequent agent
                     # step. Embedding action guidance here would bias future decisions.

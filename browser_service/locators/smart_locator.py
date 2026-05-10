@@ -496,6 +496,24 @@ async def validate_semantic_match(
         # (truly anonymous element — nothing semantic to compare against).
         return (not _haystack_has_content, observed_text)
 
+    # Probe 18 carve-out: SVG-only buttons and CDP fallback nodes have no accessible
+    # text surface through no fault of the locator strategy. Rejecting them would silently
+    # break delete/edit icon buttons on admin dashboards (demoqa.com/webtables pattern).
+    # When the haystack is empty AND the tag is interactive, accept the match.
+    # Non-interactive tags (div, span, p) are not carved out — they are more likely to
+    # be container false positives and have no interactive affordance to justify this.
+    # NOTE: the fast path in find_unique_locator_at_coordinates gates on
+    # `children_nodes is not None` to prevent this from firing on CDP fallback nodes in
+    # the general locator loop — the carve-out is intentional only for confirmed locators.
+    if not _haystack_has_content and node is not None:
+        _tag = (
+            getattr(node, "tag_name", None)
+            or getattr(node, "node_name", None)
+            or ""
+        ).lower()
+        if _tag in {"button", "a", "input", "select", "textarea"}:
+            return (True, observed_text)
+
     # Container rejection: an element whose text surface far exceeds the search term
     # is almost certainly a layout container that incidentally contains the text.
     # _primary_text_len reflects DOM children text (get_all_children_text fallback);
@@ -2594,11 +2612,29 @@ async def _generate_locators_from_element_data(
                     semantic_match, actual_text = await validate_semantic_match(None, expected_text, page=search_context, locator=locator)
                     
                     if not semantic_match:
+                        # Form controls (<input>, <select>, <textarea>) have no textContent
+                        # by the HTML spec — they are void/replaced elements. expected_text
+                        # here is the field's label context (visually associated by the LLM),
+                        # NOT the element's own DOM text. validate_semantic_match always returns
+                        # ("", False) for inputs, making it impossible for a correct structural
+                        # locator (id, name, data-testid) to pass when expected_text is set.
+                        # A unique structural locator for a form control IS semantic correctness:
+                        # id="first_name" uniquely naming the First Name field is the definition
+                        # of correct identification — textContent agreement is not required and
+                        # would never be achievable.
+                        # The alternative (falling through to TEXT-FIRST) reliably returns the
+                        # associated <label> element, which is the wrong element for automation.
+                        is_form_control = element_data.get('tagName', '').lower() in ('input', 'select', 'textarea')
+
                         # For DROPDOWNS: Use coordinate-based validation instead of text
                         # Dropdowns often have placeholder text in sibling elements, not the input itself
                         is_dropdown = is_dropdown_element(element_data, element_description)
-                        
-                        if is_dropdown and confirmed_coords:
+
+                        if is_form_control:
+                            semantic_match = True
+                            validation_method = "form_control_structural"
+                            logger.info(f"   ✅ {candidate['type']}: form control — text validation skipped (inputs have no textContent)")
+                        elif is_dropdown and confirmed_coords:
                             logger.info(f"   🔽 Dropdown detected - trying coordinate validation instead of text")
                             coord_match, coord_reason = await _validate_by_coordinates(
                                 search_context, locator, confirmed_coords
@@ -2615,7 +2651,7 @@ async def _generate_locators_from_element_data(
                                 semantic_match = True
                                 validation_method = "trust_unique"
                         else:
-                            # Not a dropdown - standard text mismatch handling
+                            # Not a form control or dropdown - standard text mismatch handling
                             logger.info(f"   ⚠️ {candidate['type']}: unique but text mismatch (trying next)")
                             logger.info(f"      Expected: '{expected_text}', Actual: '{actual_text}'")
                             continue  # Try next locator

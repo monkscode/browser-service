@@ -454,6 +454,15 @@ async def _tom_select(
         and not input_id.startswith(_AUTO_GENERATED_SELECT_PREFIX)
     )
 
+    # Auto-generated select_ids (tomselect-N) are positionally unstable — the N
+    # depends on TomSelect initialisation order in a given browser session and will
+    # differ in a fresh Docker session.  Pass None to build_locator_result so the
+    # Code Assembler uses the locator-based JS fallback instead of id=tomselect-N.
+    result_select_id = select_id if has_real_select_id else None
+    if result_select_id is None and select_id is not None:
+        logger.info("tom_select.select_id_suppressed", select_id=select_id,
+                    reason="auto-generated prefix, unstable across sessions")
+
     # ---- Strategy 1a: id-anchored input ----
     if has_real_input_id:
         result = await _validate_and_build_result(
@@ -463,7 +472,7 @@ async def _tom_select(
             element_description=element_description,
             type_info=type_info,
             search_context=search_context,
-            select_id=select_id,
+            select_id=result_select_id,
         )
         if result:
             return result
@@ -477,7 +486,7 @@ async def _tom_select(
             element_description=element_description,
             type_info=type_info,
             search_context=search_context,
-            select_id=select_id,
+            select_id=result_select_id,
         )
         if result:
             return result
@@ -523,7 +532,7 @@ async def _tom_select(
             element_description=element_description,
             type_info=type_info,
             search_context=search_context,
-            select_id=select_id,
+            select_id=result_select_id,
         )
         if result:
             return result
@@ -542,7 +551,7 @@ async def _tom_select(
             element_description=element_description,
             type_info=type_info,
             search_context=search_context,
-            select_id=select_id,
+            select_id=result_select_id,
         )
         if result:
             return result

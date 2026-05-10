@@ -1495,8 +1495,10 @@ def process_workflow_task(
 
                 # Check if element has ID attribute but best_locator is not ID type
                 if element_id_attr and element_id_attr != '':
-                    # Determine if best_locator is an ID locator
-                    is_id_locator = best_locator.startswith('id=')
+                    # Determine if best_locator is an ID locator.
+                    # Accepts both Playwright explicit format (id=value) and
+                    # CSS hash format (#value) — both target the ID attribute.
+                    is_id_locator = best_locator.startswith('id=') or best_locator.startswith('#')
 
                     if not is_id_locator:
                         # PRIORITY VIOLATION DETECTED
@@ -1511,7 +1513,7 @@ def process_workflow_task(
                         id_locator_index = None
                         for idx, loc in enumerate(all_locators):
                             loc_str = loc.get('locator', '')
-                            if loc_str.startswith('id='):
+                            if loc_str.startswith('id=') or loc_str.startswith('#'):
                                 id_locator = loc
                                 id_locator_index = idx
                                 break

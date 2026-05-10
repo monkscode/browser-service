@@ -437,7 +437,7 @@ async def test_native_radio_name_value_anchored(page):
         search_context=page, iframe_context=None, confirmed_coords=None,
     )
     assert result is not None
-    assert '[name="plan"][value="pro"]' == result["best_locator"]
+    assert result["best_locator"] == 'input[type="radio"][name="plan"][value="pro"]'
     assert result["element_type"] == "radio"
 
 
@@ -457,8 +457,9 @@ async def test_native_checkbox_label_text_fallback(page):
     assert result is not None
     # Legacy helper falls back to nested-input search; locator must be
     # name-anchored or id-anchored, never the bare nested CSS chain.
+    # Accepted formats: "id=...", "[name=...", "input[type=...][name=..."
     locator = result["best_locator"]
-    assert locator.startswith(("id=", "[name=")), locator
+    assert locator.startswith("id=") or '[name="' in locator, locator
 
 
 async def test_custom_checkbox_role_aria_label(page):

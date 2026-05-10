@@ -46,12 +46,10 @@ def build_locator_result(
         both the top-level result and ``all_locators[0]``.  ``validation_summary
         ["unique"]`` is set to ``1`` when True, ``0`` when False.
     count :
-        Element count for ``all_locators[0]["count"]`` **only**.  This does
-        NOT appear in the top-level result dict.  Handlers that need a
-        top-level ``count`` key (e.g. collection handlers, where count > 1)
-        must set it on the returned dict after calling this function:
-            result = build_locator_result(..., count=n, ...)
-            result["count"] = n
+        Element count — set at both the top-level result dict and inside
+        ``all_locators[0]``.  Single-element handlers pass the default (1).
+        Collection handlers pass the actual collection count; their subsequent
+        ``result["count"] = n`` after this call is a harmless no-op overwrite.
     all_locator_extra :
         Extra fields merged into ``all_locators[0]`` (e.g. ``quality_score``).
     validation_summary_extra :
@@ -97,6 +95,7 @@ def build_locator_result(
         "found": True,
         "best_locator": best_locator,
         "element_type": element_type,
+        "count": count,
         "unique": unique,
         "valid": True,
         "validated": True,

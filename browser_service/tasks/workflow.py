@@ -466,7 +466,10 @@ def process_workflow_task(
                 execution_time = time.time() - start_time
                 teardown = getattr(agent, '_pw_teardown', None)
                 if teardown:
-                    await teardown()  # best-effort; close/stop errors are logged and suppressed
+                    try:
+                        await teardown()
+                    except Exception as e:
+                        logger.warning(f"Playwright teardown error (suppressed): {e}")
 
             logger.info(f"✅ Agent completed in {execution_time:.1f}s")
 

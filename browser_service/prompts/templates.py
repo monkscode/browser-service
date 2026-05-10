@@ -338,8 +338,8 @@ CRITICAL INSTRUCTIONS
 
 ✓ MUST call find_unique_locator for EVERY element in the list
 ✓ MUST provide accurate coordinates (x, y) from your vision
-✓ MUST provide expected_text - the ACTUAL visible text you see on the element
-  (This is CRITICAL - it prevents finding the wrong element!)
+✓ MUST provide expected_text when the element has visible text, a label, or a placeholder
+  (This is CRITICAL — it prevents finding the wrong element! Omit only for icon-only elements.)
 ✓ SHOULD provide candidate_locator if you can identify id, data-testid, or name
 ✓ MUST NOT validate locators yourself - the action does this
 ✓ MUST NOT execute JavaScript to check uniqueness - the action does this

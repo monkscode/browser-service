@@ -2297,9 +2297,8 @@ async def _generate_locators_from_element_data(
         suspected_type = type_info.primary_type
         probe_mode = "confirmation"
     elif type_info.primary_type == "unknown" and vision_type_hint:
-        # Map the raw hint via the same vocabulary the classifier uses.
-        from .classifier import _VISION_HINT_TO_TYPE
-        mapped = _VISION_HINT_TO_TYPE.get(vision_type_hint.lower().strip(), "")
+        from .classifier import map_vision_hint
+        mapped = map_vision_hint(vision_type_hint)
         if mapped in ("dropdown", "collection", "checkbox", "radio"):
             suspected_type = mapped
             probe_mode = "discovery"
@@ -2802,7 +2801,11 @@ async def find_unique_locator_at_coordinates(
     if browser_session is not None and expected_text:
         try:
             resolved_node = await browser_session.get_dom_element_at_coordinates(int(x), int(y))
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                f"get_dom_element_at_coordinates failed at ({x}, {y}) "
+                f"expected={expected_text!r}: {e}"
+            )
             resolved_node = None
 
     # ========================================
@@ -3807,9 +3810,8 @@ async def find_unique_locator_at_coordinates(
                         pass  # bounding_box() failed; fall through to slow path
 
                     if _identity_ok:
-                        for loc in sorted_locators:
-                            loc['semantic_match'] = True
-                            loc['actual_text'] = actual_text
+                        _best['semantic_match'] = True
+                        _best['actual_text'] = actual_text
                         best_locator_obj = _best
                         _fast_path_resolved = True
                         logger.info(

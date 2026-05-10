@@ -145,6 +145,11 @@ _VISION_HINT_TO_TYPE: dict[str, str] = {
 }
 
 
+def map_vision_hint(hint: str) -> str:
+    """Return the internal primary_type for a vision hint, or '' if unmapped."""
+    return _VISION_HINT_TO_TYPE.get(hint.lower().strip(), "")
+
+
 def classify_element_type(
     element_data: dict,
     element_description: str,

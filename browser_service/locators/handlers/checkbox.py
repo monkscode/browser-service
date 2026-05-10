@@ -165,10 +165,21 @@ async def _try_element_data_attrs(
             "name+value (radio)",
         ))
     if el_name:
-        candidates.append((
-            f'input[type="{primary_type}"][name="{el_name}"]',
-            "name-anchored",
-        ))
+        if framework == "native":
+            candidates.append((
+                f'input[type="{primary_type}"][name="{el_name}"]',
+                "name-anchored",
+            ))
+        elif framework == "toggle":
+            candidates.append((
+                f'[role="switch"][name="{el_name}"]',
+                "role+name-anchored",
+            ))
+        else:
+            candidates.append((
+                f'[role="{primary_type}"][name="{el_name}"]',
+                "role+name-anchored",
+            ))
 
     for locator, name in candidates:
         if await _locator_unique(search_context, locator):

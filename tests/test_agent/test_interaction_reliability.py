@@ -136,10 +136,6 @@ class TestTomSelectWrapperEvent:
             <script>
                 const select = document.getElementById('s');
                 select.tomselect = {
-                    options: {
-                        opt1: { value: 'opt1', text: 'Option One' },
-                        opt2: { value: 'opt2', text: 'Option Two' },
-                    },
                     setValue(val, silent) { select.value = val; }
                 };
                 window._wrapperChangeCount = 0;
@@ -149,37 +145,19 @@ class TestTomSelectWrapperEvent:
             </script>
         """)
 
-        loc = page.locator(".ts-control")
-        selected = await loc.evaluate(
-            """(el, targetText) => {
-                try {
-                    const wrapper = el.closest('.ts-wrapper') || el.parentElement;
-                    if (!wrapper) return false;
-                    const select = wrapper.querySelector('select');
-                    if (!select) return false;
-                    const ts = select.tomselect || select._tomSelect;
-                    if (!ts) return false;
-                    const normalize = s => {
-                        const d = document.createElement('div');
-                        d.innerHTML = s;
-                        return (d.textContent || d.innerText || '').trim();
-                    };
-                    const normalizedTarget = normalize(targetText);
-                    const match = Object.values(ts.options).find(
-                        o => o.text === targetText
-                          || o.value === targetText
-                          || normalize(o.text) === normalizedTarget
-                    );
-                    if (!match) return false;
-                    ts.setValue(match.value, false);
-                    select.dispatchEvent(new Event('change', {bubbles: true}));
-                    return true;
-                } catch(e) { return false; }
-            }""",
-            "Option One",
+        from browser_service.agent.registration import _do_interaction_playwright
+        note, status = await _do_interaction_playwright(
+            active_page=page,
+            locator_str=".ts-control",
+            action="select",
+            value="Option One",
+            element_id="elem_1",
+            performed_actions=set(),
+            dropdown_framework="tom-select",
+            select_id=None,
         )
 
-        assert selected is True
+        assert status == "auto_ok", f"Expected auto_ok, got {status!r}: {note}"
         wrapper_count = await page.evaluate("window._wrapperChangeCount")
         assert wrapper_count >= 1, "change event must reach wrapper-bound listeners via bubbling"
 
@@ -419,44 +397,24 @@ class TestTomSelectSiblingDomTraversal:
             <script>
                 const select = document.getElementById('role');
                 select.tomselect = {
-                    options: {
-                        admin: { value: 'admin', text: 'Administrator' },
-                        viewer: { value: 'viewer', text: 'Viewer' },
-                    },
                     setValue(val, silent) { select.value = val; }
                 };
             </script>
         """)
 
-        loc = page.locator("#ts-ctrl")
-        selected = await loc.evaluate(
-            """(el, targetText) => {
-                try {
-                    const wrapper = el.closest('.ts-wrapper') || el.parentElement;
-                    if (!wrapper) return false;
-                    let select = null;
-                    if (wrapper.previousElementSibling && wrapper.previousElementSibling.tagName === 'SELECT')
-                        select = wrapper.previousElementSibling;
-                    if (!select && wrapper.parentElement)
-                        select = wrapper.parentElement.querySelector('select');
-                    if (!select) return false;
-                    const ts = select.tomselect || select._tomSelect;
-                    if (!ts) return false;
-                    const opt = Array.from(select.options).find(
-                        o => o.text.trim() === targetText
-                          || o.value === targetText
-                          || o.text.trim().toLowerCase() === targetText.toLowerCase()
-                    );
-                    if (!opt) return false;
-                    ts.setValue(opt.value, false);
-                    select.dispatchEvent(new Event('change', {bubbles: true}));
-                    return true;
-                } catch(e) { return false; }
-            }""",
-            "Administrator",
+        from browser_service.agent.registration import _do_interaction_playwright
+        note, status = await _do_interaction_playwright(
+            active_page=page,
+            locator_str="#ts-ctrl",
+            action="select",
+            value="Administrator",
+            element_id="elem_1",
+            performed_actions=set(),
+            dropdown_framework="tom-select",
+            select_id=None,
         )
 
-        assert selected is True
+        assert status == "auto_ok", f"Expected auto_ok, got {status!r}: {note}"
         value = await page.locator("#role").evaluate("el => el.value")
         assert value == "admin", f"Expected 'admin', got '{value}'"
 

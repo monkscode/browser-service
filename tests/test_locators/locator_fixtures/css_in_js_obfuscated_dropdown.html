@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Adversarial — CSS-in-JS hashed classnames (no ts-* string)</title>
+  <style>
+    body { font-family: sans-serif; padding: 1rem; }
+    /* Classnames mimic styled-components / emotion output: jss-XXXXX, css-YYYY. */
+    .jss-1ab2c3 { display: inline-flex; align-items: center; gap: 8px;
+                   border: 1px solid #ccc; padding: 6px 12px; min-width: 200px;
+                   border-radius: 4px; background: #fff; cursor: pointer; }
+    .css-9zx0vq { color: #444; flex: 1; }
+    .css-7pq3lm { color: #999; margin-left: auto; }
+  </style>
+</head>
+<body>
+  <h1>Project selector</h1>
+  <p>Hashed classnames (CSS-in-JS) — no <code>ts-*</code> / <code>select2</code>
+  / <code>k-dropdown</code> / <code>react-select</code> / <code>vs__</code>
+  / <code>ant-select</code> / <code>muiselect-root</code> string anywhere.
+  Classifier framework detection should return empty / unknown for this
+  control. Phase 2.4 vision-assist is required to recover a specialized
+  dropdown verdict; until then the standard 21-strategy fallback handles it.</p>
+  <div role="combobox" aria-expanded="false" aria-haspopup="listbox"
+       class="jss-1ab2c3" tabindex="0" id="project-picker">
+    <span class="css-9zx0vq">Choose project</span>
+    <span class="css-7pq3lm">▾</span>
+  </div>
+</body>
+</html>

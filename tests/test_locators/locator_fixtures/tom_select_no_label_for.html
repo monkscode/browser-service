@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Adversarial — Tom Select without &lt;label for=&gt;</title>
+  <style>
+    body { font-family: sans-serif; padding: 1rem; }
+    .form-group { margin-bottom: 1rem; max-width: 320px; }
+    label { display: block; font-weight: 600; margin-bottom: 4px; }
+    .ts-hidden-accessible { position: absolute; left: -9999px; }
+    .ts-wrapper { border: 1px solid #ccc; padding: 6px; min-height: 32px; cursor: pointer; }
+    .ts-control { display: flex; gap: 4px; }
+    .ts-control input { border: 0; outline: 0; flex: 1; min-width: 4ch; }
+  </style>
+</head>
+<body>
+  <h1>Settings</h1>
+  <div class="form-group">
+    <!-- No `for=` attribute. Strategy 2 must rely on label TEXT. -->
+    <label class="form-label">Rate Group *</label>
+    <div class="tom-select-custom">
+      <select name="pricelist_id" id="pricelist_id" class="js-select tomselected ts-hidden-accessible">
+        <option value="1">Default</option>
+      </select>
+      <div class="ts-wrapper has-items">
+        <div class="ts-control">
+          <div data-value="1" class="item">Default</div>
+          <input role="combobox" aria-controls="pricelist_id-ts-dropdown" id="pricelist_id-ts-control">
+        </div>
+        <div class="ts-dropdown" style="display:none;"><div role="listbox" id="pricelist_id-ts-dropdown"></div></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

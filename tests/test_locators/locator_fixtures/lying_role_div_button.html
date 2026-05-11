@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Adversarial — &lt;div role="button"&gt; that's actually a dropdown trigger</title>
+  <style>
+    body { font-family: sans-serif; padding: 1rem; }
+    .fake-dropdown {
+      display: inline-flex; align-items: center; gap: 8px;
+      border: 1px solid #ccc; border-radius: 4px;
+      padding: 6px 12px; cursor: pointer; user-select: none;
+      min-width: 180px; background: #fff;
+    }
+    .fake-dropdown::after { content: "▾"; margin-left: auto; color: #666; }
+    .menu { display: none; position: absolute; border: 1px solid #ccc;
+            background: #fff; padding: 4px 0; min-width: 200px; }
+    .menu.open { display: block; }
+    .menu-item { padding: 6px 12px; cursor: pointer; }
+    .menu-item:hover { background: #f5f5f5; }
+  </style>
+</head>
+<body>
+  <h1>Country selector</h1>
+  <p>The control below uses <code>&lt;div role="button"&gt;</code>. Its
+  description is "country dropdown" — DOM tag/role say "button" but
+  framework + description say "dropdown".  Classifier signals must be
+  conflicting and confidence should drop below "high".</p>
+  <div id="country-control" role="button" aria-haspopup="listbox"
+       aria-expanded="false" tabindex="0" class="fake-dropdown">
+    <span>Pick a country</span>
+  </div>
+  <div class="menu" role="listbox">
+    <div class="menu-item" role="option">India</div>
+    <div class="menu-item" role="option">United States</div>
+    <div class="menu-item" role="option">Germany</div>
+  </div>
+</body>
+</html>

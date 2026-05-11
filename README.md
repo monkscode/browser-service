@@ -177,14 +177,10 @@ custom_config = BrowserServiceConfig(
 
 ```python
 from browser_service.tasks import process_workflow_task
-from browser_service.locators import generate_locators_from_attributes
 from browser_service.browser import BrowserSessionManager
 
 # Process a complete workflow
 result = await process_workflow_task(workflow)
-
-# Generate locators for an element
-locators = generate_locators_from_attributes(element_attributes)
 
 # Manage browser sessions
 browser = BrowserSessionManager()

@@ -15,11 +15,11 @@ The registration process:
 4. Handles page object retrieval from browser_session via CDP
 5. Converts results to ActionResult format for the agent
 
-Playwright Connection Lifecycle:
-- Each custom action call creates a fresh Playwright connection via CDP
-- The connection is destroyed after the action completes (in finally blocks)
-- No module-level cache exists — each concurrent task uses its own connection
-- This ensures isolation when multiple tasks run simultaneously
+Playwright Connection Lifecycle (Day 04 — lazy, once-per-run):
+- Playwright is connected lazily on the first find_unique_locator call within agent.run()
+- The connection is reused for every subsequent call in the same run (one connect per workflow)
+- Torn down by _teardown_playwright() called from the workflow finally block after agent.run() returns
+- Each concurrent workflow has its own pw_cache closure — no shared state between workflows
 
 Usage:
     from browser_service.agent.registration import register_custom_actions
@@ -38,6 +38,30 @@ from typing import Optional
 
 # Get logger
 logger = logging.getLogger(__name__)
+
+
+class _PlaywrightConnectionError(RuntimeError):
+    """Raised exclusively by _ensure_playwright when the CDP session is dead or unreachable.
+
+    Keeping this separate from RuntimeError prevents unrelated RuntimeErrors raised
+    inside the find_unique_locator action body from being misidentified as dead-browser
+    signals, which would terminate the agent prematurely with is_done=True.
+    """
+
+
+def _select_best_page(browser):
+    """Return the most recently opened non-blank page across all CDP contexts, or None.
+
+    Iterates contexts and pages in reverse (most-recently-opened last) so that the
+    active tab is preferred when Chrome exposes an empty leading context or when a
+    new tab was opened after the initial connect.
+    """
+    for ctx in reversed(browser.contexts):
+        for pg in reversed(ctx.pages):
+            if pg.url and pg.url not in ("about:blank", ""):
+                return pg
+    return None
+
 
 def _extract_dom_node_attributes(dom_node) -> dict:
     """
@@ -178,13 +202,6 @@ def _find_smallest_containing_element(selector_map, coords, viewport_area, skip_
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# REMOVED: _sync_cleanup_playwright_cache, invalidate_playwright_cache
-# No module-level Playwright cache exists. Each custom action creates and
-# destroys its own connection. See find_unique_locator handler below.
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # CDP URL AND PAGE RETRIEVAL HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 # These helper functions consolidate the fallback strategy chains into
@@ -267,152 +284,486 @@ def _get_cdp_url_from_session(browser_session) -> Optional[str]:
     return None
 
 
-async def _get_active_page_from_browser(
-    connected_browser, 
-    browser_session, 
-    fallback_page,
-    created_new_instance: bool = False
-):
-    """
-    Get active Playwright page using multiple fallback strategies.
-    
-    Strategies (in priority order):
-    1. CDP browser contexts[0].pages[0] (primary for CDP connections)
-    2. browser_session.get_pages()[0] (async method)
-    3. browser_session.page (direct attribute)
-    4. browser_session.get_current_page() (async method)
-    5. browser_session.context.pages[0] (context attribute)
-    6. browser_session.browser.contexts[0].pages[0] (nested browser access)
-    7. Fallback page passed during registration
-    
-    Args:
-        connected_browser: Playwright browser connected via CDP (may be None)
-        browser_session: The browser-use session object
-        fallback_page: Page object passed during registration (last resort)
-        created_new_instance: Whether this is a freshly created CDP connection
-        
-    Returns:
-        Active Playwright page object, or None if all strategies fail
-    """
-    active_page = None
-    
-    # ════════════════════════════════════════════════════════════════════
-    # Strategy 1: CDP contexts (PRIMARY - use when we have CDP connection)
-    # ════════════════════════════════════════════════════════════════════
-    if connected_browser:
-        try:
-            contexts = connected_browser.contexts
-            if contexts:
-                logger.debug(f"CDP browser has {len(contexts)} context(s)")
-                for idx, ctx in enumerate(contexts):
-                    logger.debug(f"  Context[{idx}] has {len(ctx.pages)} page(s)")
-                
-                context = contexts[0]
-                if context.pages:
-                    active_page = context.pages[0]
-                    page_url = active_page.url
-                    
-                    # Wait for DOM to be ready on new connections
-                    if created_new_instance:
-                        try:
-                            await active_page.wait_for_load_state('domcontentloaded', timeout=5000)
-                            logger.info("✅ Page DOM is ready for locator queries")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Page load state wait: {e}")
-                        logger.info(f"✅ Connected to page via CDP: {page_url}")
-                    else:
-                        logger.info(f"♻️ Reusing cached CDP page: {page_url}")
-                    
-                    return active_page
-                else:
-                    logger.debug("CDP context has no pages")
-            else:
-                logger.debug("CDP browser has no contexts")
-        except Exception as e:
-            logger.debug(f"Strategy 1 (CDP contexts): {e}")
-    
-    # ════════════════════════════════════════════════════════════════════
-    # Strategies 2-6: browser_session fallbacks (when CDP not available)
-    # ════════════════════════════════════════════════════════════════════
-    
-    # Strategy 2: get_pages() async method
-    if hasattr(browser_session, 'get_pages'):
-        try:
-            pages = await browser_session.get_pages()
-            if pages and len(pages) > 0:
-                active_page = pages[0]
-                logger.info(f"✅ Got page from browser_session.get_pages() ({len(pages)} total)")
-                return active_page
-        except Exception as e:
-            logger.debug(f"Strategy 2 (get_pages): {e}")
-    
-    # Strategy 3: Direct .page attribute
-    if hasattr(browser_session, 'page') and browser_session.page is not None:
-        try:
-            active_page = browser_session.page
-            logger.info("✅ Got page from browser_session.page")
-            return active_page
-        except Exception as e:
-            logger.debug(f"Strategy 3 (.page): {e}")
-    
-    # Strategy 4: get_current_page() async method
-    if hasattr(browser_session, 'get_current_page'):
-        try:
-            active_page = await browser_session.get_current_page()
-            if active_page:
-                logger.info("✅ Got page from browser_session.get_current_page()")
-                return active_page
-        except Exception as e:
-            logger.debug(f"Strategy 4 (get_current_page): {e}")
-    
-    # Strategy 5: context.pages attribute
-    if hasattr(browser_session, 'context') and browser_session.context is not None:
-        try:
-            pages = browser_session.context.pages
-            if pages and len(pages) > 0:
-                active_page = pages[0]
-                logger.info(f"✅ Got page from browser_session.context.pages ({len(pages)} total)")
-                return active_page
-        except Exception as e:
-            logger.debug(f"Strategy 5 (context.pages): {e}")
-    
-    # Strategy 6: browser.contexts[0].pages
-    if hasattr(browser_session, 'browser') and browser_session.browser is not None:
-        try:
-            contexts = browser_session.browser.contexts
-            if contexts and len(contexts) > 0:
-                pages = contexts[0].pages
-                if pages and len(pages) > 0:
-                    active_page = pages[0]
-                    logger.info("✅ Got page from browser_session.browser.contexts[0].pages")
-                    return active_page
-        except Exception as e:
-            logger.debug(f"Strategy 6 (browser.contexts): {e}")
-    
-    # ════════════════════════════════════════════════════════════════════
-    # Strategy 7: Fallback page (last resort)
-    # ════════════════════════════════════════════════════════════════════
-    if fallback_page:
-        logger.warning("⚠️ All page strategies failed, using fallback page")
-        return fallback_page
-    
-    logger.error("❌ No page available - all strategies exhausted")
-    return None
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERACTION HELPERS (B0–C) — module-level so unit tests can import directly.
+# performed_actions and element_specs are passed as explicit parameters rather
+# than captured from a closure: this keeps concurrency isolation intact (each
+# workflow creates its own set/dict in register_custom_actions) while making
+# the dependency on mutable state visible at the call site and testable without
+# closure-piercing tricks.
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def register_custom_actions(agent, page=None, elements=None) -> bool:
+_RF_SELECT_PREFIXES = frozenset({"label", "value", "text", "index"})
+
+
+def _strip_rf_select_prefix(value: str) -> str:
+    """Strip the Robot Framework Select Options By strategy prefix from a value string.
+
+    RF encodes the selection strategy as the first whitespace-separated token:
+        "label    default"       → "default"
+        "value    some_val"      → "some_val"
+        "text     My Option"     → "My Option"
+        "index    0"             → "0"
+        "United States"          → "United States"  (not an RF prefix — unchanged)
+        "default"                → "default"         (single token — unchanged)
+
+    Only strips when the first token is a known RF strategy keyword (label/value/text/index).
+    This prevents multi-word option text like "United States" from being incorrectly truncated.
+    Applied only to 'select' actions — never touches input/click values."""
+    if not value:
+        return value
+    parts = value.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() in _RF_SELECT_PREFIXES:
+        return parts[1].strip()
+    return value
+
+
+async def _wait_for_page_stability(active_page) -> None:
+    """Wait for page to stabilize after a click/submit/select that may trigger navigation.
+
+    domcontentloaded (not networkidle) — HTML parsed and DOM built is sufficient
+    for the next find_unique_locator call. Times out silently if the page is
+    already stable or no navigation occurred. asyncio.sleep(0) yields to the
+    event loop first so any pending CDP navigation events are dispatched before
+    wait_for_load_state checks the current load state — prevents the race where
+    the CDP click fires but navigation hasn't started yet when we check."""
+    try:
+        await asyncio.sleep(0)
+        await active_page.wait_for_load_state("domcontentloaded", timeout=5000)
+    except Exception:
+        pass
+
+
+
+async def _dispatch_browser_use_event(
+    browser_session, node, action: str, value: str, element_id: str, performed_actions: set
+):
+    """Attempt the interaction via browser-use's built-in event bus (preferred path).
+
+    Returns (note, status) on success or not_applicable.
+    Returns (None, None) as the universal fall-through signal — Playwright path retries.
+    performed_actions.add() is called ONLY on confirmed success, never on fall-through."""
+    from browser_use.browser.events import TypeTextEvent, ClickElementEvent, SelectDropdownOptionEvent
+    try:
+        if action in ("input", "type"):
+            if not value:
+                return "", "not_applicable"
+            event = browser_session.event_bus.dispatch(TypeTextEvent(node=node, text=value, clear=True))
+            await event
+            await event.event_result(raise_if_any=True, raise_if_none=False)
+            # TypeTextEvent types via CDP key events (character-by-character) — reliable if no exception raised.
+            # Returns {input_x, input_y, actual_value} (0.12.6). Built-in concatenation-detection retry
+            # self-corrects append-instead-of-replace without caller intervention. No explicit verification needed.
+            performed_actions.add(element_id)
+            return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}'", "auto_ok"
+
+        elif action in ("click", "submit"):
+            event = browser_session.event_bus.dispatch(ClickElementEvent(node=node))
+            await event
+            click_meta = await event.event_result(raise_if_any=True, raise_if_none=False)
+            if isinstance(click_meta, dict) and "validation_error" in click_meta:
+                # browser-use rejected click (file input or <select> element).
+                # Fall through to Playwright which may handle these differently.
+                return None, None
+            performed_actions.add(element_id)
+            return "\n✅ AUTO-ACTION COMPLETE: Clicked element", "auto_ok"
+
+        elif action == "select":
+            if not value:
+                return "", "not_applicable"
+            event = browser_session.event_bus.dispatch(SelectDropdownOptionEvent(node=node, text=value))
+            await event
+            sel = await event.event_result(raise_if_any=True, raise_if_none=False)
+            if isinstance(sel, dict) and sel.get("success") == "true":
+                performed_actions.add(element_id)
+                return f"\n✅ AUTO-SELECT: Selected '{value}'", "auto_ok"
+            # Any failure (Tom Select sibling pattern, option not found, unrecognised element, etc.)
+            # — fall through to Playwright which has a wider selection strategy.
+            # Do NOT add to performed_actions here; Playwright path will handle it.
+            return None, None
+
+        elif action in ("check", "uncheck"):
+            # browser-use has no dedicated check/uncheck event — verified from source.
+            # ClickElementEvent is a blind toggle with no state awareness (just clicks coordinates).
+            # Fall through to Playwright's loc.check() / loc.uncheck() which are state-aware.
+            return None, None
+
+    except Exception as e:
+        # Unexpected error in event path — log and fall through to Playwright.
+        logger.warning(f"   AUTO-ACTION event path error for {element_id} ({action}): {e}")
+        return None, None
+
+
+async def _do_interaction_playwright(
+    active_page, locator_str: str, action: str, value: str, element_id: str, performed_actions: set,
+    dropdown_framework: str = "", select_id: str | None = None,
+):
+    """Playwright fallback with layered retry chains.
+
+    Each action type runs through multiple strategies in order, stopping at first success.
+    All strategies exhausted → auto_failed. performed_actions.add() only on confirmed success."""
+    try:
+        loc = active_page.locator(locator_str)
+        if action in ("input", "type"):
+            if not value:
+                return "", "not_applicable"
+
+            # Tier 1: fill() — fires input/change events
+            try:
+                await loc.fill(value, timeout=5000)
+                try:
+                    actual = await loc.input_value(timeout=2000)
+                    if actual == value:
+                        performed_actions.add(element_id)
+                        return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (fill, verified)", "auto_ok"
+                    # Mismatch — fall through to Tier 2
+                except Exception:
+                    # input_value() unsupported (e.g. contenteditable) — accept fill result
+                    performed_actions.add(element_id)
+                    return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (fill, unverified)", "auto_partial"
+            except Exception:
+                pass
+
+            # Tier 2: triple_click + Control+a + press_sequentially — fires key events, better for reactive frameworks.
+            # Control+a after triple_click ensures full selection on contenteditable: triple_click selects
+            # only the clicked paragraph; Control+a selects all content across paragraphs. No-op on
+            # <input>/<textarea> where triple_click already selects everything.
+            try:
+                await loc.triple_click(timeout=3000)
+                await loc.press("Control+a")
+                await loc.press_sequentially(value, delay=20)
+                try:
+                    actual = await loc.input_value(timeout=2000)
+                    performed_actions.add(element_id)
+                    return (
+                        (f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (key events, verified)", "auto_ok")
+                        if actual == value
+                        else (f"\n⚠️ AUTO-ACTION: Typed '{value}' but field shows '{actual}' (key events)", "auto_partial")
+                    )
+                except Exception:
+                    performed_actions.add(element_id)
+                    return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (key events, unverified)", "auto_partial"
+            except Exception:
+                pass
+
+            # Tier 3: JS value assignment + dispatch events — last resort
+            try:
+                await loc.evaluate(
+                    "(el, v) => { el.value = v; el.dispatchEvent(new Event('input', {bubbles: true})); el.dispatchEvent(new Event('change', {bubbles: true})); }",
+                    value,
+                )
+                performed_actions.add(element_id)
+                return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (JS, unverified)", "auto_partial"
+            except Exception as e:
+                return f"\n⚠️ AUTO-ACTION FAILED (input): all strategies exhausted — {e}", "auto_failed"
+
+        elif action in ("click", "submit"):
+            # Tier 1: standard click
+            try:
+                await loc.click(timeout=5000)
+                performed_actions.add(element_id)
+                return "\n✅ AUTO-ACTION COMPLETE: Clicked", "auto_ok"
+            except Exception:
+                pass
+
+            # Tier 2: force click — bypasses visibility/actionability (element under overlay)
+            try:
+                await loc.click(force=True, timeout=5000)
+                performed_actions.add(element_id)
+                return "\n✅ AUTO-ACTION COMPLETE: Clicked (force)", "auto_ok"
+            except Exception:
+                pass
+
+            # Tier 3: JS click — bypasses all Playwright checks and overlays
+            try:
+                await loc.evaluate("el => el.click()")
+                performed_actions.add(element_id)
+                return "\n✅ AUTO-ACTION COMPLETE: Clicked (JS)", "auto_ok"
+            except Exception as e:
+                return f"\n⚠️ AUTO-ACTION FAILED (click): all strategies exhausted — {e}", "auto_failed"
+
+        elif action == "select":
+            if not value:
+                return "", "not_applicable"
+
+            # Tom Select: JavaScript is the only reliable path.
+            # The underlying <select> is hidden (display:none) so native select_option() always
+            # fails. Run JS strategies before click-to-open — no wasted timeout attempts on
+            # native options that are structurally guaranteed to fail.
+            if dropdown_framework == "tom-select":
+                # Tier 0 (preferred): direct getElementById when select_id is known.
+                # Bypasses all DOM traversal — most reliable path, zero UI interaction needed.
+                if select_id:
+                    try:
+                        diag = await active_page.evaluate(
+                            """(args) => {
+                                try {
+                                    const select = document.getElementById(args.selectId);
+                                    if (!select) return 'no_select';
+                                    const ts = select.tomselect || select._tomSelect;
+                                    if (!ts) return 'no_ts';
+                                    const v = args.value;
+                                    const opt = Array.from(select.options).find(
+                                        o => o.text.trim() === v
+                                          || o.value === v
+                                          || o.text.trim().toLowerCase() === v.toLowerCase()
+                                    );
+                                    if (!opt) return 'no_opt';
+                                    ts.setValue(opt.value, false);
+                                    select.dispatchEvent(new Event('change', {bubbles: true}));
+                                    return 'ok';
+                                } catch(e) {
+                                    return 'error:' + e.message;
+                                }
+                            }""",
+                            {"selectId": select_id, "value": value},
+                        )
+                        if diag == "ok":
+                            performed_actions.add(element_id)
+                            return f"\n✅ AUTO-SELECT: Selected '{value}' (Tom Select JS via select_id)", "auto_ok"
+                        else:
+                            logger.info(f"   ⚠️ tom_select.tier0_js_failed: reason={diag} select_id={select_id!r} value={value!r}")
+                    except Exception as e:
+                        logger.warning(f"   ⚠️ tom_select.tier0_exception: select_id={select_id!r} error={e}")
+
+                # Tier 0b: locator-based traversal when select_id is unavailable.
+                # Standard Tom Select DOM has <select> as the *previous sibling* of .ts-wrapper,
+                # not a child. The old wrapper.querySelector('select') returned null for this
+                # structure — fixed here by checking previousElementSibling first.
+                try:
+                    diag = await loc.evaluate(
+                        """(el, targetText) => {
+                            try {
+                                const wrapper = el.closest('.ts-wrapper') || el.parentElement;
+                                if (!wrapper) return 'no_wrapper';
+                                let select = null;
+                                if (wrapper.previousElementSibling && wrapper.previousElementSibling.tagName === 'SELECT')
+                                    select = wrapper.previousElementSibling;
+                                if (!select && wrapper.parentElement)
+                                    select = wrapper.parentElement.querySelector('select');
+                                if (!select) return 'no_select';
+                                const ts = select.tomselect || select._tomSelect;
+                                if (!ts) return 'no_ts';
+                                const opt = Array.from(select.options).find(
+                                    o => o.text.trim() === targetText
+                                      || o.value === targetText
+                                      || o.text.trim().toLowerCase() === targetText.toLowerCase()
+                                );
+                                if (!opt) return 'no_opt';
+                                ts.setValue(opt.value, false);
+                                select.dispatchEvent(new Event('change', {bubbles: true}));
+                                return 'ok';
+                            } catch(e) {
+                                return 'error:' + e.message;
+                            }
+                        }""",
+                        value,
+                    )
+                    if diag == "ok":
+                        performed_actions.add(element_id)
+                        return f"\n✅ AUTO-SELECT: Selected '{value}' (Tom Select JS via locator)", "auto_ok"
+                    else:
+                        logger.info(f"   ⚠️ tom_select.tier0b_js_failed: reason={diag} locator={locator_str!r} value={value!r}")
+                except Exception as e:
+                    logger.warning(f"   ⚠️ tom_select.tier0b_exception: locator={locator_str!r} error={e}")
+
+                # Fall through to click-to-open as last resort for Tom Select.
+
+            else:
+                # Non-Tom-Select: try native select_option first.
+
+                # Tier 1a: native <select> by visible label text
+                try:
+                    await loc.select_option(label=value, timeout=2000)
+                    performed_actions.add(element_id)
+                    return f"\n✅ AUTO-SELECT: Selected '{value}' (native label)", "auto_ok"
+                except Exception:
+                    pass
+
+                # Tier 1b: native <select> by HTML value attribute
+                try:
+                    await loc.select_option(value=value, timeout=2000)
+                    performed_actions.add(element_id)
+                    return f"\n✅ AUTO-SELECT: Selected '{value}' (native value attr)", "auto_ok"
+                except Exception:
+                    pass
+
+            # Tier 2: click-to-open — last resort for Tom Select, primary UI path for all others
+            # (Select2, ARIA listbox, Bootstrap select, any custom dropdown).
+            dropdown_opened = False
+            try:
+                await loc.click(timeout=3000)
+                dropdown_opened = True
+
+                # Adaptive wait: block until any dropdown container is actually visible.
+                # Let wait_for_selector raise on timeout — the outer except catches it and
+                # falls through to the final auto_failed return below.
+                container_selectors = (
+                    ".ts-dropdown-content, [role='listbox'], "
+                    ".select2-results__options, .dropdown-menu"
+                )
+                await active_page.wait_for_selector(
+                    container_selectors, state="visible", timeout=2000
+                )
+
+                parent = loc.locator("..")
+                option_selectors = [
+                    ".ts-dropdown-content",
+                    "[role='listbox']",
+                    ".select2-results__options",
+                    ".dropdown-menu",
+                ]
+
+                # Exact match — parent-scoped first to avoid multi-dropdown ambiguity,
+                # then page-global as fallback. .first.click() directly — no count() check
+                # needed; absent/uninteractable raises and except continues to next strategy.
+                for scope in [parent, active_page]:
+                    for sel in option_selectors:
+                        try:
+                            await scope.locator(sel).get_by_text(value, exact=True).first.click(timeout=1500)
+                            dropdown_opened = False
+                            performed_actions.add(element_id)
+                            return f"\n✅ AUTO-SELECT: Selected '{value}' (click-to-open, exact, {sel})", "auto_ok"
+                        except Exception:
+                            continue
+
+                # Partial match — handles minor whitespace/casing differences in option text
+                for scope in [parent, active_page]:
+                    for sel in option_selectors:
+                        try:
+                            await scope.locator(sel).get_by_text(value).first.click(timeout=1500)
+                            dropdown_opened = False
+                            performed_actions.add(element_id)
+                            return f"\n✅ AUTO-SELECT: Selected '{value}' (click-to-open, partial, {sel})", "auto_ok"
+                        except Exception:
+                            continue
+
+            except Exception:
+                pass
+            finally:
+                # Always close dropdown on exit — an open dropdown overlays the page and
+                # blocks all subsequent element interactions.
+                if dropdown_opened:
+                    try:
+                        await active_page.keyboard.press("Escape")
+                        await active_page.wait_for_timeout(100)
+                    except Exception:
+                        pass
+
+            return f"\n⚠️ AUTO-SELECT FAILED: all strategies exhausted for '{value}'", "auto_failed"
+
+        elif action == "check":
+            # State-aware: only clicks if not already checked
+            try:
+                await loc.check(timeout=5000)
+                performed_actions.add(element_id)
+                return "\n✅ AUTO-ACTION COMPLETE: Checked", "auto_ok"
+            except Exception as e:
+                return f"\n⚠️ AUTO-ACTION FAILED (check): {e}", "auto_failed"
+
+        elif action == "uncheck":
+            # State-aware: only clicks if currently checked
+            try:
+                await loc.uncheck(timeout=5000)
+                performed_actions.add(element_id)
+                return "\n✅ AUTO-ACTION COMPLETE: Unchecked", "auto_ok"
+            except Exception as e:
+                return f"\n⚠️ AUTO-ACTION FAILED (uncheck): {e}", "auto_failed"
+
+    except Exception as e:
+        return f"\n⚠️ AUTO-ACTION FAILED ({action}): {e}", "auto_failed"
+
+
+async def _do_interaction(
+    browser_session,
+    active_page,
+    locator_str: str,
+    element_id: str,
+    element_index: int | None,
+    element_specs: dict,
+    performed_actions: set,
+    dropdown_framework: str = "",
+    select_id: str | None = None,
+):
+    """Orchestrate the interaction for one element — event path first, Playwright fallback second.
+
+    Returns (note, status, action, value). action and value are returned alongside note/status
+    so the caller never needs to re-read element_specs independently (single source of truth)."""
+    if element_id in performed_actions:
+        return "", "not_applicable", "", ""
+    spec = element_specs.get(element_id, {})
+    action = spec.get("action", "get_text")
+    value  = spec.get("value", "")
+    if action not in ("input", "type", "click", "submit", "select", "check", "uncheck"):
+        return "", "not_applicable", action, value
+
+    # Tom Select: the ts-control is an <input>, so the agent labels it "input"/"type".
+    # Typing into it filters the dropdown but never commits a selection.
+    # Remap to "select" so the JS setValue() path runs instead of TypeTextEvent.
+    if dropdown_framework == "tom-select" and action in ("input", "type"):
+        action = "select"
+
+    # Strip Robot Framework "label    X" / "value    X" strategy prefix so the
+    # bare option text reaches JS comparisons and get_by_text() calls.
+    if action == "select":
+        raw_value = value
+        value = _strip_rf_select_prefix(value)
+        if value != raw_value:
+            prefix = raw_value.split(None, 1)[0]
+            logger.info(f"   🔧 RF prefix stripped for {element_id}: '{raw_value}' → '{value}' (prefix='{prefix}')")
+        else:
+            parts = raw_value.split(None, 1)
+            if len(parts) == 2:
+                logger.info(f"   ℹ️  select value for {element_id}: '{value}' (first token '{parts[0]}' not an RF prefix — kept as-is)")
+            else:
+                logger.debug(f"   ℹ️  select value for {element_id}: '{value}' (single token — no prefix possible)")
+
+    # check/uncheck skip the event path entirely — browser-use has no state-aware check event.
+    # Tom Select skips it too: SelectDropdownOptionEvent targets native <select> elements;
+    # the indexed node is the ts-control <input>, so the event always returns (None, None).
+    # Calling get_element_by_index() (a real CDP round-trip) only to get (None, None) from
+    # _dispatch_browser_use_event is wasteful. Playwright's loc.check() / loc.uncheck() are
+    # state-aware; go there directly without any event-path overhead.
+    if action not in ("check", "uncheck") and dropdown_framework != "tom-select":
+        if element_index is not None and browser_session is not None:
+            try:
+                node = await asyncio.wait_for(
+                    browser_session.get_element_by_index(element_index),
+                    timeout=10,
+                )
+                if node is not None:
+                    note, status = await _dispatch_browser_use_event(
+                        browser_session, node, action, value, element_id, performed_actions
+                    )
+                    if note is not None:  # None = fall-through signal; Playwright handles it
+                        if action in ("click", "submit", "select") and status == "auto_ok":
+                            await _wait_for_page_stability(active_page)
+                        return note, status, action, value
+            except Exception as e:
+                logger.warning(f"   AUTO-ACTION event path failed for {element_id}: {e}")
+
+    # Fallback: Playwright layered retry chain (always used for check/uncheck; fallback for others)
+    note, status = await _do_interaction_playwright(
+        active_page, locator_str, action, value, element_id, performed_actions,
+        dropdown_framework=dropdown_framework, select_id=select_id,
+    )
+    if action in ("click", "submit", "select") and status == "auto_ok":
+        await _wait_for_page_stability(active_page)
+    return note, status, action, value
+
+
+def register_custom_actions(agent, page=None, elements=None, workflow_id: str = "") -> bool:
     """
     Register custom actions with browser-use agent.
 
     This function registers the find_unique_locator custom action that allows
     the agent to call deterministic Python code for locator finding and validation.
 
-    The custom action will get the page object from browser_session during execution,
-    ensuring we use the SAME browser that's already open. This is the key strategy:
-    validate locators using the existing browser_use browser (no new instance needed).
-
     Args:
         agent: Browser-use Agent instance
-        page: Optional Playwright page object (used as fallback if browser_session doesn't provide one)
+        page: Unused — kept for API compatibility. The Playwright page is obtained
+              lazily via CDP inside the handler (_ensure_playwright). Do not rely on
+              this parameter.
         elements: Optional list of element specs [{"id": "elem_1", "action": "get_text", ...}].
                   When provided, completion is tracked via a closure dict. Once all expected
                   element IDs have been successfully processed, is_done=True is returned so the
@@ -431,6 +782,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
         from browser_use.tools.service import Tools
         from browser_use.agent.views import ActionResult
         from pydantic import BaseModel, Field
+        from typing import Literal
 
         # Import the action implementation
         from browser_service.agent.actions import find_unique_locator_action
@@ -454,14 +806,134 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
         # The inner action handler updates _completed_elements on each success and sets
         # is_done=True once every expected element ID has been processed, terminating
         # the browser-use agent loop without relying on the LLM to call done().
-        _element_specs: dict = {}  # element_id → action string
+        _element_specs: dict = {}
         if elements:
             for _i, _elem in enumerate(elements):
                 _eid = _elem.get("id", f"elem_unknown_{_i}")
-                _element_specs[_eid] = _elem.get("action", "get_text")
+                _element_specs[_eid] = {
+                    "action": _elem.get("action", "get_text"),
+                    "value": _elem.get("value", "") or "",
+                }
         _expected_element_ids: set = set(_element_specs.keys())
         _total_expected: int = len(_expected_element_ids)
         _completed_elements: dict = {}  # element_id → best_locator (mutated by inner function)
+        _performed_actions: set = set()  # idempotency guard — per register_custom_actions() call = per workflow
+
+        # ========================================
+        # PER-RUN PLAYWRIGHT CACHE (Change A — Day 04)
+        # ========================================
+        # One Playwright connection per agent.run() invocation, opened lazily on the
+        # first find_unique_locator call and reused for every subsequent call in the same
+        # run. Torn down by _teardown_playwright() in the workflow finally block.
+        pw_cache: dict = {"instance": None, "browser": None, "page": None}
+
+        async def _ensure_playwright(bs):
+            """
+            Lazy connect on first call; reuse on subsequent calls within the same run.
+
+            Probe 20 (day-04-preflight) FAILED: session.reconnect() does not recover
+            from BrowserStopEvent teardown (session was already destroyed before the
+            probe could run). Per the spec FAIL path (option a), a stale connection
+            mid-run is treated as fatal — _PlaywrightConnectionError is raised so the
+            agent surfaces the error and downstream pipelines can retry the workflow.
+            """
+            if pw_cache["page"] is not None:
+                # Health-check the cached connection before reusing it.
+                # Primary: browser-use's CDP liveness flag (no round-trip).
+                # Secondary: lightweight CDP round-trip to confirm Playwright side is alive.
+                try:
+                    if bs is not None and not bs.is_cdp_connected:
+                        raise _PlaywrightConnectionError("session.is_cdp_connected is False")
+                    await pw_cache["page"].evaluate("1")  # minimal CDP round-trip
+                except Exception as exc:
+                    logger.warning(f"Stale Playwright connection ({exc}); tearing down.")
+                    # Probe 20 FAIL: reconnect() cannot recover from BrowserStopEvent
+                    # teardown. Surface as fatal rather than attempting reconnect.
+                    try:
+                        if pw_cache["browser"] is not None:
+                            await pw_cache["browser"].close()
+                    except Exception as cleanup_exc:
+                        logger.debug(f"browser.close() failed during stale-connection cleanup: {cleanup_exc}")
+                    try:
+                        if pw_cache["instance"] is not None:
+                            await pw_cache["instance"].stop()
+                    except Exception as cleanup_exc:
+                        logger.debug(f"instance.stop() failed during stale-connection cleanup: {cleanup_exc}")
+                    pw_cache.update({"instance": None, "browser": None, "page": None})
+                    raise _PlaywrightConnectionError(
+                        f"Playwright connection became stale mid-run ({exc}). "
+                        "Probe 20 confirmed reconnect() cannot recover from "
+                        "BrowserStopEvent teardown — surfacing error to agent."
+                    ) from exc
+
+                # Connection is alive. Re-select if the cached page became blank
+                # (e.g. Chrome exposed an empty leading context on connect, or a new
+                # tab was opened and the original page navigated away to about:blank).
+                _cached_url = pw_cache["page"].url
+                if not _cached_url or _cached_url == "about:blank":
+                    _better = _select_best_page(pw_cache["browser"])
+                    if _better is not None:
+                        logger.info(
+                            f"Playwright: re-selected active page "
+                            f"({_cached_url!r} → {_better.url!r})"
+                        )
+                        pw_cache["page"] = _better
+                return pw_cache["page"]
+
+            # Fresh connect (first call this run).
+            from playwright.async_api import async_playwright as _async_playwright
+            cdp_url = _get_cdp_url_from_session(bs)
+            if not cdp_url:
+                raise _PlaywrightConnectionError("No CDP URL on browser_session — cannot connect Playwright")
+            instance = await _async_playwright().start()
+            try:
+                connected = await instance.chromium.connect_over_cdp(cdp_url)
+                # Select the most recently opened non-blank page. Chrome sometimes
+                # exposes an empty leading context before the real tab is ready.
+                page_obj = _select_best_page(connected)
+                if page_obj is None:
+                    # No non-blank page yet — fall back to first available page or fail.
+                    contexts = connected.contexts
+                    if not contexts or not contexts[0].pages:
+                        raise _PlaywrightConnectionError(
+                            f"CDP browser has no usable page "
+                            f"(contexts={len(contexts)}, "
+                            f"pages={len(contexts[0].pages) if contexts else 0})"
+                        )
+                    page_obj = contexts[0].pages[0]
+                    logger.warning(
+                        f"No non-blank page found; using contexts[0].pages[0] "
+                        f"({page_obj.url!r})"
+                    )
+                try:
+                    await page_obj.wait_for_load_state("domcontentloaded", timeout=5000)
+                except Exception as e:
+                    logger.warning(f"wait_for_load_state: {e}")
+            except Exception:
+                # connect_over_cdp (or page retrieval) failed — stop the instance we
+                # already started so it doesn't leak, then re-raise to the caller.
+                try:
+                    await instance.stop()
+                except Exception:
+                    pass
+                raise
+            pw_cache.update({"instance": instance, "browser": connected, "page": page_obj})
+            logger.info("✅ Playwright connected (lazy, once-per-run)")
+            return page_obj
+
+        async def _teardown_playwright():
+            """Called from the workflow finally block when agent.run() returns."""
+            try:
+                if pw_cache["browser"] is not None:
+                    await pw_cache["browser"].close()
+            except Exception as e:
+                logger.debug(f"Playwright browser close during teardown: {e}")
+            try:
+                if pw_cache["instance"] is not None:
+                    await pw_cache["instance"].stop()
+            except Exception as e:
+                logger.debug(f"Playwright instance stop during teardown: {e}")
+            pw_cache.update({"instance": None, "browser": None, "page": None})
 
         # Define parameter model for find_unique_locator action
         class FindUniqueLocatorParams(BaseModel):
@@ -485,6 +957,48 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
             is_collection: Optional[bool] = Field(
                 default=None,
                 description="Set to true if this element represents a COLLECTION (e.g., table rows, list items). When true, returns multi-element locator instead of single-element locator."
+            )
+            # Vision-derived classification piggybacked on the per-step LLM
+            # call. The locator pipeline corroborates this against a live
+            # Playwright DOM probe before committing to a specialized
+            # handler — the hint is one of two required sources of truth,
+            # never unilateral. See docs/ELEMENT_TYPE_CLASSIFIER_ARCHITECTURE.md.
+            element_type: Optional[Literal[
+                "dropdown", "checkbox", "radio", "input", "button",
+                "link", "image", "label", "text-area", "table", "other",
+            ]] = Field(
+                default=None,
+                description=(
+                    "Based on what you SEE in the screenshot at these "
+                    "coordinates, which UI control type is this? Pick the "
+                    "best match from the listed values. Only set this when "
+                    "you are confident from visual inspection — leave blank "
+                    "if uncertain. The deterministic locator code uses this "
+                    "to route to a specialized handler."
+                )
+            )
+            framework_hint: Optional[Literal[
+                # Dropdown frameworks
+                "tom-select", "select2", "kendo", "react-select",
+                "vue-select", "ant-design", "material-ui",
+                # Table / grid frameworks
+                "datatables", "ag-grid", "material-table", "react-table",
+                # Generic — visible widget looks like a plain HTML control
+                "native",
+                # Vision sees a custom widget that doesn't match any of the above
+                "other",
+            ]] = Field(
+                default=None,
+                description=(
+                    "If the visible widget matches a known UI framework's "
+                    "appearance, name it. Applies to any specialized type "
+                    "(dropdown, checkbox, radio, table, etc.) — examples: "
+                    "Tom Select's pill-shaped tag input, Select2's caret, "
+                    "Material-UI's floating-label inputs, DataTables' "
+                    "search/pagination chrome, AG-Grid's cell editors. "
+                    "Pick 'native' for plain HTML controls without a "
+                    "framework wrapper. Leave blank if uncertain."
+                )
             )
 
         # Get or create Tools instance from agent
@@ -672,6 +1186,16 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             )
 
                             if dom_node is not None:
+                                try:
+                                    stable_hash = dom_node.compute_stable_hash()
+                                except Exception as e:
+                                    logger.debug(f"   ⚠️ compute_stable_hash failed: {e}")
+                                else:
+                                    logger.info(
+                                        f"📊 LOCATOR_PROBE workflow_id={workflow_id or 'unknown'} "
+                                        f"stable_hash={stable_hash} "
+                                        f"element_id={params.element_id}"
+                                    )
                                 logger.info(f"   ✅ Found element [{idx}] at coordinates!")
                                 elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
                                 logger.info(f"   📝 Element tag: <{elem_tag}>")
@@ -728,144 +1252,8 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
 
 
 
-                # IMPORTANT: browser-use now uses CDP (Chrome DevTools Protocol) instead of Playwright.
-                # Each custom action call creates a fresh Playwright connection and destroys it
-                # after use. This ensures isolation between concurrent tasks — no shared state.
-
-                active_page = None
-                playwright_instance = None
-                connected_browser = None
-                created_new_instance = False
-
-                try:
-                    logger.info("🔍 Attempting to retrieve page from browser_session via CDP...")
-                    logger.info(f"   browser_session type: {type(browser_session)}")
-
-                    # ════════════════════════════════════════════════════════════════════
-                    # GET CDP URL (using consolidated helper function)
-                    # ════════════════════════════════════════════════════════════════════
-                    cdp_url = _get_cdp_url_from_session(browser_session)
-
-                    # ════════════════════════════════════════════════════════════════════
-                    # CONNECT PLAYWRIGHT VIA CDP (per-call, no module-level cache)
-                    # ════════════════════════════════════════════════════════════════════
-                    if cdp_url:
-                        try:
-                            from playwright.async_api import async_playwright
-
-                            logger.info("🔌 Connecting Playwright to browser-use's browser via CDP...")
-                            playwright_instance = await async_playwright().start()
-                            connected_browser = await playwright_instance.chromium.connect_over_cdp(cdp_url)
-                            created_new_instance = True
-                            logger.info("✅ Playwright connected via CDP (per-call instance)")
-
-                        except Exception as e:
-                            logger.error(f"❌ Failed to connect Playwright via CDP: {e}")
-                            import traceback
-                            logger.debug(traceback.format_exc())
-                    else:
-                        # Log available attributes for debugging when CDP URL not found
-                        logger.info(f"   browser_session attributes: {[attr for attr in dir(browser_session) if not attr.startswith('_')][:20]}")
-
-                    # ════════════════════════════════════════════════════════════════════
-                    # GET ACTIVE PAGE (using consolidated helper function)
-                    # ════════════════════════════════════════════════════════════════════
-                    active_page = await _get_active_page_from_browser(
-                        connected_browser=connected_browser,
-                        browser_session=browser_session,
-                        fallback_page=page,
-                        created_new_instance=created_new_instance
-                    )
-
-                except Exception as e:
-                    logger.error(f"❌ Error getting page from browser_session: {e}", exc_info=True)
-                    active_page = page  # Use the page passed during registration as fallback
-                    if active_page:
-                        logger.info(f"   Fallback page type: {type(active_page)}")
-
-
-                # Unwrap browser-use Page wrapper to get actual Playwright page
-                if active_page and not hasattr(active_page, 'locator'):
-                    logger.warning(f"⚠️ Page object is a browser-use wrapper: {type(active_page)}")
-                    logger.info("   Attempting to unwrap to get Playwright page...")
-
-                    # browser-use wraps the Playwright page in browser_use.actor.page.Page
-                    # Try multiple strategies to get the underlying Playwright page
-                    playwright_page = None
-
-                    # Strategy 1: Check for .page attribute
-                    if hasattr(active_page, 'page') and active_page.page is not None:
-                        playwright_page = active_page.page
-                        logger.info("✅ Unwrapped page from wrapper.page")
-
-                    # Strategy 2: Check for ._page attribute
-                    elif hasattr(active_page, '_page') and active_page._page is not None:
-                        playwright_page = active_page._page
-                        logger.info("✅ Unwrapped page from wrapper._page")
-
-                    # Strategy 3: Check for ._client attribute (CDP client)
-                    elif hasattr(active_page, '_client') and active_page._client is not None:
-                        # _client might be the CDP client, try to get page from it
-                        client = active_page._client
-                        if hasattr(client, 'page') and client.page is not None:
-                            playwright_page = client.page
-                            logger.info("✅ Unwrapped page from wrapper._client.page")
-                        else:
-                            logger.warning("   _client exists but has no page attribute")
-
-                    # Strategy 4: Check for ._browser_session attribute
-                    elif hasattr(active_page, '_browser_session') and active_page._browser_session is not None:
-                        # Try to get page from the browser session
-                        session = active_page._browser_session
-                        if hasattr(session, 'page') and session.page is not None:
-                            playwright_page = session.page
-                            logger.info("✅ Unwrapped page from wrapper._browser_session.page")
-                        elif hasattr(session, 'get_current_page'):
-                            try:
-                                playwright_page = await session.get_current_page()
-                                logger.info("✅ Unwrapped page from wrapper._browser_session.get_current_page()")
-                            except Exception as e:
-                                logger.warning(f"   Failed to get page from _browser_session: {e}")
-
-                    # Strategy 5: Use the wrapper directly if it has evaluate method
-                    # browser-use Page wrapper might proxy Playwright methods
-                    elif hasattr(active_page, 'evaluate'):
-                        logger.info("⚠️ Using browser-use Page wrapper directly (has evaluate method)")
-                        logger.info("   This wrapper might proxy Playwright methods")
-                        playwright_page = active_page  # Use wrapper as-is
-
-                    if playwright_page:
-                        logger.info(f"   Playwright page type: {type(playwright_page)}")
-                        active_page = playwright_page
-                    else:
-                        logger.error("❌ Could not unwrap browser-use Page wrapper!")
-                        logger.error(f"   Wrapper attributes: {[attr for attr in dir(active_page) if not attr.startswith('__')][:20]}")
-                        active_page = None
-
-                # Final verification: ensure we have a page with required methods
-                if active_page:
-                    required_methods = ['locator', 'evaluate', 'evaluate_handle']
-                    missing_methods = [m for m in required_methods if not hasattr(active_page, m)]
-
-                    if missing_methods:
-                        logger.error(f"❌ Page object is missing required methods: {missing_methods}")
-                        logger.error(f"   Type: {type(active_page)}")
-                        logger.error(f"   Available methods: {[attr for attr in dir(active_page) if not attr.startswith('_')][:30]}")
-                        active_page = None
-                    else:
-                        logger.info(f"✅ Page object has all required methods: {required_methods}")
-                        logger.info(f"   Page type: {type(active_page)}")
-                        
-                        # CRITICAL: Test page connectivity by running a simple evaluation
-                        # This detects stale connections where the CDP page is no longer responsive
-                        try:
-                            test_result = await active_page.evaluate("() => document.body ? 'connected' : null")
-                            if test_result != 'connected':
-                                logger.warning("⚠️ Page connectivity test returned unexpected result, may be stale")
-                        except Exception as connectivity_err:
-                            logger.error(f"❌ Page connectivity test FAILED: {connectivity_err}")
-                            logger.info("🔄 Stale connection detected, falling back...")
-                            active_page = page  # Fall back to the page passed during registration
+                # Lazy connect: one Playwright connection per agent.run(), reused across all calls.
+                active_page = await _ensure_playwright(browser_session)
 
                 try:
                     final_x, final_y = scaled_x, scaled_y
@@ -881,8 +1269,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     # ========================================
                     iframe_context = None
                     if selector_map:
-                        # Note: _iframe_id unpacked but unused (only iframe_context needed for locator)
-                        iframe_context, _iframe_id = _detect_iframe_context(
+                        iframe_context, _ = _detect_iframe_context(
                             selector_map, (final_x, final_y)
                         )
                         if iframe_context:
@@ -952,7 +1339,10 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             element_data=element_data_from_index,  # Pass element attributes from DOM
                             page=active_page,
                             iframe_context=iframe_context,  # Pass iframe context if detected
-                            is_collection=params.is_collection  # Pass collection flag for multi-element detection
+                            is_collection=params.is_collection,  # Pass collection flag for multi-element detection
+                            browser_session=browser_session,  # For resolved_node lookup (DELTA 1)
+                            vision_type_hint=params.element_type,  # LLM's visual type classification (1 of 2 sources)
+                            vision_framework_hint=params.framework_hint,  # LLM's framework guess (any specialized type)
                         ),
                         timeout=custom_action_timeout
                     )
@@ -1005,11 +1395,76 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         and set(_completed_elements.keys()) >= _expected_element_ids
                     )
 
-                    # Success messages intentionally do NOT prescribe "move to next" —
-                    # that would cause the LLM to skip the element's interactive action
-                    # (click/input/submit) needed to advance the page. SEQUENTIAL_PROCESSING_RULES
-                    # in the workflow prompt owns the per-element action flow. We only assert the
-                    # locator is final (cost guard against re-finding the same locator).
+                    # Reached only on locator-find success — best_locator is non-None by construction here.
+                    # Unpack 4-tuple — action and value come from _do_interaction directly so this block
+                    # never needs to re-read _element_specs. Single source of truth for action/value.
+                    interaction_note, interaction_status, _action, _value = await _do_interaction(
+                        browser_session, active_page, best_locator, params.element_id, params.element_index,
+                        _element_specs, _performed_actions,
+                        dropdown_framework=result.get("dropdown_framework") or "",
+                        select_id=result.get("select_id") or None,
+                    )
+                    result["interaction_status"] = interaction_status
+                    _idx = params.element_index
+
+                    # Build display_note for the success message.
+                    # On auto_failed with element_index: name the exact browser-use native action + index.
+                    # On auto_failed without element_index: provide the validated locator.
+                    # On success/not_applicable: pass interaction_note through unchanged.
+                    if interaction_status == "auto_failed":
+                        if _action in ("click", "submit"):
+                            if _idx is not None:
+                                display_note = (
+                                    f"\n⚠️ Automated click failed — all strategies exhausted. "
+                                    f"FALLBACK REQUIRED: Call click_element(index={_idx}). "
+                                    f"After clicking, wait for page updates — this may navigate to a new page."
+                                )
+                            else:
+                                display_note = (
+                                    f"\n⚠️ Automated click failed — all strategies exhausted. "
+                                    f"Validated locator: {best_locator} | Action required: click. "
+                                    f"Assess the current page state and use any available browser-use action "
+                                    f"to complete this click. If no available action can complete it, proceed "
+                                    f"to the next element — Robot Framework will handle it at execution time."
+                                )
+                        elif _action in ("input", "type"):
+                            if _idx is not None:
+                                display_note = (
+                                    f"\n⚠️ Automated input failed — all strategies exhausted. "
+                                    f'FALLBACK REQUIRED: Call input_text(index={_idx}, text="{_value}").'
+                                )
+                            else:
+                                display_note = (
+                                    f"\n⚠️ Automated input failed — all strategies exhausted. "
+                                    f'Validated locator: {best_locator} | Action required: input "{_value}". '
+                                    f"Assess the current page state and use any available browser-use action "
+                                    f"to type this value. If no available action can complete it, proceed "
+                                    f"to the next element — Robot Framework will handle it at execution time."
+                                )
+                        elif _action == "select":
+                            if _idx is not None:
+                                display_note = (
+                                    f"\n⚠️ Automated select failed — all strategies exhausted. "
+                                    f'FALLBACK REQUIRED: Call select_dropdown_option(index={_idx}, text="{_value}").'
+                                )
+                            else:
+                                display_note = (
+                                    f"\n⚠️ Automated select failed — all strategies exhausted. "
+                                    f'Validated locator: {best_locator} | Action required: select "{_value}". '
+                                    f"Assess the current page state and use any available browser-use action "
+                                    f"to select this option. If no available action can complete it, proceed "
+                                    f"to the next element — Robot Framework will handle it at execution time."
+                                )
+                        else:
+                            display_note = (
+                                "\n⚠️ Automated interaction failed — all strategies exhausted. "
+                                "Locator is valid. Proceed to the next element."
+                            )
+                    else:
+                        display_note = interaction_note  # ✅ message, empty string, or "not_applicable"
+
+                    # Interactions are now performed inside _do_interaction (see Change C above).
+                    # SEQUENTIAL_PROCESSING_RULES no longer owns interaction execution.
                     if all_elements_done:
                         elements_found_json = json.dumps(
                             [
@@ -1021,8 +1476,8 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         success_msg = (
                             f"✅ LOCATOR VALIDATED BY PLAYWRIGHT\n"
                             f"Element: {params.element_id}\n"
-                            f"Locator: {best_locator}\n"
-                            f"Status: FINAL — do not call find_unique_locator again for this element.\n"
+                            f"Locator: {best_locator}"
+                            f"{display_note}\n"
                             f"All {_total_expected} locators found. "
                             f'Call done() with: {{"elements_found": {elements_found_json}}}'
                         )
@@ -1030,10 +1485,9 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         success_msg = (
                             f"✅ LOCATOR VALIDATED BY PLAYWRIGHT\n"
                             f"Element: {params.element_id}\n"
-                            f"Locator: {best_locator}\n"
-                            f"Status: FINAL — do not call find_unique_locator again for this element.\n"
-                            f"Next step: perform this element's action (input/click/submit) as specified "
-                            f"in SEQUENTIAL_PROCESSING_RULES if interactive, otherwise proceed to the next element."
+                            f"Locator: {best_locator}"
+                            f"{display_note}\n"
+                            f"Proceed to the next element."
                         )
                     # Keep long_term_memory minimal — it persists across every subsequent agent
                     # step. Embedding action guidance here would bias future decisions.
@@ -1107,31 +1561,24 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
 
                 return action_result
 
+            except _PlaywrightConnectionError as e:
+                # _PlaywrightConnectionError from _ensure_playwright means the browser
+                # connection is dead (stale CDP or failed fresh connect). Surface as
+                # is_done=True so the agent stops immediately rather than burning steps
+                # retrying against a permanently unavailable browser.
+                error_msg = f"Error in find_unique_locator custom action: {str(e)}"
+                logger.error(f"❌ {error_msg}", exc_info=True)
+                return ActionResult(error=error_msg, is_done=True)
             except Exception as e:
                 error_msg = f"Error in find_unique_locator custom action: {str(e)}"
                 logger.error(f"❌ {error_msg}", exc_info=True)
                 return ActionResult(error=error_msg)
 
-            finally:
-                # Always clean up the per-call Playwright connection.
-                # Consolidated into a single finally block so cleanup is guaranteed
-                # regardless of how the try block exits (return, exception, timeout).
-                if connected_browser:
-                    try:
-                        logger.info("🧹 Closing per-call Playwright CDP connection...")
-                        await connected_browser.close()
-                    except Exception as e:
-                        logger.warning(f"⚠️ Error closing Playwright browser: {e}")
-
-                if playwright_instance:
-                    try:
-                        logger.info("🧹 Stopping per-call Playwright instance...")
-                        await playwright_instance.stop()
-                    except Exception as e:
-                        logger.warning(f"⚠️ Error stopping Playwright instance: {e}")
+        # Expose teardown so the workflow finally block can close the shared connection.
+        agent._pw_teardown = _teardown_playwright
 
         logger.info("✅ Custom action 'find_unique_locator' registered successfully")
-        logger.info("   Agent can now call: find_unique_locator(x, y, element_id, element_description, candidate_locator)")
+        logger.info("   Agent can now call: find_unique_locator(x, y, element_id, element_description, expected_text, candidate_locator, element_index, is_collection)")
         return True
 
     except Exception as e:

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Adversarial — Shadow DOM-encapsulated dropdown</title>
+</head>
+<body>
+  <h1>Web Component dropdown</h1>
+  <p>The dropdown trigger lives inside a Web Component's shadow root.
+  DOM-only strategies (Tier 0/1) cannot pierce the shadow boundary by default.
+  Phase 2.4 vision-assist is required to classify and locate this control;
+  for now it must fall through cleanly to the generic 21-strategy with
+  classifier confidence "low".</p>
+
+  <fancy-dropdown id="company-picker" data-label="Company"></fancy-dropdown>
+
+  <script>
+    class FancyDropdown extends HTMLElement {
+      constructor() {
+        super();
+        const root = this.attachShadow({ mode: "open" });
+        root.innerHTML = `
+          <style>
+            .trigger { display: inline-flex; align-items: center; gap: 8px;
+                       border: 1px solid #ccc; padding: 6px 12px; min-width: 220px;
+                       cursor: pointer; border-radius: 4px; background: #fff; }
+            .trigger::after { content: "▾"; margin-left: auto; color: #666; }
+          </style>
+          <div role="combobox" aria-haspopup="listbox" aria-expanded="false"
+               tabindex="0" class="trigger">
+            <span>Select a company</span>
+          </div>
+        `;
+      }
+    }
+    customElements.define("fancy-dropdown", FancyDropdown);
+  </script>
+</body>
+</html>

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Bug 2 — Create menu nav-item</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 0; }
+    .navbar { display: flex; gap: 1rem; padding: 0.75rem 1rem; background: #1d2939; color: #fff; }
+    .nav-item { padding: 0.4rem 0.6rem; cursor: pointer; }
+    .nav-item:hover { background: #344054; }
+    .dropdown-menu { display: none; position: absolute; background: #fff; color: #111; border: 1px solid #ccc;
+                     padding: 4px 0; min-width: 180px; }
+    .nav-item:hover .dropdown-menu { display: block; }
+    .nav-link { display: block; padding: 6px 12px; text-decoration: none; color: inherit; }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-item">Dashboard</div>
+    <div class="nav-item">
+      Create
+      <div class="dropdown-menu">
+        <a class="nav-link" href="/customer/create">Customer</a>
+        <a class="nav-link" href="/reseller/create">Reseller</a>
+        <a class="nav-link" href="/origination/create">Origination</a>
+      </div>
+    </div>
+    <div class="nav-item">Reports</div>
+  </nav>
+  <main style="padding:2rem;">
+    <p>Bug 2 fixture: clicking the "Customer" entry must produce a text-anchored
+    locator (e.g. <code>text=Customer</code>) — never the parent <code>.nav-item</code>
+    container.</p>
+  </main>
+</body>
+</html>

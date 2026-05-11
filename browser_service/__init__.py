@@ -21,7 +21,7 @@ Usage:
     # Import specific components
     from browser_service.config import BrowserServiceConfig, BatchConfig, LocatorConfig, LLMConfig
     from browser_service.browser import BrowserSessionManager, cleanup_browser_resources
-    from browser_service.locators import generate_locators_from_attributes, validate_locator_playwright
+    from browser_service.locators import validate_locator_playwright
     from browser_service.prompts import build_workflow_prompt, build_system_prompt
     from browser_service.agent import find_unique_locator_action, register_custom_actions
     from browser_service.tasks import process_workflow_task, TaskProcessor

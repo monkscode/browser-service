@@ -254,8 +254,9 @@ PARAMETERS:
     ⚠️ This MUST match the description from the list (e.g., "all visible rows in the table body")
     ⚠️ DO NOT rewrite or simplify the description - it's used for collection detection!
     ⚠️ Preserve keywords like "all", "rows", "cells", "items", "each" - these are CRITICAL!
-  • expected_text (str, optional but HIGHLY RECOMMENDED): The ACTUAL visible text you see on the element.
-    This is CRITICAL for validation - we use it to verify we found the RIGHT element.
+  • expected_text (str, optional): The ACTUAL visible text you see on the element.
+    ⚠️ PROVIDE THIS whenever the element has visible text, a label, or a placeholder.
+    Only omit for icon-only elements that have absolutely no visible text or label.
     Examples: "Submit", "Add to Cart", "Nike Air Max 270", "Search"
     ⚠️ For buttons/links: Use the exact button/link text you see
     ⚠️ For inputs: Use the placeholder or label text if visible
@@ -337,8 +338,8 @@ CRITICAL INSTRUCTIONS
 
 ✓ MUST call find_unique_locator for EVERY element in the list
 ✓ MUST provide accurate coordinates (x, y) from your vision
-✓ MUST provide expected_text - the ACTUAL visible text you see on the element
-  (This is CRITICAL - it prevents finding the wrong element!)
+✓ MUST provide expected_text when the element has visible text, a label, or a placeholder
+  (This is CRITICAL — it prevents finding the wrong element! Omit only for icon-only elements.)
 ✓ SHOULD provide candidate_locator if you can identify id, data-testid, or name
 ✓ MUST NOT validate locators yourself - the action does this
 ✓ MUST NOT execute JavaScript to check uniqueness - the action does this
@@ -370,25 +371,48 @@ Process elements IN THE ORDER THEY ARE LISTED. For each element:
 1. Find the element using your vision
 2. Get element coordinates (x, y)
 3. Call find_unique_locator to extract and validate the locator
-4. Based on the element's action field, decide what to do next:
+4. find_unique_locator performs the interaction automatically — check the result:
 
-   ACTION BEHAVIORS:
-   • action='input': Type the VALUE shown in the element spec into the field, then press Enter
-     ⚠️ CRITICAL: Use the EXACT 'value' from ELEMENTS TO FIND (e.g., "bob@example.com", "password123")
-     ⚠️ DO NOT use test credentials like "test@example.com" or "password" - use the PROVIDED value!
-     ⚠️ The user specified these values in their query - you MUST use them exactly!
-   • action='click': Click the element, wait for page updates
-   • action='submit': Click the element (submits form), wait for page updates
-   • action='get_text', 'get_attribute', or any other: Just store the locator (no interaction)
-   • action is missing/null: Just store the locator (no interaction)
+   ACTION BEHAVIORS — interactions are performed automatically by find_unique_locator:
+   • input/type: auto-filled using layered strategies (fill → key events → JS). "✅" = succeeded.
+   • click/submit: auto-clicked using layered strategies (click → force → JS). Page stability
+     is awaited automatically after click/submit/select — multi-page flows are handled. "✅" = succeeded.
+   • check: checkbox/radio checked using state-aware Playwright loc.check() — only acts if not
+     already checked. "✅" = succeeded.
+   • uncheck: checkbox unchecked using state-aware Playwright loc.uncheck() — only acts if
+     currently checked. "✅" = succeeded.
+   • select: auto-selected using framework-aware layered strategies. Tom Select: JS API via
+     select_id (getElementById) → JS sibling traversal → click-to-open. All others: native label
+     → native value → click-to-open. Handles <select>, ARIA, Tom Select, Select2, Bootstrap.
+     "✅" = succeeded.
+   • get_text/get_attribute/other: locator stored only, no interaction performed.
+
+   If "⚠️ Automated ... failed" with "FALLBACK REQUIRED: Call ...":
+     An element index is available. Execute the specified browser-use native action BEFORE
+     proceeding to the next element:
+     • click_element(index=N)                        — for click/submit fallback
+     • input_text(index=N, text="...")               — for input/type fallback
+     • select_dropdown_option(index=N, text="...")   — for select fallback
+     After the fallback action completes (success or failure), proceed to the next element.
+     Do NOT call find_unique_locator again for this element.
+
+   If "⚠️ Automated ... failed" with "Validated locator: ... | Action required: ...":
+     No element index is available (table row, dynamic DOM, non-interactive element).
+     The validated locator is provided — use it to understand which element needs the action.
+     Assess the current page state and use any available browser-use action to complete the
+     interaction. Do NOT attempt to find or guess an index — it may not exist in the DOM.
+     If no available action can complete it, proceed to the next element —
+     Robot Framework will handle the interaction at execution time.
 
 5. Move to the NEXT element in the list
 
 ⚠️ IMPORTANT:
   • Process elements sequentially in the order given
-  • Interactive actions (input/click/submit) may change the page
+  • DO NOT re-perform actions that already show "✅". Call find_unique_locator ONE ELEMENT AT A TIME.
+  • Always provide element_index — without it the browser-use event path is skipped
+    (TypeTextEvent provides concatenation-detection for reactive inputs; ClickElementEvent
+    uses CDP coordinates for reliable click targeting).
   • Subsequent elements will be found on whatever page is currently displayed
-  • Wait for page loads/updates after interactive actions before moving to next element
   • The Step Planner has already ordered elements correctly for the workflow
 """
 

@@ -20,14 +20,10 @@ MIN_TEXT_LENGTH = 2  # Minimum text length to use for text-based locators
 MAX_TEXT_DISPLAY_LENGTH = 50  # Maximum text length to display in logs (for actual text)
 MAX_TEXT_CONTENT_LENGTH = 100  # Maximum text content to extract from elements
 
-# Text comparison thresholds  
-INNER_TEXT_PREFERENCE_THRESHOLD = 1.0  # Use inner_text if shorter (more relevant); 1.0 = always prefer if shorter
-
 # Checkbox label matching
 MAX_CHECKBOX_LABEL_LENGTH = 30  # Maximum label length for checkbox/radio detection heuristic
 
 # Locator priorities (lower = better)
-PRIORITY_CANDIDATE = 0  # Agent-provided candidate locators
 PRIORITY_ID = 1  # Native ID attribute
 PRIORITY_TEST_ID = 2  # data-testid, data-test, data-qa
 PRIORITY_NAME = 3  # name attribute
@@ -52,7 +48,8 @@ DROPDOWN_CSS_PATTERNS = [
     'k-multiselect', 'k-dropdown', 'k-combobox',  # Kendo UI
     'select2', 'chosen',  # jQuery plugins
     'MuiSelect', 'MuiAutocomplete',  # Material-UI
-    'react-select', 'ng-select'  # React/Angular
+    'react-select', 'ng-select',  # React/Angular
+    'ts-wrapper', 'ts-control',  # Tom Select
 ]
 
 DROPDOWN_KEYWORDS = ['dropdown', 'select', 'combobox', 'multiselect', 'picker', 'chooser']
@@ -389,619 +386,186 @@ SHADOW_DOM_ELEMENT_DATA_JS = f"""
 """
 
 
-async def _validate_semantic_match(page, locator: str, expected_text: str) -> tuple[bool, str]:
+async def validate_semantic_match(
+    node=None,
+    expected_text: Optional[str] = None,
+    *,
+    page=None,
+    locator: Optional[str] = None,
+) -> tuple[bool, str]:
     """
-    Validate that the element found by the locator contains the expected text.
-    
-    This is the KEY validation that prevents "unique but wrong element" bugs.
-    We check if the actual element text contains the expected text (case-insensitive).
-    
-    Args:
-        page: Playwright page object
-        locator: The locator string to validate
-        expected_text: The text AI expects to see on the element
-        
-    Returns:
-        Tuple of (is_match: bool, actual_text: str)
-        - is_match: True if expected_text is found in actual text (case-insensitive)
-        - actual_text: The actual text content of the element
+    Semantic validation that the matched element is the one the user meant.
+
+    Primary path (node is not None): read the canonical "what the LLM saw for this node"
+    surface that browser-use 0.12.6 pre-populates on every selector_map entry.
+    Probe 16 confirmed this distinguishes target from a wrong-sibling for text-bearing
+    buttons, bare inputs, and icon-/aria-only elements — zero CDP round-trips.
+
+    Fallback path (page + locator): count check then evaluate() on the located element.
+    Returns (False, ...) immediately when count != 1; otherwise one evaluate() call (~2ms,
+    probe 05 pattern). Works with both Playwright Page and FrameLocator callers.
+
+    Anonymous-element behaviour: when expected_text is absent, accept only if the
+    haystack is also empty (truly anonymous element — nothing semantic to compare).
+    When expected_text IS provided, a match is required regardless of element type;
+    nameless icon buttons are accepted only when no expected_text is supplied by the
+    caller, so the caller must omit expected_text for icon-only elements rather than
+    relying on a blanket carve-out that would accept any interactive element for
+    arbitrary text queries.
+
+    Returns (is_match, observed_text).
     """
-    if not expected_text:
-        return True, ""  # No expected text means no validation needed
-    
-    try:
-        element = page.locator(locator)
-        count = await element.count()
-        
-        if count != 1:
-            return False, f"[Element count={count}, expected 1]"
-        
-        # Get the actual text content
-        actual_text = await element.text_content() or ""
-        actual_text = actual_text.strip()
-        
-        # Also try inner_text which may be more accurate for visible text
+    haystack = ""
+    observed_text = ""
+    _haystack_has_content = False  # True when at least one part is non-empty
+    _primary_text_len = 0          # Full text length for container ratio check
+    _haystack_parts_list: list = []  # Individual fields for per-field word matching
+
+    if node is not None:
+        # Primary path — zero CDP round-trips. Read pre-computed attrs.
+        ax = getattr(node, "ax_node", None)
+        ax_name = (
+            getattr(getattr(ax, "name", None), "value", getattr(ax, "name", ""))
+            or ""
+        )
+        meaningful = ""
         try:
-            inner_text = await element.inner_text() or ""
-            inner_text = inner_text.strip()
-            # Use inner_text if it's shorter (usually more relevant)
-            if inner_text and len(inner_text) < len(actual_text) * INNER_TEXT_PREFERENCE_THRESHOLD:
-                actual_text = inner_text
+            meaningful = node.get_meaningful_text_for_llm() or ""
         except Exception:
             pass
+        attrs = node.attributes or {}
+        haystack_parts = [
+            ax_name,
+            meaningful,
+            attrs.get("placeholder", ""),
+            attrs.get("aria-label", ""),
+            attrs.get("value", ""),
+            (getattr(node, "node_value", None) or ""),
+        ]
+        _haystack_has_content = any(str(p).strip() for p in haystack_parts)
+        haystack = " | ".join(str(p) for p in haystack_parts).lower()
+        observed_text = (meaningful or ax_name).strip()
+        _primary_text_len = len(meaningful)
+        _haystack_parts_list = [str(p).lower() for p in haystack_parts]
 
-        # Reject container/wrapper elements: if the element's text is vastly longer than
-        # the expected text, it is a parent container (e.g. #page-container whose text_content
-        # includes the full page) rather than the specific target element.
-        # 40x is the ratio floor; 500 chars is the absolute floor so short expected text
-        # (e.g. "OK", "A") does not falsely reject legitimate rows / menu items.
-        normalized_expected_text = expected_text.strip() if expected_text else ""
-        if normalized_expected_text:
-            container_text_threshold = max(len(normalized_expected_text) * 40, 500)
-            if len(actual_text) > container_text_threshold:
-                ratio = len(actual_text) / len(normalized_expected_text)
-                logger.warning(
-                    "   ⚠️ Semantic match REJECTED: element text (%d chars) "
-                    "is %.1fx longer than expected text (%d chars) "
-                    "— likely a container element, not the target",
-                    len(actual_text), ratio, len(normalized_expected_text),
-                )
-                # Truncate returned text so downstream loggers (which emit actual_text
-                # verbatim) cannot dump multi-megabyte container payloads into log files.
-                return False, actual_text[:MAX_TEXT_DISPLAY_LENGTH]
-
-        # Check for placeholder/value for inputs
+    elif page is not None and locator:
+        # Legacy fallback — one evaluate() on the located element.
+        # page.locator() works with both Playwright Page and FrameLocator.
         try:
-            tag = await element.evaluate("el => el.tagName.toLowerCase()")
-            if tag == 'input':
-                placeholder = await element.get_attribute('placeholder') or ""
-                value = await element.get_attribute('value') or ""
-                # For inputs, check placeholder or value as well
-                if placeholder and expected_text.lower() in placeholder.lower():
-                    return True, placeholder
-                if value and expected_text.lower() in value.lower():
-                    return True, value
-        except Exception:
-            pass
-        
-        # Case-insensitive substring match
-        expected_lower = expected_text.lower().strip()
-        actual_lower = actual_text.lower()
-        
-        is_match = expected_lower in actual_lower
-        
-        if is_match:
-            logger.info(f"   ✅ Semantic match: expected '{expected_text}' found in '{actual_text[:MAX_TEXT_DISPLAY_LENGTH]}...'")
-        else:
-            logger.warning(f"   ❌ Semantic MISMATCH: expected '{expected_text}', got '{actual_text[:MAX_TEXT_CONTENT_LENGTH]}'")
-        
-        return is_match, actual_text
-        
-    except Exception as e:
-        logger.warning(f"   ⚠️ Semantic validation error: {e}")
-        return False, f"[Error: {e}]"
+            el = page.locator(locator)
+            count = await el.count()
+            if count != 1:
+                return False, f"[Element count={count}, expected 1]"
+            info = await el.evaluate(
+                """el => {
+                    const tc = (el.textContent || '').trim();
+                    return {
+                        textContent: tc.slice(0, 500),
+                        textContentLength: tc.length,
+                        innerText: (el.innerText || '').trim().slice(0, 500),
+                        placeholder: el.getAttribute('placeholder') || '',
+                        ariaLabel: el.getAttribute('aria-label') || '',
+                        value: el.value || ''
+                    };
+                }"""
+            )
+            parts = [
+                info.get("textContent", ""),
+                info.get("innerText", ""),
+                info.get("placeholder", ""),
+                info.get("ariaLabel", ""),
+                info.get("value", ""),
+            ]
+            _haystack_has_content = any(p.strip() for p in parts)
+            haystack = " | ".join(parts).lower()
+            observed_text = (
+                info.get("innerText")
+                or info.get("textContent")
+                or info.get("ariaLabel")
+                or ""
+            ).strip()
+            _primary_text_len = info.get("textContentLength", len(info.get("textContent", "")))
+            _haystack_parts_list = [p.lower() for p in parts]
+        except Exception as e:
+            logger.warning(f"   ⚠️ Semantic validation error: {e}")
+            return False, f"[Error: {e}]"
+
+    needle = (expected_text or "").strip().lower()
+    if not needle:
+        # Short-circuit removed. Accept only when haystack is also empty
+        # (truly anonymous element — nothing semantic to compare against).
+        return (not _haystack_has_content, observed_text)
+
+    # Probe 18 carve-out: SVG-only buttons and CDP fallback nodes have no accessible
+    # text surface through no fault of the locator strategy. Rejecting them would silently
+    # break delete/edit icon buttons on admin dashboards (demoqa.com/webtables pattern).
+    # When the haystack is empty AND the tag is interactive, accept the match.
+    # Non-interactive tags (div, span, p) are not carved out — they are more likely to
+    # be container false positives and have no interactive affordance to justify this.
+    # NOTE: the fast path in find_unique_locator_at_coordinates gates on
+    # `children_nodes is not None` to prevent this from firing on CDP fallback nodes in
+    # the general locator loop — the carve-out is intentional only for confirmed locators.
+    if not _haystack_has_content and node is not None:
+        _tag = (
+            getattr(node, "tag_name", None)
+            or getattr(node, "node_name", None)
+            or ""
+        ).lower()
+        if _tag in {"button", "a", "input", "select", "textarea"}:
+            return (True, observed_text)
+
+    # Container rejection: an element whose text surface far exceeds the search term
+    # is almost certainly a layout container that incidentally contains the text.
+    # _primary_text_len reflects DOM children text (get_all_children_text fallback);
+    # elements where get_meaningful_text_for_llm() returns an attribute value (aria-label,
+    # value, placeholder) will have a short _primary_text_len and are unaffected.
+    _container_threshold = max(len(expected_text) * 40, 500)
+    if _primary_text_len > _container_threshold:
+        return False, observed_text
+
+    if needle in haystack:
+        logger.info(f"   ✅ Semantic match: '{expected_text}' found in element surface")
+        return (True, observed_text)
+
+    # Word-level soft match — all significant words must appear in the same field.
+    # Handles "login email" matching "Enter your login email" within one field.
+    # Per-field prevents cross-field false positives: "delete" (meaningful) + "row"
+    # (aria-label) no longer combine to match "delete row".
+    words = [w for w in needle.split() if len(w) >= 2]
+    if words and any(
+        all(w in field for w in words)
+        for field in _haystack_parts_list
+        if field.strip()
+    ):
+        logger.info(f"   ✅ Semantic match (word-level): '{expected_text}' matched")
+        return (True, observed_text)
+
+    logger.warning(
+        f"   ❌ Semantic MISMATCH: expected '{expected_text}', "
+        f"got '{observed_text[:MAX_TEXT_CONTENT_LENGTH]}'"
+    )
+    return (False, observed_text)
 
 
 # ========================================
 # MULTI-ELEMENT COLLECTION DETECTION
 # ========================================
-# These functions detect when an element is part of a repeatable collection
-# (table rows, list items, cards, etc.) and generate multi-element locators.
-
-def _is_collection_element(element_data: dict, element_description: str) -> bool:
-    """
-    Detect if element is part of a repeatable collection.
-    Works generically without hardcoding specific library classes.
-    
-    Detection methods:
-    1. Semantic description keywords (rows, items, all, each)
-    2. Standard HTML collection tags (tr, li, option)
-    3. Common class patterns (row, item, card, entry)
-    
-    Args:
-        element_data: Dict with element attributes from browser-use DOM
-        element_description: Human-readable description from planner
-        
-    Returns:
-        True if element appears to be part of a collection
-    """
-    tag = element_data.get('tagName', '').lower()
-    class_name = element_data.get('className', '').lower()
-    desc = element_description.lower()
-    
-    # Method 1: Semantic description keywords
-    # Note: LLM may modify descriptions, so we check for various patterns
-    desc_keywords = [
-        'rows', 'items', 'all ', 'each', 'every', 'list of', 
-        'visible rows', 'table rows', 'filtered',
-        'cells', 'column cell', 'column cells',  # Table column patterns
-        'results table', 'data table',  # Table context patterns
-    ]
-    if any(kw in desc for kw in desc_keywords):
-        logger.info(f"   Collection detected via description keywords in: '{element_description}'")
-        return True
-    
-    # Method 2: Standard HTML collection tags
-    if tag in ['tr', 'li', 'option', 'dt', 'dd']:
-        logger.info(f"   Collection detected via HTML tag: <{tag}>")
-        return True
-    
-    # Method 3: Common class patterns (generic, not library-specific)
-    collection_patterns = ['row', 'item', 'card', 'entry', 'record', 'tr-group', 'list-item', 'grid-item']
-    if any(pattern in class_name for pattern in collection_patterns):
-        logger.info(f"   Collection detected via class pattern in: '{class_name}'")
-        return True
-    
-    return False
-
-
-def _extract_collection_class(element_data: dict) -> Optional[str]:
-    """
-    Find the most specific class that identifies collection items.
-    
-    SMART APPROACH: 
-    1. Prioritize classes containing semantic patterns (row, item, tr, card, etc.)
-    2. Skip short/cryptic utility classes using pattern detection (not hardcoded lists)
-    3. Return None if no suitable class found (better to fail than use wrong class)
-    
-    Args:
-        element_data: Dict with element attributes
-        
-    Returns:
-        Most appropriate class for collection matching, or None if not suitable
-    """
-    
-    class_name = element_data.get('className', '')
-    if not class_name:
-        return None
-    
-    classes = class_name.split()
-    
-    # PRIORITY 1: Classes containing semantic collection patterns
-    # These ARE the actual collection classes we want
-    collection_patterns = ['row', 'item', 'tr', 'card', 'entry', 'record', 'group', 'cell', 'list']
-    for cls in classes:
-        cls_lower = cls.lower()
-        for pattern in collection_patterns:
-            if pattern in cls_lower:
-                logger.info(f"   Extracted collection class: '{cls}' (matched pattern: {pattern})")
-                return cls
-    
-    # PRIORITY 2: Skip utility-like classes using pattern detection
-    # Utility classes typically: short (<=5 chars) OR follow letter-number pattern (mt-4, px-12)
-    for cls in classes:
-        # Skip if too short (likely utility: mt-4, p-2, d-flex are ~5 chars or less)
-        if len(cls) <= 5:
-            continue
-        # Skip if matches pattern: 1-4 letters + hyphen + number (e.g., mt-4, px-12, col-6)
-        if re.match(r'^[a-z]{1,4}-\d+$', cls.lower()):
-            continue
-        # Skip if matches pattern: single letter + hyphen (e.g., d-flex, m-auto)
-        if re.match(r'^[a-z]-', cls.lower()):
-            continue
-        # This looks like a meaningful class name
-        logger.info(f"   Using component-like class: '{cls}'")
-        return cls
-    
-    # No suitable class found - better to return None than use wrong class
-    logger.info(f"   No suitable collection class found in: '{class_name}'")
-    return None
-
-
-async def _find_collection_locator(page, element_data: dict, collection_class: str) -> Optional[str]:
-    """
-    Build a locator that matches all items in the collection.
-    Tries multiple container strategies to find the most reliable locator.
-    
-    Args:
-        page: Playwright page object
-        element_data: Dict with element attributes
-        collection_class: The class that identifies collection items
-        
-    Returns:
-        Multi-element locator string, or None if not found
-    """
-    tag = element_data.get('tagName', '').lower()
-    
-    # Strategy 1: Standard HTML table - use tbody tr
-    if tag == 'tr':
-        candidates = [
-            'tbody tr',
-            'table tr:not(:first-child)',  # Skip header row
-            'tbody > tr'
-        ]
-        for locator in candidates:
-            try:
-                count = await page.locator(locator).count()
-                if count > 1:
-                    logger.info(f"   Found table row locator: '{locator}' (count={count})")
-                    return locator
-            except Exception:
-                continue
-    
-    # Strategy 2: Standard HTML list - use ul/ol li
-    if tag == 'li':
-        candidates = ['ul li', 'ol li', 'ul > li', 'ol > li']
-        for locator in candidates:
-            try:
-                count = await page.locator(locator).count()
-                if count > 1:
-                    logger.info(f"   Found list item locator: '{locator}' (count={count})")
-                    return locator
-            except Exception:
-                continue
-    
-    # Strategy 3: Class-based locator with common container patterns
-    container_patterns = [
-        f'.{collection_class}',  # Direct class selector
-        f'[class*="{collection_class}"]',  # Contains class
-    ]
-    
-    # Try adding common parent containers
-    parent_containers = ['tbody', '.table-body', '.list', '.grid', '.container', 
-                        '[class*="body"]', '[class*="content"]', '[class*="list"]']
-    
-    for parent in parent_containers:
-        container_patterns.append(f'{parent} .{collection_class}')
-    
-    for locator in container_patterns:
-        try:
-            count = await page.locator(locator).count()
-            if count > 1:
-                logger.info(f"   Found collection locator: '{locator}' (count={count})")
-                return locator
-        except Exception:
-            continue
-    
-    # Fallback: Just the class (might include non-data rows)
-    fallback = f'.{collection_class}'
-    try:
-        count = await page.locator(fallback).count()
-        if count > 1:
-            logger.info(f"   Using fallback collection locator: '{fallback}' (count={count})")
-            return fallback
-    except Exception:
-        pass
-    
-    return None
-
-
-async def _find_collection_by_text_traversal(page, expected_text: str) -> Optional[dict]:
-    """
-    Find collection (table rows, list items) by using expected_text as a beacon.
-    
-    This is the PRIMARY method for finding collections. It works by:
-    1. Finding an element containing the expected_text
-    2. Traversing UP to find the row/item container
-    3. Looking for siblings with similar structure
-    4. Generating a collection locator for all matching elements
-    
-    This approach works even when element_index is invalid (common for non-interactive elements).
-    
-    Args:
-        page: Playwright page object
-        expected_text: Text that should be in one of the collection items (e.g., "Cierra")
-        
-    Returns:
-        Dict with 'locator', 'count', 'row_class' if found, None otherwise
-    """
-    if not expected_text or len(expected_text.strip()) < 2:
-        return None
-    
-    text = expected_text.strip()
-    logger.info(f"🔍 TEXT-TRAVERSAL: Finding collection containing '{text}'")
-    
-    try:
-        # Step 1: Find element containing the expected text
-        text_locator = page.locator(f"text={text}").first
-        count = await text_locator.count()
-        
-        if count == 0:
-            logger.info(f"   No element found containing text: '{text}'")
-            return None
-        
-        # Step 2: Traverse UP to find the row container using JavaScript
-        row_info = await text_locator.evaluate("""
-            (el) => {
-                let current = el;
-                
-                // Traverse up to find a row-like parent
-                while (current && current.parentElement) {
-                    current = current.parentElement;
-                    const tag = current.tagName.toLowerCase();
-                    const className = current.className || '';
-                    const role = current.getAttribute('role') || '';
-                    
-                    // Check if this looks like a row container
-                    const isRowLike = (
-                        tag === 'tr' || 
-                        tag === 'li' ||
-                        role === 'row' ||
-                        role === 'listitem' ||
-                        /row|tr-group|item|record|entry/i.test(className)
-                    );
-                    
-                    if (isRowLike) {
-                        // Found the row! Now verify it's part of a collection
-                        const parent = current.parentElement;
-                        if (parent) {
-                            const siblings = Array.from(parent.children);
-                            const sameTagSiblings = siblings.filter(s => 
-                                s.tagName === current.tagName
-                            );
-                            
-                            if (sameTagSiblings.length > 1) {
-                                // This IS a collection row!
-                                // Find the best class to use as a locator
-                                const classes = className.split(' ').filter(c => c.length > 0);
-                                
-                                // Prefer classes with semantic meaning
-                                const semanticPatterns = ['row', 'tr', 'item', 'record', 'entry', 'group'];
-                                let bestClass = null;
-                                
-                                for (const cls of classes) {
-                                    const clsLower = cls.toLowerCase();
-                                    for (const pattern of semanticPatterns) {
-                                        if (clsLower.includes(pattern)) {
-                                            bestClass = cls;
-                                            break;
-                                        }
-                                    }
-                                    if (bestClass) break;
-                                }
-                                
-                                // Fallback: use first class that's longer than 5 chars
-                                if (!bestClass) {
-                                    bestClass = classes.find(c => c.length > 5) || classes[0];
-                                }
-                                
-                                return {
-                                    tag: tag,
-                                    className: bestClass,
-                                    allClasses: className,
-                                    siblingCount: sameTagSiblings.length,
-                                    role: role,
-                                    parentTag: parent.tagName.toLowerCase()
-                                };
-                            }
-                        }
-                    }
-                }
-                return null;
-            }
-        """)
-        
-        if row_info:
-            logger.info(f"   ✅ Found row container: <{row_info['tag']}> class='{row_info.get('className', '')}'")
-            logger.info(f"   📊 Collection has {row_info['siblingCount']} siblings")
-            
-            # Generate collection locator
-            if row_info.get('className'):
-                locator = f".{row_info['className']}"
-            elif row_info.get('tag') == 'tr':
-                locator = 'tbody tr'
-            elif row_info.get('tag') == 'li':
-                locator = 'ul li, ol li'
-            elif row_info.get('role') == 'row':
-                locator = '[role="row"]'
-            else:
-                logger.info(f"   Could not determine locator from row_info: {row_info}")
-                return None
-            
-            # Validate the locator
-            try:
-                count = await page.locator(locator).count()
-                # Return when count >= 1 (even single element for explicit collections)
-                # STEP 0.5 will decide whether to use it based on explicit_collection flag
-                if count >= 1:
-                    logger.info(f"   ✅ Collection locator: '{locator}' matches {count} element(s)")
-                    return {
-                        'locator': locator,
-                        'count': count,
-                        'row_class': row_info.get('className'),
-                        'tag': row_info.get('tag'),
-                        'source': 'text_traversal'
-                    }
-                else:
-                    logger.info(f"   Locator '{locator}' matched 0 elements")
-            except Exception as e:
-                logger.info(f"   Locator validation failed: {e}")
-        else:
-            logger.info("   Could not find row container by traversing from text element")
-        
-        return None
-        
-    except Exception as e:
-        logger.warning(f"   ⚠️ Text traversal failed: {e}")
-        return None
-
-
-async def _find_checkbox_or_radio_by_label(page, label_text: str) -> Optional[dict]:
-    """
-    Find a checkbox or radio input element associated with the given label text.
-    
-    This handles multiple scenarios:
-    1. <label for="id">text</label> <input id="id" type="checkbox">
-    2. <label><input type="checkbox"> text</label>
-    3. <input type="checkbox"> text (no label, adjacent text)
-    4. Text is inside a container with a nearby checkbox
-    
-    Args:
-        page: Playwright page object
-        label_text: The visible text near the checkbox/radio
-        
-    Returns:
-        Dict with 'locator' and 'element_type' if found, None otherwise
-    """
-    if not label_text:
-        return None
-    
-    text = label_text.strip()
-    logger.info(f"🔍 CHECKBOX-FINDER: Looking for checkbox/radio with label '{text}'")
-    
-    # Strategy 1: Find <label> with matching text, get its 'for' attribute
-    try:
-        label_locator = f'label:has-text("{text}")'
-        label_count = await page.locator(label_locator).count()
-        
-        if label_count >= 1:
-            # Get the 'for' attribute of the label
-            for_attr = await page.locator(label_locator).first.get_attribute('for')
-            
-            if for_attr:
-                # Label has 'for' attribute - find the associated input
-                input_locator = f'input[id="{for_attr}"]'
-                input_count = await page.locator(input_locator).count()
-                
-                if input_count == 1:
-                    # Verify it's a checkbox or radio
-                    input_type = await page.locator(input_locator).first.get_attribute('type')
-                    if input_type in ['checkbox', 'radio']:
-                        # Use id-based locator for stability
-                        final_locator = f'id={for_attr}'
-                        logger.info(f"   ✅ Found {input_type} via label[for]: {final_locator}")
-                        return {'locator': final_locator, 'element_type': input_type}
-            else:
-                # No 'for' attribute - check for nested input inside label
-                nested_input_locator = f'{label_locator} >> input[type="checkbox"], {label_locator} >> input[type="radio"]'
-                try:
-                    # Try checkbox first
-                    nested_checkbox = f'{label_locator} >> input[type="checkbox"]'
-                    if await page.locator(nested_checkbox).count() == 1:
-                        # Get a stable locator for this nested checkbox
-                        checkbox_id = await page.locator(nested_checkbox).first.get_attribute('id')
-                        checkbox_name = await page.locator(nested_checkbox).first.get_attribute('name')
-                        
-                        if checkbox_id:
-                            final_locator = f'id={checkbox_id}'
-                        elif checkbox_name:
-                            final_locator = f'[name="{checkbox_name}"]'
-                        else:
-                            # Use the label-relative locator
-                            final_locator = nested_checkbox
-                        
-                        logger.info(f"   ✅ Found nested checkbox inside label: {final_locator}")
-                        return {'locator': final_locator, 'element_type': 'checkbox'}
-                    
-                    # Try radio button
-                    nested_radio = f'{label_locator} >> input[type="radio"]'
-                    if await page.locator(nested_radio).count() == 1:
-                        radio_id = await page.locator(nested_radio).first.get_attribute('id')
-                        radio_name = await page.locator(nested_radio).first.get_attribute('name')
-                        radio_value = await page.locator(nested_radio).first.get_attribute('value')
-                        
-                        if radio_id:
-                            final_locator = f'id={radio_id}'
-                        elif radio_name and radio_value:
-                            final_locator = f'[name="{radio_name}"][value="{radio_value}"]'
-                        elif radio_name:
-                            final_locator = f'[name="{radio_name}"]'
-                        else:
-                            final_locator = nested_radio
-                        
-                        logger.info(f"   ✅ Found nested radio inside label: {final_locator}")
-                        return {'locator': final_locator, 'element_type': 'radio'}
-                except Exception as e:
-                    logger.info(f"   ⚠️ Error checking nested input: {e}")
-    except Exception as e:
-        logger.info(f"   ⚠️ Error in label-based search: {e}")
-    
-    # Strategy 2: Find text element and look for adjacent checkbox/radio
-    # This handles: <input type="checkbox"> checkbox 1
-    try:
-        # Look for checkboxes/radios that are siblings or near the text
-        adjacent_patterns = [
-            # Pattern: checkbox followed by text
-            f'input[type="checkbox"]:left-of(:text("{text}"):visible)',
-            f'input[type="radio"]:left-of(:text("{text}"):visible)',
-            # Pattern: text node in same parent as checkbox
-            f':text("{text}") >> xpath=preceding-sibling::input[@type="checkbox"]',
-            f':text("{text}") >> xpath=preceding-sibling::input[@type="radio"]',
-        ]
-        
-        for pattern in adjacent_patterns:
-            try:
-                count = await page.locator(pattern).count()
-                if count == 1:
-                    element = page.locator(pattern).first
-                    input_type = await element.get_attribute('type')
-                    input_id = await element.get_attribute('id')
-                    input_name = await element.get_attribute('name')
-                    input_value = await element.get_attribute('value')
-                    
-                    if input_id:
-                        final_locator = f'id={input_id}'
-                    elif input_name and input_value:
-                        final_locator = f'[name="{input_name}"][value="{input_value}"]'
-                    elif input_name:
-                        final_locator = f'[name="{input_name}"]'
-                    else:
-                        # Use index-based locator as last resort
-                        continue
-                    
-                    logger.info(f"   ✅ Found adjacent {input_type}: {final_locator}")
-                    return {'locator': final_locator, 'element_type': input_type}
-            except Exception:
-                pass
-    except Exception as e:
-        logger.info(f"   ⚠️ Error in adjacent search: {e}")
-    
-    # Strategy 3: Use nth-of-type pattern for checkbox lists
-    # Common pattern: the-internet.herokuapp.com/checkboxes has checkbox 1, checkbox 2
-    try:
-        # Extract number if text ends with a number (e.g., "checkbox 1" -> 1)
-        number_match = re.search(r'(\d+)\s*$', text)
-        if number_match:
-            index = int(number_match.group(1))
-            # Try to find all checkboxes on page and pick the nth one
-            all_checkboxes = 'input[type="checkbox"]'
-            checkbox_count = await page.locator(all_checkboxes).count()
-            
-            if checkbox_count >= index:
-                # Use nth-of-type or nth() for Playwright
-                nth_locator = f'input[type="checkbox"] >> nth={index - 1}'  # 0-indexed
-                if await page.locator(nth_locator).count() == 1:
-                    # Try to get a more stable locator
-                    element = page.locator(nth_locator).first
-                    input_id = await element.get_attribute('id')
-                    input_name = await element.get_attribute('name')
-                    
-                    if input_id:
-                        final_locator = f'id={input_id}'
-                    elif input_name:
-                        final_locator = f'[name="{input_name}"]'
-                    else:
-                        final_locator = f'input[type="checkbox"]:nth-of-type({index})'
-                    
-                    logger.info(f"   ✅ Found checkbox by index ({index}): {final_locator}")
-                    return {'locator': final_locator, 'element_type': 'checkbox'}
-            
-            # Same for radio buttons
-            all_radios = 'input[type="radio"]'
-            radio_count = await page.locator(all_radios).count()
-            
-            if radio_count >= index:
-                nth_locator = f'input[type="radio"] >> nth={index - 1}'
-                if await page.locator(nth_locator).count() == 1:
-                    element = page.locator(nth_locator).first
-                    input_id = await element.get_attribute('id')
-                    input_name = await element.get_attribute('name')
-                    input_value = await element.get_attribute('value')
-                    
-                    if input_id:
-                        final_locator = f'id={input_id}'
-                    elif input_name and input_value:
-                        final_locator = f'[name="{input_name}"][value="{input_value}"]'
-                    else:
-                        final_locator = f'input[type="radio"]:nth-of-type({index})'
-                    
-                    logger.info(f"   ✅ Found radio by index ({index}): {final_locator}")
-                    return {'locator': final_locator, 'element_type': 'radio'}
-    except Exception as e:
-        logger.info(f"   ⚠️ Error in index-based search: {e}")
-    
-    logger.info(f"   ⚠️ CHECKBOX-FINDER: No checkbox/radio found for '{text}'")
-    return None
+# Helpers moved to handlers/collection.py. Re-exported here so in-module
+# callers and existing test imports (`from .smart_locator import ...`)
+# continue to work unchanged.
+from .classifier import classify_element_type
+from .handlers import checkbox as _checkbox_handler
+from .handlers import collection as _collection_handler
+from .handlers import dropdown as _dropdown_handler
+from .handlers.checkbox import (
+    find_checkbox_or_radio_by_label as _find_checkbox_or_radio_by_label,
+)
+from .handlers.collection import (
+    _is_collection_element,
+    _extract_collection_class,
+    _find_collection_locator,
+    _find_collection_by_text_traversal,
+)
 
 
 async def _disambiguate_by_coordinates(page, selector: str, x: float, y: float) -> Optional[dict]:
@@ -2557,7 +2121,7 @@ async def _find_table_cell_by_structured_info(
                 
                 if expected_text:
                     # Validate that expected_text is somewhere in this cell
-                    is_match, actual_text = await _validate_semantic_match(page, cell_locator, expected_text)
+                    is_match, actual_text = await validate_semantic_match(None, expected_text, page=page, locator=cell_locator)
                     
                     if not is_match:
                         logger.info(f"   ⚠️ Locator found but text mismatch: {cell_locator}")
@@ -2604,6 +2168,31 @@ async def _find_table_cell_by_structured_info(
     return None
 
 
+def _attach_classifier_metadata(
+    result: dict,
+    type_info,
+    probe_result: Optional[dict],
+    vision_type_hint: Optional[str],
+) -> None:
+    """
+    Stamp the classifier verdict + DOM probe verdict + vision hint onto
+    a successful handler result. Lets the Code Assembler route on
+    structured signals instead of guessing from element_type alone, and
+    gives debug tooling a clean trail when classification was wrong.
+    """
+    if "element_type" not in result:
+        result["element_type"] = type_info.primary_type
+    result.setdefault("dropdown_framework", type_info.framework or "")
+    result["classifier_confidence"] = type_info.confidence
+    result["classifier_signals"] = list(type_info.signals)
+    if probe_result is not None:
+        result["dom_probe_confirmed"] = probe_result["confirmed"]
+        result["dom_probe_framework"] = probe_result["framework"]
+        result["dom_probe_signals"] = probe_result["signals"]
+    if vision_type_hint:
+        result["vision_type_hint"] = vision_type_hint
+
+
 async def _generate_locators_from_element_data(
     search_context,  # Can be page or frame_locator when in iframe context
     element_data: dict[str, Any],
@@ -2611,7 +2200,10 @@ async def _generate_locators_from_element_data(
     element_description: str,
     expected_text: Optional[str] = None,
     iframe_context: Optional[str] = None,  # Pass iframe context to allow xpath for iframe elements
-    confirmed_coords: Optional[tuple] = None  # (x, y) from browser-use for coordinate validation
+    confirmed_coords: Optional[tuple] = None,  # (x, y) from browser-use for coordinate validation
+    vision_type_hint: Optional[str] = None,  # LLM's visual classification (1 of 2 sources of truth)
+    vision_framework_hint: Optional[str] = None,  # LLM's framework guess
+    page=None,  # Page-level reference for DOM probe (vs. search_context which can be frame_locator)
 ) -> Optional[dict]:
     """
     Generate and validate locators from element_data extracted from browser-use DOM.
@@ -2665,152 +2257,173 @@ async def _generate_locators_from_element_data(
     if attrs_found:
         logger.info(f"   Available attributes: {', '.join(attrs_found)}")
     else:
-        logger.info(f"   ⚠️ No usable attributes found in element_data")
-        return None
+        logger.info(f"   ⚠️ No usable attributes — falling back to classifier/probe path")
     
     # ========================================
-    # MULTI-ELEMENT COLLECTION DETECTION
+    # CLASSIFIER + DOM PROBE + PER-TYPE DISPATCHER
     # ========================================
-    # Check if this element is part of a collection (table rows, list items, etc.)
-    # If so, return a multi-element locator for Robot Framework iteration
-    
-    if _is_collection_element(element_data, element_description):
-        logger.info(f"   🔄 COLLECTION DETECTED: Element appears to be part of a repeatable collection")
-        
-        # PRIMARY METHOD: Use expected_text as a beacon to find the actual row container
-        # This works even when element_data is from a wrong parent container
-        if expected_text:
-            text_result = await _find_collection_by_text_traversal(search_context, expected_text)
-            
-            if text_result and text_result.get('locator'):
-                collection_locator = text_result['locator']
-                count = text_result['count']
-                
-                logger.info(f"   ✅ MULTI-ELEMENT locator found via TEXT-TRAVERSAL: {collection_locator}")
-                logger.info(f"   📊 Matches {count} elements")
-                logger.info(f"   ⏭️ Skipping semantic validation (handled in Robot Framework iteration)")
-                
-                return {
-                    'element_id': element_id,
-                    'description': element_description,
-                    'found': True,
-                    'best_locator': collection_locator,
-                    'element_type': 'collection',
-                    'count': count,
-                    'quality_score': 90,
-                    'unique': False,
-                    'valid': True,
-                    'validated': True,
-                    'all_locators': [{
-                        'type': 'collection',
-                        'locator': collection_locator,
-                        'priority': 0,
-                        'quality_score': 90,
-                        'strategy': 'Text-traversal collection locator',
-                        'count': count,
-                        'unique': False,
-                        'valid': True,
-                        'validation_method': 'playwright'
-                    }],
-                    'element_info': {
-                        'tagName': text_result.get('tag', ''),
-                        'className': text_result.get('row_class', ''),
-                        'collection_class': text_result.get('row_class', ''),
-                        'source': 'text_traversal'
-                    },
-                    'validation_summary': {
-                        'total_generated': 1,
-                        'valid': 1,
-                        'unique': 0,
-                        'multi_element': True,
-                        'collection_count': count,
-                        'best_type': 'collection',
-                        'best_strategy': 'Text-traversal collection locator',
-                        'validation_method': 'playwright'
-                    },
-                    'validation_method': 'playwright',
-                    'semantic_match': True
-                }
-            else:
-                logger.info(f"   Text-traversal did not find collection, trying element_data approach...")
-        
-        # FALLBACK METHOD: Try element_data approach (may not work if element_data is from wrong container)
-        collection_class = _extract_collection_class(element_data)
-        if collection_class:
-            logger.info(f"   📦 Collection class from element_data: '{collection_class}'")
-            
-            collection_locator = await _find_collection_locator(search_context, element_data, collection_class)
-            
-            if collection_locator:
-                try:
-                    count = await search_context.locator(collection_locator).count()
-                    
-                    if count > 1:
-                        # VALIDATION: Check if matched elements contain expected_text
-                        if expected_text:
-                            text_found = False
-                            try:
-                                for i in range(min(count, 3)):
-                                    el_text = await search_context.locator(collection_locator).nth(i).text_content() or ""
-                                    if expected_text.lower() in el_text.lower():
-                                        text_found = True
-                                        break
-                            except Exception:
-                                pass
-                            
-                            if not text_found:
-                                logger.warning(f"   ⚠️ Collection locator '{collection_locator}' does NOT contain expected text '{expected_text}'")
-                                logger.warning(f"   ⚠️ Skipping this locator as it matches wrong elements")
-                            else:
-                                logger.info(f"   ✅ MULTI-ELEMENT locator found: {collection_locator}")
-                                logger.info(f"   📊 Matches {count} elements (validated: contains expected text)")
-                                
-                                return {
-                                    'element_id': element_id,
-                                    'description': element_description,
-                                    'found': True,
-                                    'best_locator': collection_locator,
-                                    'element_type': 'collection',
-                                    'count': count,
-                                    'quality_score': 85,
-                                    'unique': False,
-                                    'valid': True,
-                                    'validated': True,
-                                    'all_locators': [{
-                                        'type': 'collection',
-                                        'locator': collection_locator,
-                                        'priority': 0,
-                                        'quality_score': 85,
-                                        'strategy': 'Element-data collection locator',
-                                        'count': count,
-                                        'unique': False,
-                                        'valid': True,
-                                        'validation_method': 'playwright'
-                                    }],
-                                    'element_info': {
-                                        'tagName': element_data.get('tagName', ''),
-                                        'className': element_data.get('className', ''),
-                                        'collection_class': collection_class,
-                                        'source': 'element_data_collection'
-                                    },
-                                    'validation_summary': {
-                                        'total_generated': 1,
-                                        'valid': 1,
-                                        'unique': 0,
-                                        'multi_element': True,
-                                        'collection_count': count,
-                                        'best_type': 'collection',
-                                        'best_strategy': 'Element-data collection locator',
-                                        'validation_method': 'playwright'
-                                    },
-                                    'validation_method': 'playwright',
-                                    'semantic_match': True
-                                }
-                except Exception as e:
-                    logger.warning(f"   ⚠️ Collection locator validation failed: {e}")
+    # Two-source-of-truth gate: a specialized handler only runs when BOTH
+    # the classifier (DOM signals + vision hint) AND a live Playwright
+    # DOM probe agree. Vision-only or DOM-only verdicts are insufficient;
+    # the probe is the empirical second source.
+    #
+    # Modes:
+    #   - confirmation: classifier verdict is a specialized type → probe
+    #     must find structural signals before the handler runs
+    #   - discovery: classifier verdict is "unknown" but the vision hint
+    #     suggests a specialized type → probe runs anyway; if structure
+    #     is found, we promote the verdict and route
+    #
+    # Probe rejection → fall through to the generic 21-strategy below.
+    # See docs/ELEMENT_TYPE_CLASSIFIER_ARCHITECTURE.md §5 + the
+    # two-source-of-truth design discussion.
+    type_info = classify_element_type(
+        element_data,
+        element_description,
+        vision_type_hint=vision_type_hint,
+        vision_framework_hint=vision_framework_hint,
+    )
+    logger.info(
+        f"   🏷️ Classified: {type_info.primary_type}/{type_info.framework} "
+        f"(confidence={type_info.confidence}, signals={type_info.signals})"
+    )
+
+    # Determine which type to probe and whether we're in confirmation or
+    # discovery mode. Discovery mode kicks in when the classifier said
+    # "unknown" but the vision hint mapped to a specialized type.
+    suspected_type = ""
+    probe_mode = ""
+    if type_info.primary_type in ("dropdown", "collection", "checkbox", "radio"):
+        suspected_type = type_info.primary_type
+        probe_mode = "confirmation"
+    elif type_info.primary_type == "unknown" and vision_type_hint:
+        from .classifier import map_vision_hint
+        mapped = map_vision_hint(vision_type_hint)
+        if mapped in ("dropdown", "collection", "checkbox", "radio"):
+            suspected_type = mapped
+            probe_mode = "discovery"
+
+    probe_result = None
+    if suspected_type and page is not None:
+        from .dom_probe import probe_specialized_type
+        probe_result = await probe_specialized_type(
+            page=page,
+            suspected_type=suspected_type,
+            coords=confirmed_coords,
+            candidate_xpath=(
+                None if iframe_context else element_data.get("xpath") or None
+            ),
+        )
+        logger.info(
+            f"   🔍 DOM probe ({probe_mode}, {suspected_type}): "
+            f"confirmed={probe_result['confirmed']}, "
+            f"framework={probe_result['framework']!r}, "
+            f"signals={probe_result['signals'][:5]}"
+        )
+
+        if probe_result["confirmed"]:
+            # Probe agrees — commit. If probe detected a framework that the
+            # classifier didn't (or contradicts the hinted one), prefer
+            # the probe's verdict because it came from the live DOM.
+            if probe_result["framework"]:
+                if (type_info.framework
+                        and type_info.framework != probe_result["framework"]):
+                    type_info.signals.append(
+                        f"probe-overrides-framework:"
+                        f"hint={type_info.framework},"
+                        f"probe={probe_result['framework']}"
+                    )
+                type_info.framework = probe_result["framework"]
+            type_info.signals.append(f"probe:confirmed({probe_mode})")
+            type_info.signals.extend(
+                f"probe:{s}" for s in probe_result["signals"][:10]
+            )
+            # Discovery mode promotion: probe found structure where the
+            # classifier saw none. Adopt the suspected type.
+            if probe_mode == "discovery":
+                type_info.primary_type = suspected_type
+                # Discovery is empirical evidence, but only one DOM source
+                # confirmed — keep confidence at medium so downstream is
+                # aware this isn't a multi-source agreement.
+                type_info.confidence = "medium"
         else:
-            logger.info(f"   Could not extract collection class from element_data")
-    
+            # Probe rejects — never run the specialized handler. Fall
+            # through to the generic 21-strategy. Telemetry: the conflict
+            # signal makes silent classification mistakes audible.
+            type_info.signals.append(f"probe:rejected({probe_mode})")
+            if probe_mode == "confirmation":
+                type_info.signals.append(
+                    f"probe-conflict:classifier_said={type_info.primary_type},"
+                    f"probe_found_no_structure"
+                )
+                # Demote to unknown so the generic path runs cleanly.
+                type_info.primary_type = "unknown"
+                type_info.framework = ""
+                type_info.confidence = "low"
+
+    # Now dispatch — only specialized types that survived probe corroboration
+    # reach their handler.
+    if type_info.primary_type == "dropdown":
+        dropdown_result = await _dropdown_handler.find_locator(
+            page=search_context,
+            element_data=element_data,
+            type_info=type_info,
+            element_id=element_id,
+            element_description=element_description,
+            expected_text=expected_text,
+            search_context=search_context,
+            iframe_context=iframe_context,
+            confirmed_coords=confirmed_coords,
+        )
+        if dropdown_result is not None:
+            _attach_classifier_metadata(
+                dropdown_result, type_info, probe_result, vision_type_hint
+            )
+            return dropdown_result
+        # Else: fall through to the generic 21-strategy below.
+
+    elif type_info.primary_type == "collection":
+        collection_result = await _collection_handler.find_locator(
+            page=search_context,
+            element_data=element_data,
+            type_info=type_info,
+            element_id=element_id,
+            element_description=element_description,
+            expected_text=expected_text,
+            search_context=search_context,
+            iframe_context=iframe_context,
+            confirmed_coords=confirmed_coords,
+        )
+        if collection_result is not None:
+            _attach_classifier_metadata(
+                collection_result, type_info, probe_result, vision_type_hint
+            )
+            return collection_result
+        # Else: fall through to the generic 21-strategy below.
+
+    elif type_info.primary_type in ("checkbox", "radio"):
+        # Phase 2.5 — native (<input type="checkbox|radio">),
+        # custom (role="checkbox|radio"), and toggle (role="switch")
+        # all route through handlers/checkbox.find_locator(). Returns
+        # None on miss for the always-fallback contract.
+        checkbox_result = await _checkbox_handler.find_locator(
+            page=search_context,
+            element_data=element_data,
+            type_info=type_info,
+            element_id=element_id,
+            element_description=element_description,
+            expected_text=expected_text,
+            search_context=search_context,
+            iframe_context=iframe_context,
+            confirmed_coords=confirmed_coords,
+        )
+        if checkbox_result is not None:
+            _attach_classifier_metadata(
+                checkbox_result, type_info, probe_result, vision_type_hint
+            )
+            return checkbox_result
+        # Else: fall through to the generic 21-strategy below.
+
     # ========================================
     # SINGLE ELEMENT LOCATOR GENERATION
     # ========================================
@@ -2995,14 +2608,32 @@ async def _generate_locators_from_element_data(
                 validation_method = "text"
                 
                 if expected_text:
-                    semantic_match, actual_text = await _validate_semantic_match(search_context, locator, expected_text)
+                    semantic_match, actual_text = await validate_semantic_match(None, expected_text, page=search_context, locator=locator)
                     
                     if not semantic_match:
+                        # Form controls (<input>, <select>, <textarea>) have no textContent
+                        # by the HTML spec — they are void/replaced elements. expected_text
+                        # here is the field's label context (visually associated by the LLM),
+                        # NOT the element's own DOM text. validate_semantic_match always returns
+                        # ("", False) for inputs, making it impossible for a correct structural
+                        # locator (id, name, data-testid) to pass when expected_text is set.
+                        # A unique structural locator for a form control IS semantic correctness:
+                        # id="first_name" uniquely naming the First Name field is the definition
+                        # of correct identification — textContent agreement is not required and
+                        # would never be achievable.
+                        # The alternative (falling through to TEXT-FIRST) reliably returns the
+                        # associated <label> element, which is the wrong element for automation.
+                        is_form_control = element_data.get('tagName', '').lower() in ('input', 'select', 'textarea')
+
                         # For DROPDOWNS: Use coordinate-based validation instead of text
                         # Dropdowns often have placeholder text in sibling elements, not the input itself
                         is_dropdown = is_dropdown_element(element_data, element_description)
-                        
-                        if is_dropdown and confirmed_coords:
+
+                        if is_form_control:
+                            semantic_match = True
+                            validation_method = "form_control_structural"
+                            logger.info(f"   ✅ {candidate['type']}: form control — text validation skipped (inputs have no textContent)")
+                        elif is_dropdown and confirmed_coords:
                             logger.info(f"   🔽 Dropdown detected - trying coordinate validation instead of text")
                             coord_match, coord_reason = await _validate_by_coordinates(
                                 search_context, locator, confirmed_coords
@@ -3019,7 +2650,7 @@ async def _generate_locators_from_element_data(
                                 semantic_match = True
                                 validation_method = "trust_unique"
                         else:
-                            # Not a dropdown - standard text mismatch handling
+                            # Not a form control or dropdown - standard text mismatch handling
                             logger.info(f"   ⚠️ {candidate['type']}: unique but text mismatch (trying next)")
                             logger.info(f"      Expected: '{expected_text}', Actual: '{actual_text}'")
                             continue  # Try next locator
@@ -3093,96 +2724,6 @@ async def _generate_locators_from_element_data(
     return None
 
 
-async def _validate_candidate_locator(
-    page,
-    candidate_locator: str,
-    element_id: str,
-    element_description: str,
-    expected_text: Optional[str],
-    x: float,
-    y: float
-) -> Optional[dict]:
-    """
-    Validate an agent-provided candidate locator.
-    
-    Args:
-        page: Playwright page object
-        candidate_locator: The locator suggested by the agent
-        element_id: Element identifier
-        element_description: Element description
-        expected_text: Expected text for semantic validation
-        x, y: Coordinates (for result dict)
-        
-    Returns:
-        Complete result dict if valid, None if invalid/failed
-    """
-    logger.info(f"🔍 Step 0: Validating candidate locator: {candidate_locator}")
-    try:
-        # Use shared conversion function from browser_service.locators
-        from browser_service.locators import convert_to_playwright_locator
-        
-        playwright_locator, was_converted = convert_to_playwright_locator(candidate_locator)
-        
-        if was_converted:
-            logger.info(f"   Converted to Playwright format: {playwright_locator}")
-        
-        count = await page.locator(playwright_locator).count()
-        
-        if count == 1:
-            # SEMANTIC VALIDATION: Verify we found the RIGHT element
-            semantic_match = True
-            actual_text = ""
-            if expected_text:
-                semantic_match, actual_text = await _validate_semantic_match(page, playwright_locator, expected_text)
-                if not semantic_match:
-                    logger.warning(f"⚠️ Candidate locator is unique BUT text doesn't match!")
-                    logger.warning(f"   Expected: '{expected_text}'")
-                    logger.warning(f"   Actual: '{actual_text}'")
-                    logger.info("   Continuing to find correct element...")
-                    return None  # Continue to try other approaches
-                else:
-                    logger.info(f"✅ Candidate locator is unique AND semantically correct")
-            
-            if semantic_match:
-                logger.info(f"✅ Candidate locator is unique: {playwright_locator}")
-                return {
-                    'element_id': element_id,
-                    'description': element_description,
-                    'found': True,
-                    'best_locator': playwright_locator,
-                    'all_locators': [{
-                        'type': 'candidate',
-                        'locator': playwright_locator,
-                        'priority': PRIORITY_CANDIDATE,
-                        'strategy': 'Agent-provided candidate' + (' (converted)' if was_converted else ''),
-                        'count': count,
-                        'unique': True,
-                        'valid': True,
-                        'validated': True,
-                        'semantic_match': semantic_match,
-                        'validation_method': 'playwright'
-                    }],
-                    'element_info': {'actual_text': actual_text} if actual_text else {},
-                    'coordinates': {'x': x, 'y': y},
-                    'validation_summary': {
-                        'total_generated': 1,
-                        'valid': 1,
-                        'unique': 1,
-                        'validated': 1,
-                        'best_type': 'candidate',
-                        'best_strategy': 'Agent-provided candidate',
-                        'validation_method': 'playwright'
-                    },
-                    'semantic_match': semantic_match
-                }
-        else:
-            logger.info(f"⚠️ Candidate locator not unique (count={count}): {playwright_locator}")
-    except Exception as e:
-        logger.warning(f"⚠️ Candidate locator validation failed: {e}")
-    
-    return None
-
-
 async def find_unique_locator_at_coordinates(
     page,
     x: float,
@@ -3190,22 +2731,23 @@ async def find_unique_locator_at_coordinates(
     element_id: str,
     element_description: str,
     expected_text: Optional[str] = None,
-    candidate_locator: Optional[str] = None,
     library_type: str = "browser",
     element_data: Optional[dict] = None,  # Element attributes from browser-use DOM (id, class, text, etc.)
     search_context=None,  # Either page or frame_locator for iframe context
     iframe_context: Optional[str] = None,  # Iframe locator (e.g., 'iframe[id="main"]') for composite locators
-    is_collection: Optional[bool] = None  # Collection flag for multi-element detection
+    is_collection: Optional[bool] = None,  # Collection flag for multi-element detection
+    browser_session=None,  # BrowserSession for resolved_node lookup (DELTA 1)
+    vision_type_hint: Optional[str] = None,  # LLM's visual classification (1 of 2 sources of truth)
+    vision_framework_hint: Optional[str] = None,  # LLM's framework guess
 ) -> dict:
     """
     Find a unique locator for an element using a semantic-first approach.
 
     Strategy Priority (Semantic-First):
     0. ELEMENT DATA: If element_data is provided (from browser-use DOM), generate locators from those attributes
-    1. Candidate locator (if provided) - Agent's suggestion
-    2. TEXT-FIRST: Semantic locators from expected_text - Most reliable, uses actual visible text
-    3. SEMANTIC: Locators from description - Fallback when expected_text not available
-    4. COORDINATE: Coordinate-based extraction + 21 strategies - Last resort when semantic fails
+    1. TEXT-FIRST: Semantic locators from expected_text - Most reliable, uses actual visible text
+    2. SEMANTIC: Locators from description - Fallback when expected_text not available
+    3. COORDINATE: Coordinate-based extraction + 21 strategies - Last resort when semantic fails
 
     The semantic-first approach is more reliable because:
     - Doesn't depend on viewport size or layout (centered layouts won't break it)
@@ -3230,7 +2772,6 @@ async def find_unique_locator_at_coordinates(
         element_description: Human-readable description (primary source for semantic locators)
         expected_text: The actual visible text AI sees on the element (e.g., "Submit", "Nike Air Max 270").
                       Used for semantic validation AND for text-first locator search.
-        candidate_locator: Optional locator to validate first (e.g., "id=search-input")
         library_type: "browser" or "selenium" - determines locator format
         element_data: Optional dict with element attributes from browser-use DOM:
                      {"tagName": "a", "id": "", "textContent": "Services", "href": "/services", ...}
@@ -3251,11 +2792,26 @@ async def find_unique_locator_at_coordinates(
     if iframe_context:
         logger.info(f"   🖼️ Iframe context: {iframe_context}")
     logger.info(f"   Coordinates: ({x}, {y}) [fallback]")
-    
+
+    # DELTA 1: Resolve the DOM node at (x, y) once via get_dom_element_at_coordinates.
+    # Cache-hit path returns a fully-populated selector_map node (children_nodes is a list).
+    # CDP-fallback path (element not in cache) returns a minimal node with children_nodes=None
+    # and ax_node=None — Step 5 routes such nodes to the slow per-locator evaluate() path.
+    resolved_node = None
+    if browser_session is not None and expected_text:
+        try:
+            resolved_node = await browser_session.get_dom_element_at_coordinates(int(x), int(y))
+        except Exception as e:
+            logger.warning(
+                f"get_dom_element_at_coordinates failed at ({x}, {y}) "
+                f"expected={expected_text!r}: {e}"
+            )
+            resolved_node = None
+
     # ========================================
     # SEARCH CONTEXT: Use iframe context if provided
     # ========================================
-    # search_context is either page (for main page elements) or 
+    # search_context is either page (for main page elements) or
     # frame_locator (for elements inside iframes)
     if search_context is None:
         search_context = page
@@ -3323,7 +2879,10 @@ async def find_unique_locator_at_coordinates(
         result = await _generate_locators_from_element_data(
             search_context, element_data, element_id, element_description, expected_text,
             iframe_context=iframe_context,  # Pass iframe context for proper xpath/CSS handling
-            confirmed_coords=(x, y) if x is not None and y is not None else None  # Use explicit None checks (0 is valid coord)
+            confirmed_coords=(x, y) if x is not None and y is not None else None,  # Use explicit None checks (0 is valid coord)
+            vision_type_hint=vision_type_hint,  # 1 of 2 sources of truth (probe is the other)
+            vision_framework_hint=vision_framework_hint,
+            page=page,  # Page-level for DOM probe (search_context may be frame_locator)
         )
         if result:
             # Add approach metrics for pattern analysis
@@ -3335,29 +2894,6 @@ async def find_unique_locator_at_coordinates(
             }
             # Add iframe prefix to best_locator AND all_locators
             return _apply_iframe_prefix_to_result(result)
-
-
-
-    
-    # ========================================
-    # STEP 0.1: Validate candidate locator (if provided)
-    # ========================================
-    if candidate_locator:
-        result = await _validate_candidate_locator(
-            search_context, candidate_locator, element_id, element_description, 
-            expected_text, x, y
-        )
-        if result:
-            # Add approach metrics for pattern analysis
-            result['approach_metrics'] = {
-                **_approach_metrics_base,
-                'locator_approach': 'candidate',
-                'fallback_depth': 2,
-                'success': True,
-            }
-            # Add iframe prefix to best_locator AND all_locators
-            return _apply_iframe_prefix_to_result(result)
-    
     # ========================================
     # STEP 0.5: Collection detection (hybrid: is_collection flag + keyword fallback)
     # ========================================
@@ -3546,7 +3082,7 @@ async def find_unique_locator_at_coordinates(
             semantic_match = True
             actual_text = ""
             if expected_text:
-                semantic_match, actual_text = await _validate_semantic_match(search_context, semantic_locator, expected_text)
+                semantic_match, actual_text = await validate_semantic_match(None, expected_text, page=search_context, locator=semantic_locator)
                 if not semantic_match:
                     logger.warning(f"⚠️ Description-based locator found BUT text doesn't match!")
                     logger.warning(f"   Expected: '{expected_text}'")
@@ -4241,17 +3777,99 @@ async def find_unique_locator_at_coordinates(
         # If expected_text is provided, find a locator that ALSO matches semantically
         if expected_text:
             logger.info(f"🔍 Checking semantic match for {len(sorted_locators)} unique locators...")
-            
-            for loc in sorted_locators:
-                is_match, text = await _validate_semantic_match(page, loc['locator'], expected_text)
-                loc['semantic_match'] = is_match
-                loc['actual_text'] = text
-                
-                if is_match and best_locator_obj is None:
-                    best_locator_obj = loc
-                    semantic_match = True
-                    actual_text = text
-                    logger.info(f"   ✅ Found semantically matching locator: {loc['locator']}")
+
+            # _fast_path_resolved: True once a definitive decision is reached in the
+            # fast path (either "matched + identity confirmed" or "semantic mismatch").
+            # When it stays False, the slow per-locator path runs below.
+            _fast_path_resolved = False
+
+            if resolved_node is not None and resolved_node.children_nodes is not None:
+                # Fast path: cache-hit node has full AX/text data — one semantic check
+                # covers all candidates without CDP round-trips.
+                # CDP fallback nodes (children_nodes=None) have incomplete text data
+                # and are routed to the slow path instead.
+                is_match, actual_text = await validate_semantic_match(resolved_node, expected_text)
+                semantic_match = is_match
+                if is_match:
+                    # The element at (x, y) matches expected_text. Now verify that the
+                    # top-priority locator resolves to that same element. A locator
+                    # generated from text or attributes can uniquely match a *different*
+                    # element on the page while the resolved_node proves only the element
+                    # at (x, y) is correct.
+                    _best = sorted_locators[0]
+                    _identity_ok = False
+                    try:
+                        bbox = await search_context.locator(_best['locator']).bounding_box()
+                        if bbox is not None:
+                            _TOL = 2.0  # pixels — accounts for subpixel coord rounding
+                            _identity_ok = (
+                                bbox['x'] - _TOL <= x <= bbox['x'] + bbox['width'] + _TOL
+                                and bbox['y'] - _TOL <= y <= bbox['y'] + bbox['height'] + _TOL
+                            )
+                    except Exception:
+                        pass  # bounding_box() failed; fall through to slow path
+
+                    if _identity_ok:
+                        _best['semantic_match'] = True
+                        _best['actual_text'] = actual_text
+                        best_locator_obj = _best
+                        _fast_path_resolved = True
+                        logger.info(
+                            f"   ✅ Semantically matched and identity verified: {_best['locator']}"
+                        )
+                    else:
+                        logger.warning(
+                            f"   ⚠️ Fast path: {_best['locator']!r} doesn't contain "
+                            f"({x}, {y}) — checking each locator individually"
+                        )
+                        # _fast_path_resolved stays False; slow path will run below
+                else:
+                    # Element at (x, y) doesn't match expected_text — no locator for a
+                    # different element can fix this; mark all and skip the slow path.
+                    for loc in sorted_locators:
+                        loc['semantic_match'] = False
+                        loc['actual_text'] = actual_text
+                    _fast_path_resolved = True
+
+            if not _fast_path_resolved:
+                if resolved_node is not None and resolved_node.children_nodes is not None:
+                    # Identity-fail slow path: resolved_node already confirmed the element
+                    # at (x, y) has the expected text, so semantic match is proven.
+                    # We only need to find which unique locator resolves to that same element.
+                    # One bounding_box() call per locator — cheaper than evaluate() + bounding_box().
+                    for loc in sorted_locators:
+                        _slow_bbox_ok = False
+                        try:
+                            _bb = await search_context.locator(loc['locator']).bounding_box()
+                            if _bb is not None:
+                                _TOL = 2.0
+                                _slow_bbox_ok = (
+                                    _bb['x'] - _TOL <= x <= _bb['x'] + _bb['width'] + _TOL
+                                    and _bb['y'] - _TOL <= y <= _bb['y'] + _bb['height'] + _TOL
+                                )
+                        except Exception as _bbox_err:
+                            logger.debug(f"   bounding_box() error for {loc['locator']!r}: {_bbox_err}")
+                        loc['semantic_match'] = _slow_bbox_ok
+                        loc['actual_text'] = actual_text  # already set from node check
+                        if _slow_bbox_ok and best_locator_obj is None:
+                            best_locator_obj = loc
+                            logger.info(
+                                f"   ✅ Spatially verified locator "
+                                f"(semantic confirmed by node): {loc['locator']}"
+                            )
+                            break
+                else:
+                    # Standard slow path: no resolved node or CDP fallback node —
+                    # evaluate each candidate locator directly for text content.
+                    for loc in sorted_locators:
+                        is_match, text = await validate_semantic_match(None, expected_text, page=search_context, locator=loc['locator'])
+                        loc['semantic_match'] = is_match
+                        loc['actual_text'] = text
+                        if is_match and best_locator_obj is None:
+                            best_locator_obj = loc
+                            actual_text = text
+                            logger.info(f"   ✅ Found semantically matching locator: {loc['locator']}")
+                            break
             
             # If no semantic match found, DO NOT return wrong locator - return failure instead
             if best_locator_obj is None:

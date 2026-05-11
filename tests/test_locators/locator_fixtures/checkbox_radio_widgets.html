@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Phase 2.5 — Checkbox / Radio / Switch widgets</title>
+  <style>
+    body { font-family: sans-serif; padding: 1rem; max-width: 720px; }
+    .group { margin: 1rem 0; padding: 1rem; border: 1px solid #ccc; border-radius: 4px; }
+    .group h3 { margin: 0 0 0.5rem 0; }
+    .row { margin: 0.25rem 0; }
+    [role="checkbox"], [role="radio"], [role="switch"] {
+      display: inline-block; width: 16px; height: 16px; border: 1px solid #888;
+      vertical-align: middle; margin-right: 6px; cursor: pointer;
+    }
+    [role="checkbox"][aria-checked="true"]::after { content: "✓"; color: #2563eb; }
+    [role="switch"] { width: 32px; border-radius: 999px; }
+    [role="switch"][aria-checked="true"] { background: #2563eb; border-color: #2563eb; }
+  </style>
+</head>
+<body>
+  <h1>Checkbox / Radio / Switch fixture</h1>
+
+  <!-- Native checkbox via <label for=...> -->
+  <div class="group">
+    <h3>Native checkboxes — label[for]</h3>
+    <div class="row">
+      <input type="checkbox" id="newsletter" name="newsletter">
+      <label for="newsletter">Subscribe to newsletter</label>
+    </div>
+    <div class="row">
+      <input type="checkbox" id="terms" name="terms">
+      <label for="terms">Accept terms</label>
+    </div>
+  </div>
+
+  <!-- Native radio group sharing a name -->
+  <div class="group">
+    <h3>Native radios — name+value</h3>
+    <div class="row">
+      <input type="radio" id="plan_basic" name="plan" value="basic">
+      <label for="plan_basic">Basic</label>
+    </div>
+    <div class="row">
+      <input type="radio" id="plan_pro" name="plan" value="pro">
+      <label for="plan_pro">Pro</label>
+    </div>
+    <div class="row">
+      <input type="radio" id="plan_enterprise" name="plan" value="enterprise">
+      <label for="plan_enterprise">Enterprise</label>
+    </div>
+  </div>
+
+  <!-- Native checkbox nested inside <label> (no for=) -->
+  <div class="group">
+    <h3>Native checkbox — nested inside label</h3>
+    <label class="row">
+      <input type="checkbox" name="remember">
+      Remember me
+    </label>
+  </div>
+
+  <!-- Indexed checkboxes (the-internet style) -->
+  <div class="group">
+    <h3>Indexed checkboxes</h3>
+    <div class="row"><input type="checkbox" id="idx1"> checkbox 1</div>
+    <div class="row"><input type="checkbox" id="idx2"> checkbox 2</div>
+    <div class="row"><input type="checkbox" id="idx3"> checkbox 3</div>
+  </div>
+
+  <!-- Custom-widget checkbox (role=checkbox) -->
+  <div class="group">
+    <h3>Custom checkbox — role=checkbox</h3>
+    <div class="row">
+      <span role="checkbox" aria-label="Enable analytics" id="custom-analytics"
+            aria-checked="false" tabindex="0"></span>
+      <span>Enable analytics</span>
+    </div>
+  </div>
+
+  <!-- Custom-widget radio (role=radio) -->
+  <div class="group">
+    <h3>Custom radio — role=radio</h3>
+    <div role="radiogroup" aria-label="Theme">
+      <div class="row">
+        <span role="radio" aria-label="Light theme" id="theme-light"
+              aria-checked="true" tabindex="0"></span>
+        <span>Light</span>
+      </div>
+      <div class="row">
+        <span role="radio" aria-label="Dark theme" id="theme-dark"
+              aria-checked="false" tabindex="-1"></span>
+        <span>Dark</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom-widget toggle (role=switch) -->
+  <div class="group">
+    <h3>Custom toggle — role=switch</h3>
+    <div class="row">
+      <span role="switch" aria-label="Email notifications" id="toggle-email"
+            aria-checked="false" tabindex="0"></span>
+      <span>Email notifications</span>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Bug 1 — ASTPP login (decorative background image)</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; }
+    .login-wrap { position: relative; min-height: 100vh;
+                  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect width='200' height='200' fill='%23123456'/><text x='10' y='110' fill='white' font-size='40'>ASTPP</text></svg>") no-repeat center/cover; }
+    .login-card { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                  background: #fff; padding: 2rem; min-width: 320px; border-radius: 8px;
+                  box-shadow: 0 8px 24px rgba(0,0,0,0.18); }
+    .login-card h2 { margin: 0 0 1rem 0; }
+    .form-group { margin-bottom: 1rem; }
+    .form-group label { display: block; margin-bottom: 4px; font-weight: 600; }
+    .form-control { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+    button[type="submit"] { padding: 8px 16px; background: #2563eb; color: #fff; border: 0;
+                            border-radius: 4px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <!-- Bug 1 fixture: the decorative background image previously confused the
+       browser-use agent into treating the page as already-logged-in. The
+       agent-side fix lives in clients/inextrix/config.json (covered by
+       tests/test_clients/test_inextrix_config.py). This file exists so that
+       Phase 2.4 vision-assist + Bug 1 agent regression tests can mount
+       against a representative DOM. -->
+  <div class="login-wrap">
+    <div class="login-card">
+      <h2>Sign in to ASTPP</h2>
+      <form>
+        <div class="form-group">
+          <label for="username">Username</label>
+          <input class="form-control" id="username" name="username" type="text">
+        </div>
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input class="form-control" id="password" name="password" type="password">
+        </div>
+        <button type="submit">Sign In</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

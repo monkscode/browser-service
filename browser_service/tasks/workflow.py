@@ -12,10 +12,25 @@ import asyncio
 import json
 import logging
 import re
+import structlog
 import time
 
 logger = logging.getLogger(__name__)
 from typing import Dict, Any, List, Optional
+
+
+def bind_request_context(workflow_id=None, org_id=None, user_id=None) -> None:
+    """Bind the FastAPI-supplied correlation id + org/user into structlog so every
+    browser_use.log line for this job carries the same id as the FastAPI side."""
+    ctx = {}
+    if workflow_id:
+        ctx["workflow_id"] = workflow_id
+    if org_id:
+        ctx["org_id"] = org_id
+    if user_id:
+        ctx["user_id"] = user_id
+    if ctx:
+        structlog.contextvars.bind_contextvars(**ctx)
 
 # Import browser-use components
 from browser_use import Agent
@@ -176,7 +191,9 @@ def process_workflow_task(
     session_config: Dict[str, Any],
     enable_custom_actions: Optional[bool] = None,
     task_processor=None,  # TaskProcessor — used to update task status atomically
-    parent_workflow_id: Optional[str] = None
+    parent_workflow_id: Optional[str] = None,
+    org_id: Optional[str] = None,
+    user_id: Optional[str] = None
 ) -> None:
     """
     Process elements as a UNIFIED WORKFLOW in a single browser session.
@@ -200,6 +217,8 @@ def process_workflow_task(
         session_config: Browser configuration
         enable_custom_actions: Optional flag to enable/disable custom actions (defaults to config value)
     """
+    bind_request_context(workflow_id=parent_workflow_id or task_id, org_id=org_id, user_id=user_id)
+
     if task_processor is None:
         raise ValueError("task_processor parameter is required for task tracking")
 

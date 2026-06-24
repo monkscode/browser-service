@@ -158,6 +158,8 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             session_config = data["session_config"]
             enable_custom_actions = data["enable_custom_actions"]
             parent_workflow_id = data.get("parent_workflow_id")  # Optional
+            org_id = data.get("org_id")  # Optional: correlation/observability
+            user_id = data.get("user_id")  # Optional: correlation/observability
 
             # Feature flag: enable_custom_actions (defaults to config value if not provided)
             if enable_custom_actions is None:
@@ -197,7 +199,9 @@ def register_routes(app: Flask, task_processor: Any) -> None:
                 session_config,
                 enable_custom_actions,
                 task_processor,
-                parent_workflow_id  # Pass parent_workflow_id to prevent duplicate metrics
+                parent_workflow_id,  # Pass parent_workflow_id to prevent duplicate metrics
+                org_id,
+                user_id
             )
             if not accepted:
                 active_count = task_processor.count_active_tasks()

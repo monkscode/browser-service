@@ -58,6 +58,8 @@ def validate_workflow_request(request: Request) -> Tuple[bool, Optional[str], Op
     session_config = data.get("session_config", {})
     enable_custom_actions = data.get("enable_custom_actions")
     parent_workflow_id = data.get("parent_workflow_id")  # Optional: for unified metrics
+    org_id = data.get("org_id")  # Optional: correlation/observability
+    user_id = data.get("user_id")  # Optional: correlation/observability
 
     # Return validated data
     validated_data = {
@@ -66,7 +68,9 @@ def validate_workflow_request(request: Request) -> Tuple[bool, Optional[str], Op
         "user_query": user_query,
         "session_config": session_config,
         "enable_custom_actions": enable_custom_actions,
-        "parent_workflow_id": parent_workflow_id
+        "parent_workflow_id": parent_workflow_id,
+        "org_id": org_id,
+        "user_id": user_id
     }
 
     return True, None, validated_data

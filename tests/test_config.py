@@ -17,6 +17,7 @@ Each test targets a distinct code path in config.py:
 """
 
 import os
+import sys
 import pytest
 from unittest.mock import patch
 
@@ -187,9 +188,12 @@ class TestGoogleModelNormalisation:
     def test_strips_gemini_prefix(self):
         """'gemini/gemini-2.5-flash' → 'gemini-2.5-flash'."""
         with patch.dict(os.environ, {"GOOGLE_MODEL": "gemini/gemini-2.5-flash"}, clear=False):
-            # We need to call the real _get_google_model, so import
-            # settings will fail (ImportError) and it falls back to env
-            with patch("browser_service.config.BrowserServiceConfig.__init__", return_value=None):
+            # Stub the settings module to None so the import raises ImportError and
+            # _get_google_model falls back to GOOGLE_MODEL env (the path under test).
+            # In the combined repo src.backend.core.config IS importable, so without
+            # this stub the real settings (ONLINE_MODEL) would shadow the env path.
+            with patch.dict(sys.modules, {"src.backend.core.config": None}), \
+                 patch("browser_service.config.BrowserServiceConfig.__init__", return_value=None):
                 from browser_service.config import BrowserServiceConfig
                 cfg = BrowserServiceConfig.__new__(BrowserServiceConfig)
                 # Bind the real method
@@ -199,7 +203,8 @@ class TestGoogleModelNormalisation:
     def test_no_prefix_unchanged(self):
         """'gemini-2.5-flash' stays 'gemini-2.5-flash'."""
         with patch.dict(os.environ, {"GOOGLE_MODEL": "gemini-2.5-flash"}, clear=False):
-            with patch("browser_service.config.BrowserServiceConfig.__init__", return_value=None):
+            with patch.dict(sys.modules, {"src.backend.core.config": None}), \
+                 patch("browser_service.config.BrowserServiceConfig.__init__", return_value=None):
                 from browser_service.config import BrowserServiceConfig
                 cfg = BrowserServiceConfig.__new__(BrowserServiceConfig)
                 result = BrowserServiceConfig._get_google_model(cfg)
@@ -208,7 +213,8 @@ class TestGoogleModelNormalisation:
     def test_strips_vertex_ai_prefix(self):
         """'vertex_ai/gemini-2.5-flash' → 'gemini-2.5-flash'."""
         with patch.dict(os.environ, {"GOOGLE_MODEL": "vertex_ai/gemini-2.5-flash"}, clear=False):
-            with patch("browser_service.config.BrowserServiceConfig.__init__", return_value=None):
+            with patch.dict(sys.modules, {"src.backend.core.config": None}), \
+                 patch("browser_service.config.BrowserServiceConfig.__init__", return_value=None):
                 from browser_service.config import BrowserServiceConfig
                 cfg = BrowserServiceConfig.__new__(BrowserServiceConfig)
                 result = BrowserServiceConfig._get_google_model(cfg)

@@ -21,7 +21,13 @@ from typing import Dict, Any, List, Optional
 
 def bind_request_context(workflow_id=None, org_id=None, user_id=None) -> None:
     """Bind the FastAPI-supplied correlation id + org/user into structlog so every
-    browser_use.log line for this job carries the same id as the FastAPI side."""
+    browser_use.log line for this job carries the same id as the FastAPI side.
+
+    Clears first: workers run on a reused ThreadPoolExecutor thread, and Python does
+    NOT reset contextvars between submitted tasks, so without this a task missing
+    org_id/user_id would inherit the previous task's identity (cross-request leak).
+    Mirrors bind_workflow_context() on the FastAPI side."""
+    structlog.contextvars.clear_contextvars()
     ctx = {}
     if workflow_id:
         ctx["workflow_id"] = workflow_id

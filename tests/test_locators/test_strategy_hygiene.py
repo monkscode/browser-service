@@ -17,6 +17,7 @@ from browser_service.locators.smart_locator import (
     PRIORITY_TEST_ID,
     _build_coordinate_strategies,
     _build_element_data_candidates,
+    _validate_strategy_candidates,
 )
 
 
@@ -264,3 +265,100 @@ class TestCssEscaping:
         ):
             locator = by_type(strategies, type_name)[0]['locator']
             assert '\\' not in locator, locator
+
+
+class FakeLocator:
+    """Stands in for a Playwright Locator: count() plus the element-info
+    evaluate() that validate_semantic_match's fallback path runs."""
+
+    def __init__(self, count: int, text: str = ''):
+        self._count = count
+        self._text = text
+
+    async def count(self) -> int:
+        return self._count
+
+    async def evaluate(self, js: str) -> dict:
+        return {
+            'textContent': self._text,
+            'textContentLength': len(self._text),
+            'innerText': self._text,
+            'placeholder': '',
+            'ariaLabel': '',
+            'value': '',
+        }
+
+
+class FakeSearchContext:
+    """Maps selector string -> FakeLocator, like page.locator(sel)."""
+
+    def __init__(self, locators: dict):
+        self._locators = locators
+
+    def locator(self, selector: str) -> FakeLocator:
+        return self._locators[selector]
+
+
+def make_strategy_pair() -> list:
+    """A priority-1 id candidate plus a priority-6 text candidate, both of
+    which the fake DOM will report as unique."""
+    return [
+        {'type': 'id', 'locator': 'id=save', 'priority': 1,
+         'strategy': 'Native ID attribute'},
+        {'type': 'text', 'locator': 'text="Submit order"', 'priority': 6,
+         'strategy': 'Visible text content'},
+    ]
+
+
+class TestSemanticGateBeforeEarlyExit:
+    """C6: the priority<=3 early-exit must not trust a unique-but-wrong id.
+
+    The old loop broke on the first unique high-priority candidate without
+    looking at its text. When coordinates land on the wrong element, that
+    left Step 5 with a single semantically-wrong locator -> found=false,
+    even though a lower-priority strategy pointed at the right element.
+    """
+
+    async def test_wrong_text_id_does_not_break_early(self):
+        ctx = FakeSearchContext({
+            'id=save': FakeLocator(1, 'Save draft'),
+            'text="Submit order"': FakeLocator(1, 'Submit order'),
+        })
+        result = await _validate_strategy_candidates(
+            ctx, make_strategy_pair(), expected_text='Submit order'
+        )
+        assert len(result) == 2
+        assert all(r['validated'] and r['unique'] for r in result)
+
+    async def test_vetoed_id_stays_valid_for_step_5(self):
+        """The gate only controls the break - Step 5 stays authoritative,
+        so the wrong-text id must still be recorded as unique/valid."""
+        ctx = FakeSearchContext({
+            'id=save': FakeLocator(1, 'Save draft'),
+            'text="Submit order"': FakeLocator(1, 'Submit order'),
+        })
+        result = await _validate_strategy_candidates(
+            ctx, make_strategy_pair(), expected_text='Submit order'
+        )
+        id_entry = [r for r in result if r['type'] == 'id'][0]
+        assert id_entry['unique'] and id_entry['valid']
+
+    async def test_matching_text_id_keeps_early_exit(self):
+        ctx = FakeSearchContext({
+            'id=save': FakeLocator(1, 'Submit order'),
+            'text="Submit order"': FakeLocator(1, 'Submit order'),
+        })
+        result = await _validate_strategy_candidates(
+            ctx, make_strategy_pair(), expected_text='Submit order'
+        )
+        assert len(result) == 1
+        assert result[0]['type'] == 'id'
+
+    async def test_no_expected_text_keeps_early_exit(self):
+        ctx = FakeSearchContext({
+            'id=save': FakeLocator(1, 'Save draft'),
+            'text="Submit order"': FakeLocator(1, 'Submit order'),
+        })
+        result = await _validate_strategy_candidates(ctx, make_strategy_pair())
+        assert len(result) == 1
+        assert result[0]['type'] == 'id'

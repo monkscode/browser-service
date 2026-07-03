@@ -3008,14 +3008,21 @@ def _build_coordinate_strategies(element_data: dict, library_type: str = "browse
     return locator_strategies
 
 
-async def _validate_strategy_candidates(search_context, sorted_strategies: list) -> list[dict]:
+async def _validate_strategy_candidates(
+    search_context,
+    sorted_strategies: list,
+    expected_text: Optional[str] = None,
+) -> list[dict]:
     """
     Validate strategy candidates for uniqueness against the live DOM.
 
     Runs count() per candidate in priority order, recording the outcome on
     each. Early-exits once a high-priority candidate (priority <= PRIORITY_NAME:
     ID, test attribute, name) validates as unique - remaining candidates stay
-    unvalidated.
+    unvalidated. When expected_text is given, the early-exit additionally
+    requires a semantic match: a unique-but-wrong-text id must not stop the
+    loop, or Step 5 (authoritative selection) never sees the lower-priority
+    strategies that point at the right element.
     """
     validated_locators = []
 
@@ -3052,9 +3059,22 @@ async def _validate_strategy_candidates(search_context, sorted_strategies: list)
                 # If we found a high-priority unique locator (ID, test-id, name), stop searching
                 # Priority 1-3 are considered "high-priority" (ID, test attributes, name)
                 if strategy['priority'] <= PRIORITY_NAME:  # PRIORITY_NAME = 3
-                    logger.info(f"   ⚡ EARLY EXIT: High-priority unique locator found (priority={strategy['priority']})")
-                    logger.info(f"   Skipping validation of {len(sorted_strategies) - idx} remaining strategies")
-                    break  # Exit the loop early
+                    semantic_ok = True
+                    if expected_text:
+                        is_match, observed_text = await validate_semantic_match(
+                            None, expected_text,
+                            page=search_context, locator=strategy['locator']
+                        )
+                        if not is_match:
+                            semantic_ok = False
+                            logger.info(
+                                f"   🛑 SEMANTIC VETO on early exit: expected '{expected_text}', "
+                                f"got '{observed_text[:MAX_TEXT_CONTENT_LENGTH]}' - continuing validation"
+                            )
+                    if semantic_ok:
+                        logger.info(f"   ⚡ EARLY EXIT: High-priority unique locator found (priority={strategy['priority']})")
+                        logger.info(f"   Skipping validation of {len(sorted_strategies) - idx} remaining strategies")
+                        break  # Exit the loop early
                     
             elif count > 1:
                 logger.info(f"   ❌ NOT UNIQUE: count={count}, unique={is_unique}, valid={is_valid}")
@@ -3819,7 +3839,9 @@ async def find_unique_locator_at_coordinates(
     # Sort strategies by priority for optimal early exit
     # Lower priority number = better locator (1=ID is best, 18=XPath-first-of-class is worst)
     sorted_strategies = sorted(locator_strategies, key=lambda x: x['priority'])
-    validated_locators = await _validate_strategy_candidates(search_context, sorted_strategies)
+    validated_locators = await _validate_strategy_candidates(
+        search_context, sorted_strategies, expected_text=expected_text
+    )
 
     # Step 5: Select best locator (unique, lowest priority number)
     # WITH SEMANTIC VALIDATION if expected_text is provided

@@ -2867,13 +2867,17 @@ def _build_coordinate_strategies(element_data: dict, library_type: str = "browse
         })
 
     # Strategy 11: CSS with parent ID context (Priority 8)
+    # Raw id/class values can carry CSS meta characters (Tailwind w-1/2,
+    # md:flex) — escape both, skip when unescapable (same as STEP 0).
     if element_data['parentId'] and element_data['className']:
         first_class = element_data['className'].split(
         )[0] if element_data['className'] else ''
-        if first_class:
+        escaped_parent_id = _escape_css_selector(element_data['parentId'])
+        escaped_class = _escape_css_selector(first_class)
+        if escaped_parent_id and escaped_class:
             locator_strategies.append({
                 'type': 'css-parent-id',
-                'locator': f"#{element_data['parentId']} {element_data['tagName']}.{first_class}",
+                'locator': f"#{escaped_parent_id} {element_data['tagName']}.{escaped_class}",
                 'priority': PRIORITY_CSS_PARENT_ID,
                 'strategy': 'CSS with parent ID context'
             })
@@ -2882,10 +2886,11 @@ def _build_coordinate_strategies(element_data: dict, library_type: str = "browse
     if element_data['siblingIndex'] and element_data['parentClass']:
         first_parent_class = element_data['parentClass'].split(
         )[0] if element_data['parentClass'] else ''
-        if first_parent_class:
+        escaped_parent_class = _escape_css_selector(first_parent_class)
+        if escaped_parent_class:
             locator_strategies.append({
                 'type': 'css-nth-child',
-                'locator': f".{first_parent_class} > {element_data['tagName']}:nth-child({element_data['siblingIndex']})",
+                'locator': f".{escaped_parent_class} > {element_data['tagName']}:nth-child({element_data['siblingIndex']})",
                 'priority': PRIORITY_CSS_NTH_CHILD,
                 'strategy': 'CSS with nth-child'
             })
@@ -2894,10 +2899,11 @@ def _build_coordinate_strategies(element_data: dict, library_type: str = "browse
     if element_data['className']:
         first_class = element_data['className'].split(
         )[0] if element_data['className'] else ''
-        if first_class:
+        escaped_class = _escape_css_selector(first_class)
+        if escaped_class:
             locator_strategies.append({
                 'type': 'css-class',
-                'locator': f"{element_data['tagName']}.{first_class}",
+                'locator': f"{element_data['tagName']}.{escaped_class}",
                 'priority': PRIORITY_CSS_CLASS,
                 'strategy': 'Simple CSS class'
             })

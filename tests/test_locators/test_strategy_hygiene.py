@@ -201,3 +201,66 @@ class TestXPathStringLiterals:
         )
         locator = by_type(strategies, 'xpath-multi-attr')[0]['locator']
         assert f"contains(text(), '{'y' * 30}')" in locator
+
+
+class TestCssEscaping:
+    """C5: raw class/id values must be CSS-escaped in the STEP-3 CSS strategies.
+
+    Tailwind-style classes (w-1/2, md:flex, p-1.5) contain characters with
+    CSS meta meaning. Unescaped they made Strategies 11/12/13 invalid
+    selectors that threw on every page using such classes. Only those three
+    strategies interpolate raw values into CSS - the XPath class strategies
+    quote the value as a plain string and must NOT be CSS-escaped.
+    """
+
+    def test_css_class_escapes_tailwind_slash(self):
+        strategies = _build_coordinate_strategies(
+            make_element_data(className='w-1/2 p-4')
+        )
+        assert by_type(strategies, 'css-class')[0]['locator'] == 'button.w-1\\/2'
+
+    def test_css_parent_id_escapes_id_and_class(self):
+        strategies = _build_coordinate_strategies(
+            make_element_data(parentId='form:main', className='w-1/2 p-4')
+        )
+        locator = by_type(strategies, 'css-parent-id')[0]['locator']
+        assert locator == '#form\\:main button.w-1\\/2'
+
+    def test_css_nth_child_escapes_parent_class(self):
+        strategies = _build_coordinate_strategies(
+            make_element_data(parentClass='grid-2/3 wrap', siblingIndex=2)
+        )
+        locator = by_type(strategies, 'css-nth-child')[0]['locator']
+        assert locator == '.grid-2\\/3 > button:nth-child(2)'
+
+    def test_unescapable_parent_id_skips_css_strategy_only(self):
+        """Whitespace inside an id cannot be CSS-escaped -> skip Strategy 11.
+
+        The XPath parent-id strategy quotes the id as a string and survives.
+        """
+        strategies = _build_coordinate_strategies(
+            make_element_data(parentId='my id', className='btn')
+        )
+        assert by_type(strategies, 'css-parent-id') == []
+        assert len(by_type(strategies, 'xpath-parent-id')) == 1
+
+    def test_plain_values_unchanged(self):
+        strategies = _build_coordinate_strategies(
+            make_element_data(parentId='formMain', className='btn primary')
+        )
+        assert by_type(strategies, 'css-parent-id')[0]['locator'] == '#formMain button.btn'
+        assert by_type(strategies, 'css-class')[0]['locator'] == 'button.btn'
+
+    def test_xpath_class_strategies_keep_raw_slash(self):
+        strategies = _build_coordinate_strategies(
+            make_element_data(
+                className='w-1/2 p-4', parentClass='grid-2/3 x', siblingIndex=2
+            )
+        )
+        for type_name in (
+            'xpath-parent-class-position',
+            'xpath-class-position',
+            'xpath-first-of-class',
+        ):
+            locator = by_type(strategies, type_name)[0]['locator']
+            assert '\\' not in locator, locator

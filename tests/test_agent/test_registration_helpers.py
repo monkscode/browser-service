@@ -80,6 +80,41 @@ class TestExtractDomNodeAttributes:
         assert result["tagName"] == "span"
         assert result["id"] == ""
 
+    # --- C3: the source test attribute must be carried with the value ---
+
+    def _make_node(self, attrs):
+        node = MagicMock()
+        node.node_name = "BUTTON"
+        node.attributes = attrs
+        node.xpath = ""
+        return node
+
+    def test_data_testid_carries_source_attr(self):
+        """data-testid present → dataTestAttr names data-testid."""
+        result = self._get_fn()(self._make_node({"data-testid": "login-btn"}))
+        assert result["dataTestId"] == "login-btn"
+        assert result["dataTestAttr"] == "data-testid"
+
+    def test_data_test_only_carries_source_attr(self):
+        """C3 regression: element with ONLY data-test must not be reported as
+        data-testid — the emitter would build [data-testid=...] which matches
+        0 elements and silently loses the hook."""
+        result = self._get_fn()(self._make_node({"data-test": "login-btn"}))
+        assert result["dataTestId"] == "login-btn"
+        assert result["dataTestAttr"] == "data-test"
+
+    def test_both_test_attrs_prefer_data_testid(self):
+        result = self._get_fn()(
+            self._make_node({"data-testid": "tid", "data-test": "t"})
+        )
+        assert result["dataTestId"] == "tid"
+        assert result["dataTestAttr"] == "data-testid"
+
+    def test_neither_test_attr_defaults(self):
+        result = self._get_fn()(self._make_node({"id": "x"}))
+        assert result["dataTestId"] == ""
+        assert result["dataTestAttr"] == "data-testid"
+
 
 class TestDetectIframeContext:
     """Tests for _detect_iframe_context."""

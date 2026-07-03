@@ -2223,13 +2223,17 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
                 'strategy': 'ID selector from element_data'
             })
     
-    # Priority 2: data-testid (very stable for testing)
+    # Priority 2: test attribute (very stable for testing)
+    # dataTestId may have been sourced from data-test rather than data-testid
+    # (see _extract_dom_node_attributes) — emit the attribute that actually
+    # exists on the element or the selector matches 0 elements.
     if element_data.get('dataTestId'):
+        test_attr = element_data.get('dataTestAttr') or 'data-testid'
         locator_candidates.append({
-            'locator': f'[data-testid="{element_data["dataTestId"]}"]',
-            'type': 'data-testid',
+            'locator': f'[{test_attr}="{element_data["dataTestId"]}"]',
+            'type': test_attr,
             'priority': PRIORITY_TEST_ID,
-            'strategy': 'data-testid from element_data'
+            'strategy': f'{test_attr} from element_data'
         })
     
     # Priority 3: name attribute

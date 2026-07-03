@@ -16,6 +16,7 @@ watched fail before the fix landed.
 from browser_service.locators.smart_locator import (
     PRIORITY_TEST_ID,
     _build_coordinate_strategies,
+    _build_element_data_candidates,
 )
 
 
@@ -93,3 +94,40 @@ class TestDataQaStrategyForm:
         """data-testid IS a built-in Playwright engine - its form must not change."""
         strategies = _build_coordinate_strategies(make_element_data(dataTestId='login'))
         assert by_type(strategies, 'data-testid')[0]['locator'] == 'data-testid=login'
+
+
+class TestElementDataTestAttribute:
+    """C3: STEP 0 must emit the test attribute that actually exists.
+
+    _extract_dom_node_attributes coalesces data-testid/data-test into one
+    dataTestId field. The old emitter always built [data-testid=...], so an
+    element carrying only data-test produced a selector matching 0 elements
+    and the best available hook was silently lost.
+    """
+
+    def test_data_test_source_emits_data_test_selector(self):
+        candidates = _build_element_data_candidates(
+            {'dataTestId': 'login-btn', 'dataTestAttr': 'data-test'}
+        )
+        test_candidates = [c for c in candidates if c['priority'] == PRIORITY_TEST_ID]
+        assert len(test_candidates) == 1
+        assert test_candidates[0]['locator'] == '[data-test="login-btn"]'
+        assert test_candidates[0]['type'] == 'data-test'
+
+    def test_data_testid_source_emits_data_testid_selector(self):
+        candidates = _build_element_data_candidates(
+            {'dataTestId': 'login-btn', 'dataTestAttr': 'data-testid'}
+        )
+        test_candidates = [c for c in candidates if c['priority'] == PRIORITY_TEST_ID]
+        assert test_candidates[0]['locator'] == '[data-testid="login-btn"]'
+        assert test_candidates[0]['type'] == 'data-testid'
+
+    def test_missing_source_attr_defaults_to_data_testid(self):
+        """element_data built by older/other paths has no dataTestAttr key."""
+        candidates = _build_element_data_candidates({'dataTestId': 'login-btn'})
+        test_candidates = [c for c in candidates if c['priority'] == PRIORITY_TEST_ID]
+        assert test_candidates[0]['locator'] == '[data-testid="login-btn"]'
+
+    def test_no_test_attr_no_candidate(self):
+        candidates = _build_element_data_candidates({'id': 'x'})
+        assert [c for c in candidates if c['priority'] == PRIORITY_TEST_ID] == []

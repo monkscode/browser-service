@@ -77,6 +77,13 @@ def _extract_dom_node_attributes(dom_node) -> dict:
         Dictionary with standard element attributes
     """
     attrs = dom_node.attributes if hasattr(dom_node, 'attributes') else {}
+    # Carry WHICH test attribute produced the value — an element with only
+    # data-test must not be looked up as [data-testid=...] (0 matches, hook lost).
+    data_test_attr = (
+        'data-test'
+        if (not attrs.get('data-testid') and attrs.get('data-test'))
+        else 'data-testid'
+    )
     return {
         'tagName': dom_node.node_name.lower() if hasattr(dom_node, 'node_name') else '',
         'id': attrs.get('id', ''),
@@ -88,6 +95,7 @@ def _extract_dom_node_attributes(dom_node) -> dict:
         'href': attrs.get('href', ''),
         'role': attrs.get('role', ''),
         'dataTestId': attrs.get('data-testid', '') or attrs.get('data-test', ''),
+        'dataTestAttr': data_test_attr,
         'type': attrs.get('type', ''),  # For input elements
         'value': attrs.get('value', ''),  # Current value of input
         'xpath': dom_node.xpath if hasattr(dom_node, 'xpath') else '',

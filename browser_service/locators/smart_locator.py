@@ -2777,10 +2777,13 @@ def _build_coordinate_strategies(element_data: dict, library_type: str = "browse
         })
 
     # Strategy 4: data-qa (Priority 2)
+    # Playwright has no data-qa selector engine (data-testid/data-test are
+    # built-in, data-qa is not) — only the CSS attribute form resolves.
     if element_data['dataQa']:
+        data_qa_escaped = element_data['dataQa'].replace('"', '\\"')
         locator_strategies.append({
             'type': 'data-qa',
-            'locator': f"data-qa={element_data['dataQa']}",
+            'locator': f'[data-qa="{data_qa_escaped}"]',
             'priority': PRIORITY_TEST_ID,
             'strategy': 'QA attribute'
         })

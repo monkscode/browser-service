@@ -28,6 +28,7 @@ Usage:
 
 import asyncio
 import logging
+import time
 from typing import Dict, Any, Optional
 
 # Get logger
@@ -454,6 +455,9 @@ async def find_unique_locator_action(
             else:
                 search_context = page
             
+            # Per-element latency telemetry (bench harness). The timer line is
+            # emitted on the timeout path too, so every element yields a sample.
+            _locator_timer_start = time.monotonic()
             result = await asyncio.wait_for(
                 find_unique_locator_at_coordinates(
                     page=page,
@@ -474,6 +478,16 @@ async def find_unique_locator_action(
                 timeout=custom_action_timeout
             )
 
+            duration_ms = (time.monotonic() - _locator_timer_start) * 1000.0
+            logger.info(
+                f"LOCATOR_TIMER element_id={element_id} "
+                f"duration_ms={duration_ms:.1f} found={bool(result.get('found'))}"
+            )
+            # Only enrich an EXISTING approach_metrics dict — failure results may
+            # not carry one, and inventing it here would corrupt pattern analysis.
+            if isinstance(result.get('approach_metrics'), dict):
+                result['approach_metrics']['duration_ms'] = round(duration_ms, 1)
+
             # Log the result with detailed information
             if result.get('found'):
                 _log_success_result(element_id, result)
@@ -483,6 +497,11 @@ async def find_unique_locator_action(
             return result
 
         except asyncio.TimeoutError:
+            duration_ms = (time.monotonic() - _locator_timer_start) * 1000.0
+            logger.info(
+                f"LOCATOR_TIMER element_id={element_id} "
+                f"duration_ms={duration_ms:.1f} found=False"
+            )
             # Handle timeout gracefully
             timeout_msg = f"Smart locator finder timed out after {custom_action_timeout} seconds"
             logger.error(f"⏱️ {timeout_msg}")

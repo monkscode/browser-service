@@ -131,3 +131,73 @@ class TestElementDataTestAttribute:
     def test_no_test_attr_no_candidate(self):
         candidates = _build_element_data_candidates({'id': 'x'})
         assert [c for c in candidates if c['priority'] == PRIORITY_TEST_ID] == []
+
+
+class TestXPathStringLiterals:
+    """C4: XPath text values must be real XPath 1.0 string literals.
+
+    The old code did text.replace("'", "\\'") — XPath 1.0 has no backslash
+    escaping, so any apostrophe made the expression a syntax error and the
+    strategy died. _xpath_string_literal picks quoting (or concat()) that is
+    always valid.
+    """
+
+    def test_xpath_text_with_apostrophe(self):
+        strategies = _build_coordinate_strategies(
+            make_element_data(innerText="It's a deal")
+        )
+        locator = by_type(strategies, 'xpath-text')[0]['locator']
+        assert locator == 'xpath=//button[contains(text(), "It\'s a deal")]'
+
+    def test_xpath_title_with_apostrophe(self):
+        strategies = _build_coordinate_strategies(
+            make_element_data(title="Bob's data")
+        )
+        locator = by_type(strategies, 'xpath-title')[0]['locator']
+        assert locator == 'xpath=//button[@title="Bob\'s data"]'
+
+    def test_xpath_multi_attr_with_apostrophe(self):
+        strategies = _build_coordinate_strategies(
+            make_element_data(className='btn', innerText="It's here")
+        )
+        locator = by_type(strategies, 'xpath-multi-attr')[0]['locator']
+        assert locator == (
+            'xpath=//button[contains(@class, \'btn\')'
+            ' and contains(text(), "It\'s here")]'
+        )
+
+    def test_no_backslash_escaping_anywhere(self):
+        strategies = _build_coordinate_strategies(
+            make_element_data(className='btn', innerText="It's", title="Bob's")
+        )
+        for s in strategies:
+            assert "\\'" not in s['locator'], s
+
+    def test_both_quote_types_use_concat(self):
+        strategies = _build_coordinate_strategies(
+            make_element_data(innerText='He said "don\'t" now')
+        )
+        locator = by_type(strategies, 'xpath-text')[0]['locator']
+        assert 'concat(' in locator
+        assert "\\'" not in locator
+
+    def test_plain_text_keeps_single_quotes(self):
+        strategies = _build_coordinate_strategies(
+            make_element_data(innerText='Submit Order')
+        )
+        locator = by_type(strategies, 'xpath-text')[0]['locator']
+        assert locator == "xpath=//button[contains(text(), 'Submit Order')]"
+
+    def test_xpath_text_truncates_raw_text_to_50(self):
+        strategies = _build_coordinate_strategies(
+            make_element_data(innerText='x' * 60)
+        )
+        locator = by_type(strategies, 'xpath-text')[0]['locator']
+        assert locator == f"xpath=//button[contains(text(), '{'x' * 50}')]"
+
+    def test_xpath_multi_attr_truncates_raw_text_to_30(self):
+        strategies = _build_coordinate_strategies(
+            make_element_data(className='btn', innerText='y' * 40)
+        )
+        locator = by_type(strategies, 'xpath-multi-attr')[0]['locator']
+        assert f"contains(text(), '{'y' * 30}')" in locator

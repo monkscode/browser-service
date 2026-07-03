@@ -560,6 +560,7 @@ from .handlers import dropdown as _dropdown_handler
 from .handlers.checkbox import (
     find_checkbox_or_radio_by_label as _find_checkbox_or_radio_by_label,
 )
+from .handlers.dropdown import _xpath_string_literal
 from .handlers.collection import (
     _is_collection_element,
     _extract_collection_class,
@@ -2923,21 +2924,25 @@ def _build_coordinate_strategies(element_data: dict, library_type: str = "browse
             })
 
     # Strategy 16: XPath with text (Priority 13)
+    # XPath 1.0 has no backslash escaping — _xpath_string_literal builds a
+    # valid literal (concat() when both quote types are present).
     if element_data['innerText'] and len(element_data['innerText']) > MIN_TEXT_LENGTH:
-        text = element_data['innerText'].replace("'", "\\'")
+        text_literal = _xpath_string_literal(
+            element_data['innerText'][:MAX_TEXT_DISPLAY_LENGTH]
+        )
         locator_strategies.append({
             'type': 'xpath-text',
-            'locator': f"xpath=//{element_data['tagName']}[contains(text(), '{text[:MAX_TEXT_DISPLAY_LENGTH]}')]",
+            'locator': f"xpath=//{element_data['tagName']}[contains(text(), {text_literal})]",
             'priority': PRIORITY_XPATH_TEXT,
             'strategy': 'XPath with text content'
         })
 
     # Strategy 17: XPath with title attribute (Priority 14)
     if element_data['title']:
-        title = element_data['title'].replace("'", "\\'")
+        title_literal = _xpath_string_literal(element_data['title'])
         locator_strategies.append({
             'type': 'xpath-title',
-            'locator': f"xpath=//{element_data['tagName']}[@title='{title}']",
+            'locator': f"xpath=//{element_data['tagName']}[@title={title_literal}]",
             'priority': PRIORITY_XPATH_TITLE,
             'strategy': 'XPath with title attribute'
         })
@@ -2972,11 +2977,12 @@ def _build_coordinate_strategies(element_data: dict, library_type: str = "browse
     if element_data['className'] and element_data['innerText']:
         first_class = element_data['className'].split(
         )[0] if element_data['className'] else ''
-        text = element_data['innerText'].replace("'", "\\'")[:30]
+        text = element_data['innerText'][:30]
         if first_class and text:
+            text_literal = _xpath_string_literal(text)
             locator_strategies.append({
                 'type': 'xpath-multi-attr',
-                'locator': f"xpath=//{element_data['tagName']}[contains(@class, '{first_class}') and contains(text(), '{text}')]",
+                'locator': f"xpath=//{element_data['tagName']}[contains(@class, '{first_class}') and contains(text(), {text_literal})]",
                 'priority': PRIORITY_XPATH_MULTI_ATTR,
                 'strategy': 'XPath with class and text'
             })

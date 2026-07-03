@@ -2193,6 +2193,127 @@ def _attach_classifier_metadata(
         result["vision_type_hint"] = vision_type_hint
 
 
+def _build_element_data_candidates(element_data: dict) -> list[dict]:
+    """
+    Build prioritized locator candidates from browser-use DOM attributes.
+
+    Pure candidate generation for STEP 0 (element-data locators): direct
+    attributes first (id, test id, name, aria-label, placeholder), then
+    parent-context CSS for elements without id/name. Uniqueness validation
+    happens in the caller.
+    """
+    locator_candidates = []
+
+    # Priority 1: ID (most stable)
+    if element_data.get('id'):
+        element_id_val = element_data['id']
+        # Handle numeric IDs with attribute selector
+        if element_id_val.isdigit():
+            locator_candidates.append({
+                'locator': f'[id="{element_id_val}"]',
+                'type': 'id-attr',
+                'priority': PRIORITY_ID,
+                'strategy': 'ID attribute selector (numeric ID)'
+            })
+        else:
+            locator_candidates.append({
+                'locator': f'#{element_id_val}',  # Use CSS ID selector - Playwright native format
+                'type': 'id',
+                'priority': PRIORITY_ID,
+                'strategy': 'ID selector from element_data'
+            })
+    
+    # Priority 2: data-testid (very stable for testing)
+    if element_data.get('dataTestId'):
+        locator_candidates.append({
+            'locator': f'[data-testid="{element_data["dataTestId"]}"]',
+            'type': 'data-testid',
+            'priority': PRIORITY_TEST_ID,
+            'strategy': 'data-testid from element_data'
+        })
+    
+    # Priority 3: name attribute
+    if element_data.get('name'):
+        locator_candidates.append({
+            'locator': f'[name="{element_data["name"]}"]',
+            'type': 'name',
+            'priority': PRIORITY_NAME,
+            'strategy': 'Name attribute from element_data'
+        })
+    
+    # Priority 4: aria-label (with role if available)
+    if element_data.get('ariaLabel'):
+        aria_label = element_data['ariaLabel']
+        role = element_data.get('role')
+        if role:
+            locator_candidates.append({
+                'locator': f'[role="{role}"][aria-label="{aria_label}"]',
+                'type': 'aria-role',
+                'priority': PRIORITY_ARIA_LABEL,
+                'strategy': 'ARIA label + role from element_data'
+            })
+        else:
+            locator_candidates.append({
+                'locator': f'[aria-label="{aria_label}"]',
+                'type': 'aria-label',
+                'priority': PRIORITY_ARIA_LABEL,
+                'strategy': 'ARIA label from element_data'
+            })
+    
+    # Priority 5: placeholder (for inputs)
+    if element_data.get('placeholder'):
+        locator_candidates.append({
+            'locator': f'[placeholder="{element_data["placeholder"]}"]',
+            'type': 'placeholder',
+            'priority': PRIORITY_PLACEHOLDER,
+            'strategy': 'Placeholder attribute from element_data'
+        })
+    
+    # Priority 5.5: Parent-context CSS locators (for elements without id/name)
+    # When element lacks direct id/name but has parent with id/class, generate
+    # stable CSS selectors like "#parentId input" or ".parentClass input"
+    # This is MORE STABLE than xpath because it uses semantic anchors
+    if not element_data.get('id') and not element_data.get('name'):
+        tag_name = element_data.get('tagName', '')
+        parent_id = element_data.get('parentId', '')
+        parent_class = element_data.get('parentClass', '')
+        input_type = element_data.get('type', '')
+        
+        # Build CSS selector using parent context
+        escaped_parent_id = _escape_css_selector(parent_id)
+        if escaped_parent_id and tag_name:
+            # Use parent id + tag name (e.g., "#formContainer input")
+            css_locator = f'#{escaped_parent_id} {tag_name}'
+            if input_type:
+                # Be more specific for inputs (e.g., "#formContainer input[type='text']")
+                css_locator = f'#{escaped_parent_id} {tag_name}[type="{input_type}"]'
+            locator_candidates.append({
+                'locator': css_locator,
+                'type': 'parent-id-css',
+                'priority': PRIORITY_CSS_PARENT_ID,
+                'strategy': f'Parent ID context + tag (#{parent_id} {tag_name})'
+            })
+            logger.info(f"   📋 Added parent-context CSS: {css_locator}")
+        
+        elif parent_class and tag_name:
+            # Use first significant class from parent (escape special chars)
+            first_class = parent_class.split()[0] if ' ' in parent_class else parent_class
+            escaped_class = _escape_css_selector(first_class)
+            if escaped_class:
+                css_locator = f'.{escaped_class} {tag_name}'
+                if input_type:
+                    css_locator = f'.{escaped_class} {tag_name}[type="{input_type}"]'
+                locator_candidates.append({
+                    'locator': css_locator,
+                    'type': 'parent-class-css',
+                    'priority': PRIORITY_CSS_CLASS,
+                    'strategy': f'Parent class context + tag (.{first_class} {tag_name})'
+                })
+                logger.info(f"   📋 Added parent-context CSS: {css_locator}")
+
+    return locator_candidates
+
+
 async def _generate_locators_from_element_data(
     search_context,  # Can be page or frame_locator when in iframe context
     element_data: dict[str, Any],
@@ -2428,114 +2549,7 @@ async def _generate_locators_from_element_data(
     # SINGLE ELEMENT LOCATOR GENERATION
     # ========================================
     # Generate candidate locators in priority order
-    locator_candidates = []
-    
-    # Priority 1: ID (most stable)
-    if element_data.get('id'):
-        element_id_val = element_data['id']
-        # Handle numeric IDs with attribute selector
-        if element_id_val.isdigit():
-            locator_candidates.append({
-                'locator': f'[id="{element_id_val}"]',
-                'type': 'id-attr',
-                'priority': PRIORITY_ID,
-                'strategy': 'ID attribute selector (numeric ID)'
-            })
-        else:
-            locator_candidates.append({
-                'locator': f'#{element_id_val}',  # Use CSS ID selector - Playwright native format
-                'type': 'id',
-                'priority': PRIORITY_ID,
-                'strategy': 'ID selector from element_data'
-            })
-    
-    # Priority 2: data-testid (very stable for testing)
-    if element_data.get('dataTestId'):
-        locator_candidates.append({
-            'locator': f'[data-testid="{element_data["dataTestId"]}"]',
-            'type': 'data-testid',
-            'priority': PRIORITY_TEST_ID,
-            'strategy': 'data-testid from element_data'
-        })
-    
-    # Priority 3: name attribute
-    if element_data.get('name'):
-        locator_candidates.append({
-            'locator': f'[name="{element_data["name"]}"]',
-            'type': 'name',
-            'priority': PRIORITY_NAME,
-            'strategy': 'Name attribute from element_data'
-        })
-    
-    # Priority 4: aria-label (with role if available)
-    if element_data.get('ariaLabel'):
-        aria_label = element_data['ariaLabel']
-        role = element_data.get('role')
-        if role:
-            locator_candidates.append({
-                'locator': f'[role="{role}"][aria-label="{aria_label}"]',
-                'type': 'aria-role',
-                'priority': PRIORITY_ARIA_LABEL,
-                'strategy': 'ARIA label + role from element_data'
-            })
-        else:
-            locator_candidates.append({
-                'locator': f'[aria-label="{aria_label}"]',
-                'type': 'aria-label',
-                'priority': PRIORITY_ARIA_LABEL,
-                'strategy': 'ARIA label from element_data'
-            })
-    
-    # Priority 5: placeholder (for inputs)
-    if element_data.get('placeholder'):
-        locator_candidates.append({
-            'locator': f'[placeholder="{element_data["placeholder"]}"]',
-            'type': 'placeholder',
-            'priority': PRIORITY_PLACEHOLDER,
-            'strategy': 'Placeholder attribute from element_data'
-        })
-    
-    # Priority 5.5: Parent-context CSS locators (for elements without id/name)
-    # When element lacks direct id/name but has parent with id/class, generate
-    # stable CSS selectors like "#parentId input" or ".parentClass input"
-    # This is MORE STABLE than xpath because it uses semantic anchors
-    if not element_data.get('id') and not element_data.get('name'):
-        tag_name = element_data.get('tagName', '')
-        parent_id = element_data.get('parentId', '')
-        parent_class = element_data.get('parentClass', '')
-        input_type = element_data.get('type', '')
-        
-        # Build CSS selector using parent context
-        escaped_parent_id = _escape_css_selector(parent_id)
-        if escaped_parent_id and tag_name:
-            # Use parent id + tag name (e.g., "#formContainer input")
-            css_locator = f'#{escaped_parent_id} {tag_name}'
-            if input_type:
-                # Be more specific for inputs (e.g., "#formContainer input[type='text']")
-                css_locator = f'#{escaped_parent_id} {tag_name}[type="{input_type}"]'
-            locator_candidates.append({
-                'locator': css_locator,
-                'type': 'parent-id-css',
-                'priority': PRIORITY_CSS_PARENT_ID,
-                'strategy': f'Parent ID context + tag (#{parent_id} {tag_name})'
-            })
-            logger.info(f"   📋 Added parent-context CSS: {css_locator}")
-        
-        elif parent_class and tag_name:
-            # Use first significant class from parent (escape special chars)
-            first_class = parent_class.split()[0] if ' ' in parent_class else parent_class
-            escaped_class = _escape_css_selector(first_class)
-            if escaped_class:
-                css_locator = f'.{escaped_class} {tag_name}'
-                if input_type:
-                    css_locator = f'.{escaped_class} {tag_name}[type="{input_type}"]'
-                locator_candidates.append({
-                    'locator': css_locator,
-                    'type': 'parent-class-css',
-                    'priority': PRIORITY_CSS_CLASS,
-                    'strategy': f'Parent class context + tag (.{first_class} {tag_name})'
-                })
-                logger.info(f"   📋 Added parent-context CSS: {css_locator}")
+    locator_candidates = _build_element_data_candidates(element_data)
     
     # ========================================
     # SMART LOCATOR FALLBACK (when no id/name/aria-label available)
@@ -2722,6 +2736,328 @@ async def _generate_locators_from_element_data(
     
     logger.info(f"   ⚠️ ELEMENT-DATA: No unique locator found, falling back to other strategies")
     return None
+
+
+def _build_coordinate_strategies(element_data: dict, library_type: str = "browser") -> list[dict]:
+    """
+    Build the coordinate-fallback locator strategies from extracted element data.
+
+    Pure candidate generation for the 21-strategy cascade (STEP 3): given the
+    element attributes read from the DOM at the confirmed coordinates, emit
+    every applicable strategy in priority order (lower = better). Uniqueness
+    validation happens in _validate_strategy_candidates.
+    """
+    locator_strategies = []
+
+    # Strategy 1: ID (Priority 1 - Best)
+    if element_data['id']:
+        locator_strategies.append({
+            'type': 'id',
+            'locator': f"id={element_data['id']}",
+            'priority': PRIORITY_ID,
+            'strategy': 'Native ID attribute'
+        })
+
+    # Strategy 2: data-testid (Priority 2)
+    if element_data['dataTestId']:
+        locator_strategies.append({
+            'type': 'data-testid',
+            'locator': f"data-testid={element_data['dataTestId']}",
+            'priority': PRIORITY_TEST_ID,
+            'strategy': 'Test ID attribute'
+        })
+
+    # Strategy 3: data-test (Priority 2)
+    if element_data['dataTest']:
+        locator_strategies.append({
+            'type': 'data-test',
+            'locator': f"data-test={element_data['dataTest']}",
+            'priority': PRIORITY_TEST_ID,
+            'strategy': 'Test attribute'
+        })
+
+    # Strategy 4: data-qa (Priority 2)
+    if element_data['dataQa']:
+        locator_strategies.append({
+            'type': 'data-qa',
+            'locator': f"data-qa={element_data['dataQa']}",
+            'priority': PRIORITY_TEST_ID,
+            'strategy': 'QA attribute'
+        })
+
+    # Strategy 5: name (Priority 3)
+    # Note: Browser Library (Playwright) doesn't support name= prefix
+    # SeleniumLibrary supports name= prefix
+    if element_data['name']:
+        if library_type == "browser":
+            # Browser Library: use attribute selector
+            name_escaped = element_data['name'].replace('"', '\\"')
+            locator_strategies.append({
+                'type': 'name',
+                'locator': f'[name="{name_escaped}"]',
+                'priority': PRIORITY_NAME,
+                'strategy': 'Name attribute'
+            })
+        else:
+            # SeleniumLibrary: use name= prefix
+            locator_strategies.append({
+                'type': 'name',
+                'locator': f"name={element_data['name']}",
+                'priority': PRIORITY_NAME,
+                'strategy': 'Name attribute'
+            })
+
+    # Strategy 6: aria-label (Priority 4)
+    if element_data['ariaLabel']:
+        aria_label_escaped = element_data['ariaLabel'].replace('"', '\\"')
+        locator_strategies.append({
+            'type': 'aria-label',
+            'locator': f'[aria-label="{aria_label_escaped}"]',
+            'priority': PRIORITY_ARIA_LABEL,
+            'strategy': 'ARIA label'
+        })
+
+    # Strategy 7: placeholder (Priority 5)
+    if element_data['placeholder']:
+        placeholder_escaped = element_data['placeholder'].replace('"', '\\"')
+        locator_strategies.append({
+            'type': 'placeholder',
+            'locator': f'[placeholder="{placeholder_escaped}"]',
+            'priority': PRIORITY_PLACEHOLDER,
+            'strategy': 'Placeholder attribute'
+        })
+
+    # Strategy 8: title (Priority 5)
+    if element_data['title']:
+        title_escaped = element_data['title'].replace('"', '\\"')
+        locator_strategies.append({
+            'type': 'title',
+            'locator': f'[title="{title_escaped}"]',
+            'priority': PRIORITY_PLACEHOLDER,
+            'strategy': 'Title attribute'
+        })
+
+    # Strategy 9: Text content (Priority 6)
+    if element_data['innerText'] and len(element_data['innerText']) > MIN_TEXT_LENGTH:
+        # Escape quotes in text
+        text = element_data['innerText'].replace('"', '\\"')
+        locator_strategies.append({
+            'type': 'text',
+            'locator': f'text="{text}"',
+            'priority': PRIORITY_TEXT,
+            'strategy': 'Visible text content'
+        })
+
+    # Strategy 10: Role + Name (Priority 7)
+    if element_data['role'] and element_data['innerText']:
+        text = element_data['innerText'].replace('"', '\\"')
+        locator_strategies.append({
+            'type': 'role',
+            'locator': f'role={element_data["role"]}[name="{text}"]',
+            'priority': PRIORITY_ROLE,
+            'strategy': 'ARIA role with name'
+        })
+
+    # Strategy 11: CSS with parent ID context (Priority 8)
+    if element_data['parentId'] and element_data['className']:
+        first_class = element_data['className'].split(
+        )[0] if element_data['className'] else ''
+        if first_class:
+            locator_strategies.append({
+                'type': 'css-parent-id',
+                'locator': f"#{element_data['parentId']} {element_data['tagName']}.{first_class}",
+                'priority': PRIORITY_CSS_PARENT_ID,
+                'strategy': 'CSS with parent ID context'
+            })
+
+    # Strategy 12: CSS with nth-child (Priority 9)
+    if element_data['siblingIndex'] and element_data['parentClass']:
+        first_parent_class = element_data['parentClass'].split(
+        )[0] if element_data['parentClass'] else ''
+        if first_parent_class:
+            locator_strategies.append({
+                'type': 'css-nth-child',
+                'locator': f".{first_parent_class} > {element_data['tagName']}:nth-child({element_data['siblingIndex']})",
+                'priority': PRIORITY_CSS_NTH_CHILD,
+                'strategy': 'CSS with nth-child'
+            })
+
+    # Strategy 13: Simple CSS class (Priority 10)
+    if element_data['className']:
+        first_class = element_data['className'].split(
+        )[0] if element_data['className'] else ''
+        if first_class:
+            locator_strategies.append({
+                'type': 'css-class',
+                'locator': f"{element_data['tagName']}.{first_class}",
+                'priority': PRIORITY_CSS_CLASS,
+                'strategy': 'Simple CSS class'
+            })
+
+    # Strategy 14: XPath with parent ID (Priority 11)
+    if element_data['parentId']:
+        locator_strategies.append({
+            'type': 'xpath-parent-id',
+            'locator': f"xpath=//*[@id='{element_data['parentId']}']//{element_data['tagName']}",
+            'priority': PRIORITY_XPATH_PARENT_ID,
+            'strategy': 'XPath with parent ID'
+        })
+
+    # Strategy 15: XPath with parent class and position (Priority 12)
+    if element_data['parentClass'] and element_data['siblingIndex']:
+        first_parent_class = element_data['parentClass'].split(
+        )[0] if element_data['parentClass'] else ''
+        if first_parent_class:
+            locator_strategies.append({
+                'type': 'xpath-parent-class-position',
+                'locator': f"xpath=//*[contains(@class, '{first_parent_class}')]//{element_data['tagName']}[{element_data['siblingIndex']}]",
+                'priority': PRIORITY_XPATH_PARENT_CLASS,
+                'strategy': 'XPath with parent class and position'
+            })
+
+    # Strategy 16: XPath with text (Priority 13)
+    if element_data['innerText'] and len(element_data['innerText']) > MIN_TEXT_LENGTH:
+        text = element_data['innerText'].replace("'", "\\'")
+        locator_strategies.append({
+            'type': 'xpath-text',
+            'locator': f"xpath=//{element_data['tagName']}[contains(text(), '{text[:MAX_TEXT_DISPLAY_LENGTH]}')]",
+            'priority': PRIORITY_XPATH_TEXT,
+            'strategy': 'XPath with text content'
+        })
+
+    # Strategy 17: XPath with title attribute (Priority 14)
+    if element_data['title']:
+        title = element_data['title'].replace("'", "\\'")
+        locator_strategies.append({
+            'type': 'xpath-title',
+            'locator': f"xpath=//{element_data['tagName']}[@title='{title}']",
+            'priority': PRIORITY_XPATH_TITLE,
+            'strategy': 'XPath with title attribute'
+        })
+
+    # Strategy 18: XPath with href (for links) (Priority 15)
+    if element_data['href'] and element_data['tagName'] == 'a':
+        # Use partial href match
+        href_part = element_data['href'].split('?')[0].split('#')[0]
+        # Safe slicing to prevent IndexError when href_part is empty or too short
+        if href_part and len(href_part) > 0:
+            href_slice = href_part[-MAX_TEXT_DISPLAY_LENGTH:] if len(href_part) >= MAX_TEXT_DISPLAY_LENGTH else href_part
+            locator_strategies.append({
+                'type': 'xpath-href',
+                'locator': f"xpath=//a[contains(@href, '{href_slice}')]",
+                'priority': PRIORITY_XPATH_HREF,
+                'strategy': 'XPath with href'
+            })
+
+    # Strategy 19: XPath with class and position (Priority 16)
+    if element_data['className'] and element_data['siblingIndex']:
+        first_class = element_data['className'].split(
+        )[0] if element_data['className'] else ''
+        if first_class:
+            locator_strategies.append({
+                'type': 'xpath-class-position',
+                'locator': f"xpath=(//{element_data['tagName']}[contains(@class, '{first_class}')])[{element_data['siblingIndex']}]",
+                'priority': PRIORITY_XPATH_CLASS_POSITION,
+                'strategy': 'XPath with class and position'
+            })
+
+    # Strategy 20: XPath with multiple attributes (Priority 17)
+    if element_data['className'] and element_data['innerText']:
+        first_class = element_data['className'].split(
+        )[0] if element_data['className'] else ''
+        text = element_data['innerText'].replace("'", "\\'")[:30]
+        if first_class and text:
+            locator_strategies.append({
+                'type': 'xpath-multi-attr',
+                'locator': f"xpath=//{element_data['tagName']}[contains(@class, '{first_class}') and contains(text(), '{text}')]",
+                'priority': PRIORITY_XPATH_MULTI_ATTR,
+                'strategy': 'XPath with class and text'
+            })
+
+    # Strategy 21: XPath - first of type with class (Priority 18)
+    if element_data['className']:
+        first_class = element_data['className'].split(
+        )[0] if element_data['className'] else ''
+        if first_class:
+            locator_strategies.append({
+                'type': 'xpath-first-of-class',
+                'locator': f"xpath=(//{element_data['tagName']}[contains(@class, '{first_class}')])[1]",
+                'priority': PRIORITY_XPATH_FIRST_OF_CLASS,
+                'strategy': 'XPath - first element with class'
+            })
+
+    return locator_strategies
+
+
+async def _validate_strategy_candidates(search_context, sorted_strategies: list) -> list[dict]:
+    """
+    Validate strategy candidates for uniqueness against the live DOM.
+
+    Runs count() per candidate in priority order, recording the outcome on
+    each. Early-exits once a high-priority candidate (priority <= PRIORITY_NAME:
+    ID, test attribute, name) validates as unique - remaining candidates stay
+    unvalidated.
+    """
+    validated_locators = []
+
+    for idx, strategy in enumerate(sorted_strategies, 1):
+        try:
+            # Log strategy attempt (DEBUG level - verbose details)
+            logger.info(f"🔍 Strategy {idx}/{len(sorted_strategies)}: {strategy['type']} (priority={strategy['priority']})")
+            logger.info(f"   Locator: {strategy['locator']}")
+            logger.info(f"   Strategy: {strategy['strategy']}")
+            
+            # Validate with Playwright
+            # NOTE: Use search_context (either page or frame_locator) for validation
+            # This ensures iframe locators are validated inside the iframe
+            count = await search_context.locator(strategy['locator']).count()
+            
+            # Determine validation status
+            is_unique = (count == 1)
+            is_valid = (count == 1)  # Only unique locators are valid
+            
+            validated_locators.append({
+                **strategy,
+                'count': count,
+                'unique': is_unique,
+                'valid': is_valid,
+                'validated': True,
+                'validation_method': 'playwright'
+            })
+
+            # Log validation result with detailed status
+            if is_unique:
+                logger.info(f"   ✅ VALID & UNIQUE: count={count}, unique={is_unique}, valid={is_valid}")
+                
+                # OPTIMIZATION: Early exit for high-priority unique locators
+                # If we found a high-priority unique locator (ID, test-id, name), stop searching
+                # Priority 1-3 are considered "high-priority" (ID, test attributes, name)
+                if strategy['priority'] <= PRIORITY_NAME:  # PRIORITY_NAME = 3
+                    logger.info(f"   ⚡ EARLY EXIT: High-priority unique locator found (priority={strategy['priority']})")
+                    logger.info(f"   Skipping validation of {len(sorted_strategies) - idx} remaining strategies")
+                    break  # Exit the loop early
+                    
+            elif count > 1:
+                logger.info(f"   ❌ NOT UNIQUE: count={count}, unique={is_unique}, valid={is_valid}")
+            elif count == 0:
+                logger.info(f"   ❌ NOT FOUND: count={count}, unique={is_unique}, valid={is_valid}")
+            else:
+                logger.info(f"   ⚠️ UNEXPECTED: count={count}, unique={is_unique}, valid={is_valid}")
+
+        except Exception as e:
+            logger.warning(f"   ❌ VALIDATION ERROR: {type(e).__name__}: {e}")
+            logger.warning(f"   Locator: {strategy['locator']}")
+            validated_locators.append({
+                **strategy,
+                'count': 0,  # Set to 0 instead of None for consistency
+                'unique': False,
+                'valid': False,
+                'validated': False,
+                'validation_error': str(e),
+                'validation_method': 'playwright'
+            })
+
+    return validated_locators
 
 
 async def find_unique_locator_at_coordinates(
@@ -3455,311 +3791,16 @@ async def find_unique_locator_at_coordinates(
         }
 
     # Step 3: Try multiple locator strategies in priority order
-    locator_strategies = []
-
-    # Strategy 1: ID (Priority 1 - Best)
-    if element_data['id']:
-        locator_strategies.append({
-            'type': 'id',
-            'locator': f"id={element_data['id']}",
-            'priority': PRIORITY_ID,
-            'strategy': 'Native ID attribute'
-        })
-
-    # Strategy 2: data-testid (Priority 2)
-    if element_data['dataTestId']:
-        locator_strategies.append({
-            'type': 'data-testid',
-            'locator': f"data-testid={element_data['dataTestId']}",
-            'priority': PRIORITY_TEST_ID,
-            'strategy': 'Test ID attribute'
-        })
-
-    # Strategy 3: data-test (Priority 2)
-    if element_data['dataTest']:
-        locator_strategies.append({
-            'type': 'data-test',
-            'locator': f"data-test={element_data['dataTest']}",
-            'priority': PRIORITY_TEST_ID,
-            'strategy': 'Test attribute'
-        })
-
-    # Strategy 4: data-qa (Priority 2)
-    if element_data['dataQa']:
-        locator_strategies.append({
-            'type': 'data-qa',
-            'locator': f"data-qa={element_data['dataQa']}",
-            'priority': PRIORITY_TEST_ID,
-            'strategy': 'QA attribute'
-        })
-
-    # Strategy 5: name (Priority 3)
-    # Note: Browser Library (Playwright) doesn't support name= prefix
-    # SeleniumLibrary supports name= prefix
-    if element_data['name']:
-        if library_type == "browser":
-            # Browser Library: use attribute selector
-            name_escaped = element_data['name'].replace('"', '\\"')
-            locator_strategies.append({
-                'type': 'name',
-                'locator': f'[name="{name_escaped}"]',
-                'priority': PRIORITY_NAME,
-                'strategy': 'Name attribute'
-            })
-        else:
-            # SeleniumLibrary: use name= prefix
-            locator_strategies.append({
-                'type': 'name',
-                'locator': f"name={element_data['name']}",
-                'priority': PRIORITY_NAME,
-                'strategy': 'Name attribute'
-            })
-
-    # Strategy 6: aria-label (Priority 4)
-    if element_data['ariaLabel']:
-        aria_label_escaped = element_data['ariaLabel'].replace('"', '\\"')
-        locator_strategies.append({
-            'type': 'aria-label',
-            'locator': f'[aria-label="{aria_label_escaped}"]',
-            'priority': PRIORITY_ARIA_LABEL,
-            'strategy': 'ARIA label'
-        })
-
-    # Strategy 7: placeholder (Priority 5)
-    if element_data['placeholder']:
-        placeholder_escaped = element_data['placeholder'].replace('"', '\\"')
-        locator_strategies.append({
-            'type': 'placeholder',
-            'locator': f'[placeholder="{placeholder_escaped}"]',
-            'priority': PRIORITY_PLACEHOLDER,
-            'strategy': 'Placeholder attribute'
-        })
-
-    # Strategy 8: title (Priority 5)
-    if element_data['title']:
-        title_escaped = element_data['title'].replace('"', '\\"')
-        locator_strategies.append({
-            'type': 'title',
-            'locator': f'[title="{title_escaped}"]',
-            'priority': PRIORITY_PLACEHOLDER,
-            'strategy': 'Title attribute'
-        })
-
-    # Strategy 9: Text content (Priority 6)
-    if element_data['innerText'] and len(element_data['innerText']) > MIN_TEXT_LENGTH:
-        # Escape quotes in text
-        text = element_data['innerText'].replace('"', '\\"')
-        locator_strategies.append({
-            'type': 'text',
-            'locator': f'text="{text}"',
-            'priority': PRIORITY_TEXT,
-            'strategy': 'Visible text content'
-        })
-
-    # Strategy 10: Role + Name (Priority 7)
-    if element_data['role'] and element_data['innerText']:
-        text = element_data['innerText'].replace('"', '\\"')
-        locator_strategies.append({
-            'type': 'role',
-            'locator': f'role={element_data["role"]}[name="{text}"]',
-            'priority': PRIORITY_ROLE,
-            'strategy': 'ARIA role with name'
-        })
-
-    # Strategy 11: CSS with parent ID context (Priority 8)
-    if element_data['parentId'] and element_data['className']:
-        first_class = element_data['className'].split(
-        )[0] if element_data['className'] else ''
-        if first_class:
-            locator_strategies.append({
-                'type': 'css-parent-id',
-                'locator': f"#{element_data['parentId']} {element_data['tagName']}.{first_class}",
-                'priority': PRIORITY_CSS_PARENT_ID,
-                'strategy': 'CSS with parent ID context'
-            })
-
-    # Strategy 12: CSS with nth-child (Priority 9)
-    if element_data['siblingIndex'] and element_data['parentClass']:
-        first_parent_class = element_data['parentClass'].split(
-        )[0] if element_data['parentClass'] else ''
-        if first_parent_class:
-            locator_strategies.append({
-                'type': 'css-nth-child',
-                'locator': f".{first_parent_class} > {element_data['tagName']}:nth-child({element_data['siblingIndex']})",
-                'priority': PRIORITY_CSS_NTH_CHILD,
-                'strategy': 'CSS with nth-child'
-            })
-
-    # Strategy 13: Simple CSS class (Priority 10)
-    if element_data['className']:
-        first_class = element_data['className'].split(
-        )[0] if element_data['className'] else ''
-        if first_class:
-            locator_strategies.append({
-                'type': 'css-class',
-                'locator': f"{element_data['tagName']}.{first_class}",
-                'priority': PRIORITY_CSS_CLASS,
-                'strategy': 'Simple CSS class'
-            })
-
-    # Strategy 14: XPath with parent ID (Priority 11)
-    if element_data['parentId']:
-        locator_strategies.append({
-            'type': 'xpath-parent-id',
-            'locator': f"xpath=//*[@id='{element_data['parentId']}']//{element_data['tagName']}",
-            'priority': PRIORITY_XPATH_PARENT_ID,
-            'strategy': 'XPath with parent ID'
-        })
-
-    # Strategy 15: XPath with parent class and position (Priority 12)
-    if element_data['parentClass'] and element_data['siblingIndex']:
-        first_parent_class = element_data['parentClass'].split(
-        )[0] if element_data['parentClass'] else ''
-        if first_parent_class:
-            locator_strategies.append({
-                'type': 'xpath-parent-class-position',
-                'locator': f"xpath=//*[contains(@class, '{first_parent_class}')]//{element_data['tagName']}[{element_data['siblingIndex']}]",
-                'priority': PRIORITY_XPATH_PARENT_CLASS,
-                'strategy': 'XPath with parent class and position'
-            })
-
-    # Strategy 16: XPath with text (Priority 13)
-    if element_data['innerText'] and len(element_data['innerText']) > MIN_TEXT_LENGTH:
-        text = element_data['innerText'].replace("'", "\\'")
-        locator_strategies.append({
-            'type': 'xpath-text',
-            'locator': f"xpath=//{element_data['tagName']}[contains(text(), '{text[:MAX_TEXT_DISPLAY_LENGTH]}')]",
-            'priority': PRIORITY_XPATH_TEXT,
-            'strategy': 'XPath with text content'
-        })
-
-    # Strategy 17: XPath with title attribute (Priority 14)
-    if element_data['title']:
-        title = element_data['title'].replace("'", "\\'")
-        locator_strategies.append({
-            'type': 'xpath-title',
-            'locator': f"xpath=//{element_data['tagName']}[@title='{title}']",
-            'priority': PRIORITY_XPATH_TITLE,
-            'strategy': 'XPath with title attribute'
-        })
-
-    # Strategy 18: XPath with href (for links) (Priority 15)
-    if element_data['href'] and element_data['tagName'] == 'a':
-        # Use partial href match
-        href_part = element_data['href'].split('?')[0].split('#')[0]
-        # Safe slicing to prevent IndexError when href_part is empty or too short
-        if href_part and len(href_part) > 0:
-            href_slice = href_part[-MAX_TEXT_DISPLAY_LENGTH:] if len(href_part) >= MAX_TEXT_DISPLAY_LENGTH else href_part
-            locator_strategies.append({
-                'type': 'xpath-href',
-                'locator': f"xpath=//a[contains(@href, '{href_slice}')]",
-                'priority': PRIORITY_XPATH_HREF,
-                'strategy': 'XPath with href'
-            })
-
-    # Strategy 19: XPath with class and position (Priority 16)
-    if element_data['className'] and element_data['siblingIndex']:
-        first_class = element_data['className'].split(
-        )[0] if element_data['className'] else ''
-        if first_class:
-            locator_strategies.append({
-                'type': 'xpath-class-position',
-                'locator': f"xpath=(//{element_data['tagName']}[contains(@class, '{first_class}')])[{element_data['siblingIndex']}]",
-                'priority': PRIORITY_XPATH_CLASS_POSITION,
-                'strategy': 'XPath with class and position'
-            })
-
-    # Strategy 20: XPath with multiple attributes (Priority 17)
-    if element_data['className'] and element_data['innerText']:
-        first_class = element_data['className'].split(
-        )[0] if element_data['className'] else ''
-        text = element_data['innerText'].replace("'", "\\'")[:30]
-        if first_class and text:
-            locator_strategies.append({
-                'type': 'xpath-multi-attr',
-                'locator': f"xpath=//{element_data['tagName']}[contains(@class, '{first_class}') and contains(text(), '{text}')]",
-                'priority': PRIORITY_XPATH_MULTI_ATTR,
-                'strategy': 'XPath with class and text'
-            })
-
-    # Strategy 21: XPath - first of type with class (Priority 18)
-    if element_data['className']:
-        first_class = element_data['className'].split(
-        )[0] if element_data['className'] else ''
-        if first_class:
-            locator_strategies.append({
-                'type': 'xpath-first-of-class',
-                'locator': f"xpath=(//{element_data['tagName']}[contains(@class, '{first_class}')])[1]",
-                'priority': PRIORITY_XPATH_FIRST_OF_CLASS,
-                'strategy': 'XPath - first element with class'
-            })
+    locator_strategies = _build_coordinate_strategies(element_data, library_type)
 
     logger.info(
         f"🔍 Generated {len(locator_strategies)} locator strategies to test")
 
     # Step 4: Validate each strategy
-    validated_locators = []
-    
     # Sort strategies by priority for optimal early exit
     # Lower priority number = better locator (1=ID is best, 18=XPath-first-of-class is worst)
     sorted_strategies = sorted(locator_strategies, key=lambda x: x['priority'])
-
-    for idx, strategy in enumerate(sorted_strategies, 1):
-        try:
-            # Log strategy attempt (DEBUG level - verbose details)
-            logger.info(f"🔍 Strategy {idx}/{len(sorted_strategies)}: {strategy['type']} (priority={strategy['priority']})")
-            logger.info(f"   Locator: {strategy['locator']}")
-            logger.info(f"   Strategy: {strategy['strategy']}")
-            
-            # Validate with Playwright
-            # NOTE: Use search_context (either page or frame_locator) for validation
-            # This ensures iframe locators are validated inside the iframe
-            count = await search_context.locator(strategy['locator']).count()
-            
-            # Determine validation status
-            is_unique = (count == 1)
-            is_valid = (count == 1)  # Only unique locators are valid
-            
-            validated_locators.append({
-                **strategy,
-                'count': count,
-                'unique': is_unique,
-                'valid': is_valid,
-                'validated': True,
-                'validation_method': 'playwright'
-            })
-
-            # Log validation result with detailed status
-            if is_unique:
-                logger.info(f"   ✅ VALID & UNIQUE: count={count}, unique={is_unique}, valid={is_valid}")
-                
-                # OPTIMIZATION: Early exit for high-priority unique locators
-                # If we found a high-priority unique locator (ID, test-id, name), stop searching
-                # Priority 1-3 are considered "high-priority" (ID, test attributes, name)
-                if strategy['priority'] <= PRIORITY_NAME:  # PRIORITY_NAME = 3
-                    logger.info(f"   ⚡ EARLY EXIT: High-priority unique locator found (priority={strategy['priority']})")
-                    logger.info(f"   Skipping validation of {len(sorted_strategies) - idx} remaining strategies")
-                    break  # Exit the loop early
-                    
-            elif count > 1:
-                logger.info(f"   ❌ NOT UNIQUE: count={count}, unique={is_unique}, valid={is_valid}")
-            elif count == 0:
-                logger.info(f"   ❌ NOT FOUND: count={count}, unique={is_unique}, valid={is_valid}")
-            else:
-                logger.info(f"   ⚠️ UNEXPECTED: count={count}, unique={is_unique}, valid={is_valid}")
-
-        except Exception as e:
-            logger.warning(f"   ❌ VALIDATION ERROR: {type(e).__name__}: {e}")
-            logger.warning(f"   Locator: {strategy['locator']}")
-            validated_locators.append({
-                **strategy,
-                'count': 0,  # Set to 0 instead of None for consistency
-                'unique': False,
-                'valid': False,
-                'validated': False,
-                'validation_error': str(e),
-                'validation_method': 'playwright'
-            })
+    validated_locators = await _validate_strategy_candidates(search_context, sorted_strategies)
 
     # Step 5: Select best locator (unique, lowest priority number)
     # WITH SEMANTIC VALIDATION if expected_text is provided

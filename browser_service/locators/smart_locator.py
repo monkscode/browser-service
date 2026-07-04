@@ -20,9 +20,6 @@ MIN_TEXT_LENGTH = 2  # Minimum text length to use for text-based locators
 MAX_TEXT_DISPLAY_LENGTH = 50  # Maximum text length to display in logs (for actual text)
 MAX_TEXT_CONTENT_LENGTH = 100  # Maximum text content to extract from elements
 
-# Checkbox label matching
-MAX_CHECKBOX_LABEL_LENGTH = 30  # Maximum label length for checkbox/radio detection heuristic
-
 # Locator priorities (lower = better)
 PRIORITY_ID = 1  # Native ID attribute
 PRIORITY_TEST_ID = 2  # data-testid, data-test, data-qa
@@ -681,20 +678,77 @@ async def _disambiguate_by_coordinates(page, selector: str, x: float, y: float) 
         return None
 
 
-async def _find_element_by_expected_text(page, expected_text: str, element_description: str, x: float = None, y: float = None) -> Optional[dict]:
+async def _checkbox_evidence_corroborated(
+    probe_page,
+    x: Optional[float],
+    y: Optional[float],
+    iframe_context: Optional[str],
+    prefer_radio: bool,
+) -> bool:
+    """
+    Second source of truth for the text-first checkbox/radio detour:
+    does the live DOM actually have checkbox/radio structure at the
+    click coordinates?
+
+    Mirrors the STEP-0 dispatcher contract (classifier + probe must
+    agree) for the path where no element_data exists: the description /
+    vision hint is source one, this probe is source two.
+
+    Returns True when the probe confirms. Inside iframes the probe's
+    ``page.evaluate`` runs on the top document and can't see the frame's
+    DOM — there the claim (description keywords or vision hint) gates
+    alone, preserving iframe checkbox support.
+    """
+    if iframe_context:
+        return True
+    if probe_page is None or x is None or y is None:
+        return False
+
+    from .dom_probe import probe_specialized_type
+    order = ("radio", "checkbox") if prefer_radio else ("checkbox", "radio")
+    for suspected in order:
+        result = await probe_specialized_type(
+            probe_page, suspected, coords=(x, y)
+        )
+        if result["confirmed"]:
+            return True
+    return False
+
+
+async def _find_element_by_expected_text(
+    page,
+    expected_text: str,
+    element_description: str,
+    x: float = None,
+    y: float = None,
+    vision_type_hint: Optional[str] = None,
+    probe_page=None,
+    iframe_context: Optional[str] = None,
+) -> Optional[dict]:
     """
     Try to find element directly by the expected visible text.
     This is the TEXT-FIRST approach - more reliable than coordinates.
     
-    ENHANCED: Now detects checkbox/radio context and returns the actual input element
-    instead of just the text label. This fixes issues where clicking text labels
-    doesn't toggle checkboxes without proper <label> association.
-    
+    CHECKBOX/RADIO DETOUR: when the step gives real checkbox/radio
+    evidence (description keywords or vision hint) AND the DOM probe
+    confirms matching structure at the click coordinates, return the
+    actual input element instead of the text label — clicking bare label
+    text doesn't toggle inputs without a proper <label> association.
+    The detour never triggers on text shape alone (A1): a short label
+    like "Page 2" must not start a checkbox hunt.
+
     Args:
-        page: Playwright page object
+        page: Locator search context (Playwright page or frame_locator)
         expected_text: The actual text AI sees on the element
         element_description: Human-readable description (for context)
-        
+        x, y: Click coordinates from browser-use (probe corroboration)
+        vision_type_hint: LLM's visual classification for the element
+        probe_page: Page-level object for the DOM probe (page.evaluate
+            doesn't exist on frame_locator search contexts)
+        iframe_context: Iframe locator when the element is inside a
+            frame — the probe can't see into frames, so description or
+            vision evidence alone gates the detour there
+
     Returns:
         Dict with 'locator' and optionally 'element_type' if found, None otherwise.
         For backward compatibility, returns string locator for non-checkbox elements.
@@ -710,12 +764,15 @@ async def _find_element_by_expected_text(page, expected_text: str, element_descr
     # ========================================
     # SPECIAL HANDLING: Checkbox/Radio Elements
     # ========================================
-    # Detect if we're looking for a checkbox or radio button based on:
-    # 1. Description mentions checkbox/radio/toggle/check/select
-    # 2. Expected text looks like a checkbox label (short text, often with numbers)
-    
-    # OPTIMIZATION: Early exit for obvious non-form elements
-    # Skip checkbox detection entirely if description indicates non-input elements
+    # Two-source gate (same contract as the STEP-0 dispatcher): the
+    # detour runs only when the step CLAIMS a checkbox/radio (description
+    # keywords or vision hint) AND the live DOM probe finds matching
+    # structure at the click coordinates. Text shape (length, leading
+    # word) is not evidence — that heuristic sent 23% of text searches
+    # into checkbox hunting with a 0% hit rate and could return a
+    # checkbox for a pagination step (A1/C7).
+
+    # Early exit for obvious non-form elements
     skip_checkbox_check = False
     if element_description:
         # Keywords that clearly indicate non-form elements
@@ -723,32 +780,38 @@ async def _find_element_by_expected_text(page, expected_text: str, element_descr
         if any(keyword in desc_lower for keyword in non_form_keywords):
             skip_checkbox_check = True
             logger.info(f"   ⏩ Skipping checkbox detection - element is clearly not a form input")
-    
+
     if not skip_checkbox_check:
+        # 'select the' intentionally absent: it's dropdown phrasing and
+        # dragged select steps into checkbox hunting.
         is_checkbox_context = any(keyword in desc_lower for keyword in [
-            'checkbox', 'check box', 'radio', 'toggle', 'check the', 'select the',
+            'checkbox', 'check box', 'radio', 'toggle', 'check the',
             'tick', 'untick', 'check mark', 'input element for'
         ])
-        
-        # Also detect common checkbox label patterns
-        is_checkbox_like_text = (
-            text.lower().startswith('checkbox') or
-            text.lower().startswith('option') or
-            text.lower().startswith('select') or
-            text.lower() in ['yes', 'no', 'agree', 'accept', 'remember me', 'terms', 'newsletter'] or
-            len(text) < MAX_CHECKBOX_LABEL_LENGTH  # Short text near form elements often indicates checkbox labels
-        )
-        
-        if is_checkbox_context or is_checkbox_like_text:
-            logger.info(f"   🎯 Checkbox/Radio context detected - checking for input element")
-            checkbox_result = await _find_checkbox_or_radio_by_label(page, text)
-            
-            if checkbox_result:
-                # Return the checkbox/radio input locator instead of text
-                logger.info(f"   ✅ Returning checkbox/radio locator: {checkbox_result['locator']}")
-                return checkbox_result
+        hint_normalized = (vision_type_hint or '').lower().strip()
+        hint_is_checkbox = hint_normalized in ('checkbox', 'radio')
+
+        if is_checkbox_context or hint_is_checkbox:
+            prefer_radio = 'radio' in desc_lower or hint_normalized == 'radio'
+            corroborated = await _checkbox_evidence_corroborated(
+                probe_page=probe_page, x=x, y=y,
+                iframe_context=iframe_context, prefer_radio=prefer_radio,
+            )
+            if corroborated:
+                logger.info(f"   🎯 Checkbox/Radio context detected - checking for input element")
+                checkbox_result = await _find_checkbox_or_radio_by_label(page, text)
+
+                if checkbox_result:
+                    # Return the checkbox/radio input locator instead of text
+                    logger.info(f"   ✅ Returning checkbox/radio locator: {checkbox_result['locator']}")
+                    return checkbox_result
+                else:
+                    logger.info(f"   ⚠️ No checkbox/radio found, falling back to text-based search")
             else:
-                logger.info(f"   ⚠️ No checkbox/radio found, falling back to text-based search")
+                logger.info(
+                    f"   ⏩ Checkbox/radio claimed but DOM probe found no "
+                    f"matching structure at ({x}, {y}) - skipping detour"
+                )
     
     # ========================================
     # Standard Text-Based Search
@@ -3369,7 +3432,12 @@ async def find_unique_locator_at_coordinates(
     if expected_text and expected_text.strip():
         logger.info(f"🔍 Step 1: Trying TEXT-FIRST locators from expected_text: '{expected_text}'")
         
-        text_result = await _find_element_by_expected_text(search_context, expected_text, element_description, x, y)
+        text_result = await _find_element_by_expected_text(
+            search_context, expected_text, element_description, x, y,
+            vision_type_hint=vision_type_hint,
+            probe_page=page,  # Page-level for the DOM probe (search_context may be a frame_locator)
+            iframe_context=iframe_context,
+        )
         
         if text_result:
             # text_result is now a dict with 'locator' and optionally 'element_type'

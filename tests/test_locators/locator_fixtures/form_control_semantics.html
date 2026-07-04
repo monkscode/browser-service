@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Form control semantics fixture (Task 6 / A2)</title>
+</head>
+<body>
+    <h1>Account form</h1>
+    <form>
+        <!-- Adjacent placeholder-bearing fields: the doc's worked example.
+             Coordinates landing 40px low put element_data on #password while
+             the step says "Enter username". -->
+        <div>
+            <label for="username">Username</label>
+            <input id="username" type="text" placeholder="Enter username">
+        </div>
+        <div>
+            <label for="password">Password</label>
+            <input id="password" type="password" placeholder="Password">
+        </div>
+
+        <!-- Correctly labeled input with NO placeholder/aria-label/value:
+             must pass via <label for=> resolution. -->
+        <div>
+            <label for="email">Email address</label>
+            <input id="email" type="text">
+        </div>
+
+        <!-- Labeled via aria-labelledby only. -->
+        <div>
+            <span id="phone-lbl">Phone number</span>
+            <input id="phone" type="text" aria-labelledby="phone-lbl">
+        </div>
+
+        <!-- Wrapping label (no for= attribute). -->
+        <label>Nickname
+            <input id="nickname" type="text">
+        </label>
+
+        <!-- Genuinely bare input: no label, placeholder, aria-label, or value.
+             The structural carve-out's legitimate-rescue case. -->
+        <div>
+            <input id="first_name" type="text">
+        </div>
+    </form>
+</body>
+</html>

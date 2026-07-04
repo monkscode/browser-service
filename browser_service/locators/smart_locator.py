@@ -401,6 +401,10 @@ async def validate_semantic_match(
     Fallback path (page + locator): count check then evaluate() on the located element.
     Returns (False, ...) immediately when count != 1; otherwise one evaluate() call (~2ms,
     probe 05 pattern). Works with both Playwright Page and FrameLocator callers.
+    The haystack includes associated label text (``<label for=>``, wrapping ``<label>``,
+    ``aria-labelledby``) so a correctly labeled form control passes without needing a
+    placeholder (A2). The node path needs no equivalent: ax_name already carries the
+    accessibility-computed name, which resolves labels.
 
     Anonymous-element behaviour: when expected_text is absent, accept only if the
     haystack is also empty (truly anonymous element — nothing semantic to compare).
@@ -456,13 +460,29 @@ async def validate_semantic_match(
             info = await el.evaluate(
                 """el => {
                     const tc = (el.textContent || '').trim();
+                    const doc = el.ownerDocument;
+                    const labelText = el.labels
+                        ? Array.from(el.labels)
+                            .map(l => (l.textContent || '').trim())
+                            .join(' ')
+                        : '';
+                    const labelledbyText = (el.getAttribute('aria-labelledby') || '')
+                        .split(/\\s+/)
+                        .filter(Boolean)
+                        .map(id => {
+                            const n = doc.getElementById(id);
+                            return n ? (n.textContent || '').trim() : '';
+                        })
+                        .join(' ');
                     return {
                         textContent: tc.slice(0, 500),
                         textContentLength: tc.length,
                         innerText: (el.innerText || '').trim().slice(0, 500),
                         placeholder: el.getAttribute('placeholder') || '',
                         ariaLabel: el.getAttribute('aria-label') || '',
-                        value: el.value || ''
+                        value: el.value || '',
+                        labelText: labelText.slice(0, 500),
+                        labelledbyText: labelledbyText.slice(0, 500)
                     };
                 }"""
             )
@@ -472,13 +492,22 @@ async def validate_semantic_match(
                 info.get("placeholder", ""),
                 info.get("ariaLabel", ""),
                 info.get("value", ""),
+                info.get("labelText", ""),
+                info.get("labelledbyText", ""),
             ]
             _haystack_has_content = any(p.strip() for p in parts)
             haystack = " | ".join(parts).lower()
+            # Fallback chain covers every semantic surface so the mismatch
+            # log's "got '…'" reflects what the element actually says —
+            # empty observed_text now reliably means a surface-less element.
             observed_text = (
                 info.get("innerText")
                 or info.get("textContent")
                 or info.get("ariaLabel")
+                or info.get("labelText")
+                or info.get("labelledbyText")
+                or info.get("placeholder")
+                or info.get("value")
                 or ""
             ).strip()
             _primary_text_len = info.get("textContentLength", len(info.get("textContent", "")))
@@ -2693,18 +2722,18 @@ async def _generate_locators_from_element_data(
                     semantic_match, actual_text = await validate_semantic_match(None, expected_text, page=search_context, locator=locator)
                     
                     if not semantic_match:
-                        # Form controls (<input>, <select>, <textarea>) have no textContent
-                        # by the HTML spec — they are void/replaced elements. expected_text
-                        # here is the field's label context (visually associated by the LLM),
-                        # NOT the element's own DOM text. validate_semantic_match always returns
-                        # ("", False) for inputs, making it impossible for a correct structural
-                        # locator (id, name, data-testid) to pass when expected_text is set.
-                        # A unique structural locator for a form control IS semantic correctness:
-                        # id="first_name" uniquely naming the First Name field is the definition
-                        # of correct identification — textContent agreement is not required and
-                        # would never be achievable.
-                        # The alternative (falling through to TEXT-FIRST) reliably returns the
-                        # associated <label> element, which is the wrong element for automation.
+                        # Form controls (<input>, <select>, <textarea>): the semantic
+                        # check above already covers placeholder, aria-label, value,
+                        # and associated label text, so a labeled or placeholder-bearing
+                        # field passes on its own merits. When it still fails, a unique
+                        # structural locator (id, name, data-testid) is accepted anyway —
+                        # some fields are genuinely surface-less and structural uniqueness
+                        # is the only identification available (A2). The acceptance is
+                        # UNVERIFIED and reported as such: semantic_match stays False with
+                        # validation_method="form_control_structural". Narrowing the
+                        # acceptance to empty-surface fields only is deferred (owner,
+                        # 2026-07-04) until these logs show a real wrong-field acceptance
+                        # — watch for the warning below with a non-empty surface.
                         is_form_control = element_data.get('tagName', '').lower() in ('input', 'select', 'textarea')
 
                         # For DROPDOWNS: Use coordinate-based validation instead of text
@@ -2712,9 +2741,16 @@ async def _generate_locators_from_element_data(
                         is_dropdown = is_dropdown_element(element_data, element_description)
 
                         if is_form_control:
-                            semantic_match = True
                             validation_method = "form_control_structural"
-                            logger.info(f"   ✅ {candidate['type']}: form control — text validation skipped (inputs have no textContent)")
+                            if actual_text:
+                                logger.warning(
+                                    f"   ⚠️ {candidate['type']}: form control surface ('{actual_text[:MAX_TEXT_CONTENT_LENGTH]}') "
+                                    f"does not match expected '{expected_text}' — accepting unique structural locator UNVERIFIED (A2 carve-out)"
+                                )
+                            else:
+                                logger.info(
+                                    f"   ✅ {candidate['type']}: form control with empty semantic surface — accepting on structural uniqueness (unverified)"
+                                )
                         elif is_dropdown and confirmed_coords:
                             logger.info(f"   🔽 Dropdown detected - trying coordinate validation instead of text")
                             coord_match, coord_reason = await _validate_by_coordinates(

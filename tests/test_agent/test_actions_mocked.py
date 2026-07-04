@@ -175,3 +175,68 @@ class TestFindUniqueLocatorAction:
             element_description="unknown element",
         )
         assert result is not None
+
+
+class TestTimeoutFromConfig:
+    """
+    The finder budget comes from config.locator.custom_action_timeout (Task 4).
+
+    Historically both registration.py and actions.py resolved the budget by
+    importing nlrf settings with a silent fallback to a hard-coded 5 — tuning
+    the browser-service env changed nothing. These tests pin the new contract:
+    one knob, read from config, structured error on expiry.
+    """
+
+    @pytest.mark.asyncio
+    async def test_budget_comes_from_config(self, mock_playwright_page, monkeypatch):
+        """A 0.05s config budget must cut off a hanging cascade in ~0.05s, not 5s."""
+        import asyncio
+        import time
+        from browser_service.config import config
+
+        monkeypatch.setattr(config.locator, "custom_action_timeout", 0.05, raising=False)
+
+        async def hang(*args, **kwargs):
+            await asyncio.sleep(30)
+
+        with patch("browser_service.locators.find_unique_locator_at_coordinates", new=hang):
+            from browser_service.agent.actions import find_unique_locator_action
+
+            start = time.monotonic()
+            result = await find_unique_locator_action(
+                page=mock_playwright_page,
+                x=300, y=400,
+                element_id="elem_slow",
+                element_description="element on a wedged page",
+            )
+            elapsed = time.monotonic() - start
+
+        assert elapsed < 2, (
+            f"took {elapsed:.1f}s — budget did not come from config "
+            f"(hard-coded 5s fallback still in effect?)"
+        )
+        assert result["found"] is False
+        assert result["error_type"] == "TimeoutError"
+
+    @pytest.mark.asyncio
+    async def test_timeout_result_reports_configured_budget(self, mock_playwright_page, monkeypatch):
+        """The structured error carries the budget that was actually applied."""
+        import asyncio
+        from browser_service.config import config
+
+        monkeypatch.setattr(config.locator, "custom_action_timeout", 0.05, raising=False)
+
+        async def hang(*args, **kwargs):
+            await asyncio.sleep(30)
+
+        with patch("browser_service.locators.find_unique_locator_at_coordinates", new=hang):
+            from browser_service.agent.actions import find_unique_locator_action
+
+            result = await find_unique_locator_action(
+                page=mock_playwright_page,
+                x=300, y=400,
+                element_id="elem_slow",
+                element_description="element on a wedged page",
+            )
+
+        assert result["timeout_seconds"] == 0.05

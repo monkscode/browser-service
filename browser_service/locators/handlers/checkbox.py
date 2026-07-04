@@ -250,12 +250,10 @@ def _build_result(
 
 
 # ======================================================================
-# Legacy helper — preserved verbatim from smart_locator.py for the
-# text-first call site at L910 of _find_element_by_expected_text.
-#
-# Re-exported via ``find_checkbox_or_radio_by_label`` (no leading
-# underscore) so callers in smart_locator.py can keep their import
-# unchanged while we migrate.
+# Shared label-walk finder — used by find_locator() Strategy 2 above and
+# by the evidence-gated text-first detour in smart_locator.py
+# (_find_element_by_expected_text). Exact label match is tried before
+# substring; there is deliberately NO positional (nth) fallback.
 # ======================================================================
 
 

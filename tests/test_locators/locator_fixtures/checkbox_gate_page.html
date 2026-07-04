@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head><title>Products — checkbox gate fixture</title></head>
+<body>
+  <h1>Products</h1>
+
+  <fieldset id="filters">
+    <legend>Filter by category</legend>
+    <label><input type="checkbox" id="cb-electronics"> Electronics</label>
+    <label><input type="checkbox" id="cb-clothing"> Clothing</label>
+    <label><input type="checkbox" id="cb-books"> Books</label>
+    <label><input type="checkbox" id="cb-toys"> Toys</label>
+    <label><input type="checkbox" id="cb-garden"> Garden</label>
+  </fieldset>
+
+  <table id="products">
+    <tr><td>Widget A</td></tr>
+    <tr><td>Widget B</td></tr>
+  </table>
+
+  <div id="spacer1" style="height: 40px"></div>
+
+  <main id="account-area">
+    <section>
+      <p id="account-note">Account 2 pending review</p>
+    </section>
+  </main>
+
+  <div id="spacer2" style="height: 40px"></div>
+
+  <div id="promo">
+    <input type="checkbox" id="cb-promo" name="promo">
+    <span id="signup-text">Sign Up</span>
+  </div>
+
+  <label id="remember-label"><input type="checkbox" name="remember"> Remember me</label>
+
+  <div id="spacer3" style="height: 40px"></div>
+
+  <nav aria-label="pagination">
+    <a href="?p=1">Page 1</a>
+    <a href="?p=2">Page 2</a>
+    <a href="?p=3">Page 3</a>
+  </nav>
+</body>
+</html>

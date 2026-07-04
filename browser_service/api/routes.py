@@ -97,6 +97,7 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             "tasks_submitted": task_processor.tasks_submitted_count(),
             "encoding": "utf-8",
             "model_provider": config.llm.model_provider,
+            "headless": config.headless,
             "google_api_configured": (
                 bool(config.llm.google_api_key and config.llm.google_api_key != "your_api_key_here")
                 if config.llm.model_provider == "gemini"

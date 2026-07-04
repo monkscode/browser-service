@@ -795,18 +795,6 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
         # Import the action implementation
         from browser_service.agent.actions import find_unique_locator_action
 
-        # Import settings (with fallback for standalone mode)
-        try:
-            from src.backend.core.config import settings as _nl_settings
-        except ImportError:
-            _nl_settings = None
-
-        # Resolve timeout (default matches NL repo config)
-        if _nl_settings is not None and hasattr(_nl_settings, 'CUSTOM_ACTION_TIMEOUT'):
-            custom_action_timeout = _nl_settings.CUSTOM_ACTION_TIMEOUT
-        else:
-            custom_action_timeout = 5
-
         # ========================================
         # COMPLETION TRACKING (closure variables)
         # ========================================
@@ -1263,120 +1251,93 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                 # Lazy connect: one Playwright connection per agent.run(), reused across all calls.
                 active_page = await _ensure_playwright(browser_session)
 
-                try:
-                    final_x, final_y = scaled_x, scaled_y
-                    if confirmed_coords:
-                        final_x, final_y = confirmed_coords
-                        logger.info(f"Using DOM-confirmed coordinates: ({final_x}, {final_y})")
-                    else:
-                        logger.info(f"Using scaled coordinates: ({final_x}, {final_y})")
+                final_x, final_y = scaled_x, scaled_y
+                if confirmed_coords:
+                    final_x, final_y = confirmed_coords
+                    logger.info(f"Using DOM-confirmed coordinates: ({final_x}, {final_y})")
+                else:
+                    logger.info(f"Using scaled coordinates: ({final_x}, {final_y})")
                     
                     
-                    # ========================================
-                    # IFRAME DETECTION: Check if element is inside an iframe
-                    # ========================================
-                    iframe_context = None
-                    if selector_map:
-                        iframe_context, _ = _detect_iframe_context(
-                            selector_map, (final_x, final_y)
-                        )
-                        if iframe_context:
-                            logger.info(f"   Element will be searched inside iframe: {iframe_context}")
+                # ========================================
+                # IFRAME DETECTION: Check if element is inside an iframe
+                # ========================================
+                iframe_context = None
+                if selector_map:
+                    iframe_context, _ = _detect_iframe_context(
+                        selector_map, (final_x, final_y)
+                    )
+                    if iframe_context:
+                        logger.info(f"   Element will be searched inside iframe: {iframe_context}")
                             
-                            # ========================================
-                            # IFRAME ELEMENT HANDLING (Optional Refinement)
-                            # ========================================
-                            # COORDINATE ASSUMPTION: Browser-use provides page-absolute coordinates
-                            # via `absolute_position` which includes accumulated `total_frame_offset`
-                            # from parent iframes (see browser_use/dom/service.py lines 530-535).
-                            #
-                            # EDGE CASES where this may fail silently:
-                            # - Cross-origin iframes (may have iframe-relative coords)
-                            # - Dynamically loaded content (not yet indexed)
-                            #
-                            # GRACEFUL FALLBACK: If bbox matching fails, find_unique_locator_action
-                            # handles iframe_context properly with coordinate translation.
-                            # This override is an OPTIMIZATION, not required for correctness.
+                        # ========================================
+                        # IFRAME ELEMENT HANDLING (Optional Refinement)
+                        # ========================================
+                        # COORDINATE ASSUMPTION: Browser-use provides page-absolute coordinates
+                        # via `absolute_position` which includes accumulated `total_frame_offset`
+                        # from parent iframes (see browser_use/dom/service.py lines 530-535).
+                        #
+                        # EDGE CASES where this may fail silently:
+                        # - Cross-origin iframes (may have iframe-relative coords)
+                        # - Dynamically loaded content (not yet indexed)
+                        #
+                        # GRACEFUL FALLBACK: If bbox matching fails, find_unique_locator_action
+                        # handles iframe_context properly with coordinate translation.
+                        # This override is an OPTIMIZATION, not required for correctness.
                             
-                            logger.info(f"🖼️ Iframe detected - attempting element lookup from selector_map")
-                            logger.info(f"   📊 Selector map has {len(selector_map)} elements")
+                        logger.info(f"🖼️ Iframe detected - attempting element lookup from selector_map")
+                        logger.info(f"   📊 Selector map has {len(selector_map)} elements")
                             
-                            try:
-                                # Find element by coordinates in selector_map — skip the iframe
-                                # itself (we want the contained element) and page wrappers
-                                # (see _find_smallest_containing_element for wrapper rationale).
-                                if selector_map:
-                                    viewport_area = viewport_w * viewport_h
-                                    idx, dom_node = _find_smallest_containing_element(
-                                        selector_map,
-                                        (final_x, final_y),
-                                        viewport_area,
-                                        skip_tag='IFRAME',
-                                    )
+                        try:
+                            # Find element by coordinates in selector_map — skip the iframe
+                            # itself (we want the contained element) and page wrappers
+                            # (see _find_smallest_containing_element for wrapper rationale).
+                            if selector_map:
+                                viewport_area = viewport_w * viewport_h
+                                idx, dom_node = _find_smallest_containing_element(
+                                    selector_map,
+                                    (final_x, final_y),
+                                    viewport_area,
+                                    skip_tag='IFRAME',
+                                )
 
-                                    if dom_node is not None:
-                                        logger.info(f"   ✅ Found element [{idx}] inside iframe!")
-                                        elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
-                                        logger.info(f"   📝 Element tag: <{elem_tag}>")
+                                if dom_node is not None:
+                                    logger.info(f"   ✅ Found element [{idx}] inside iframe!")
+                                    elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
+                                    logger.info(f"   📝 Element tag: <{elem_tag}>")
                                         
-                                        # Update element_data_from_index with the correct element
-                                        element_data_from_index = _extract_dom_node_attributes(dom_node)
-                                        if hasattr(dom_node, 'get_meaningful_text_for_llm'):
-                                            element_data_from_index['textContent'] = dom_node.get_meaningful_text_for_llm()
-                                        elif hasattr(dom_node, 'get_all_children_text'):
-                                            element_data_from_index['textContent'] = dom_node.get_all_children_text()
+                                    # Update element_data_from_index with the correct element
+                                    element_data_from_index = _extract_dom_node_attributes(dom_node)
+                                    if hasattr(dom_node, 'get_meaningful_text_for_llm'):
+                                        element_data_from_index['textContent'] = dom_node.get_meaningful_text_for_llm()
+                                    elif hasattr(dom_node, 'get_all_children_text'):
+                                        element_data_from_index['textContent'] = dom_node.get_all_children_text()
                                         
-                                        logger.info(f"   📝 Element id: {element_data_from_index.get('id', 'N/A')}")
-                                    else:
-                                        logger.info(f"   ℹ️ No bbox match found - will use find_unique_locator_action fallback")
-                                        logger.debug(f"   (This is normal for cross-origin iframes or coord system mismatch)")
+                                    logger.info(f"   📝 Element id: {element_data_from_index.get('id', 'N/A')}")
                                 else:
-                                    logger.info(f"   ℹ️ No selector_map available - will use find_unique_locator_action fallback")
-                            except Exception as e:
-                                logger.warning(f"   ⚠️ Element lookup failed: {e}")
-                                logger.debug("   Full error:", exc_info=True)
+                                    logger.info(f"   ℹ️ No bbox match found - will use find_unique_locator_action fallback")
+                                    logger.debug(f"   (This is normal for cross-origin iframes or coord system mismatch)")
+                            else:
+                                logger.info(f"   ℹ️ No selector_map available - will use find_unique_locator_action fallback")
+                        except Exception as e:
+                            logger.warning(f"   ⚠️ Element lookup failed: {e}")
+                            logger.debug("   Full error:", exc_info=True)
                     
-                    result = await asyncio.wait_for(
-                        find_unique_locator_action(
-                            x=final_x,  # Use confirmed or scaled coordinates
-                            y=final_y,  # Use confirmed or scaled coordinates
-                            element_id=params.element_id,
-                            element_description=params.element_description,
-                            expected_text=params.expected_text,  # Pass expected_text for semantic validation
-                            candidate_locator=params.candidate_locator,
-                            element_data=element_data_from_index,  # Pass element attributes from DOM
-                            page=active_page,
-                            iframe_context=iframe_context,  # Pass iframe context if detected
-                            is_collection=params.is_collection,  # Pass collection flag for multi-element detection
-                            browser_session=browser_session,  # For resolved_node lookup (DELTA 1)
-                            vision_type_hint=params.element_type,  # LLM's visual type classification (1 of 2 sources)
-                            vision_framework_hint=params.framework_hint,  # LLM's framework guess (any specialized type)
-                        ),
-                        timeout=custom_action_timeout
-                    )
-                except asyncio.TimeoutError:
-                    # Handle timeout gracefully
-                    timeout_msg = (
-                        f"Custom action timed out after {custom_action_timeout} seconds "
-                        f"for element {params.element_id}"
-                    )
-                    logger.error(f"⏱️ {timeout_msg}")
-                    logger.error(f"   Element: {params.element_id} - {params.element_description}")
-                    logger.error(f"   Coordinates: ({params.x}, {params.y})")
-
-                    # Return error result
-                    result = {
-                        'element_id': params.element_id,
-                        'description': params.element_description,
-                        'found': False,
-                        'error': timeout_msg,
-                        'coordinates': {'x': params.x, 'y': params.y},
-                        'validated': False,
-                        'count': 0,
-                        'unique': False,
-                        'valid': False,
-                        'validation_method': 'playwright'
-                    }
+                result = await find_unique_locator_action(
+                    x=final_x,  # Use confirmed or scaled coordinates
+                    y=final_y,  # Use confirmed or scaled coordinates
+                    element_id=params.element_id,
+                    element_description=params.element_description,
+                    expected_text=params.expected_text,  # Pass expected_text for semantic validation
+                    candidate_locator=params.candidate_locator,
+                    element_data=element_data_from_index,  # Pass element attributes from DOM
+                    page=active_page,
+                    iframe_context=iframe_context,  # Pass iframe context if detected
+                    is_collection=params.is_collection,  # Pass collection flag for multi-element detection
+                    browser_session=browser_session,  # For resolved_node lookup (DELTA 1)
+                    vision_type_hint=params.element_type,  # LLM's visual type classification (1 of 2 sources)
+                    vision_framework_hint=params.framework_hint,  # LLM's framework guess (any specialized type)
+                )
 
                 # Convert result to ActionResult format
                 action_result = None

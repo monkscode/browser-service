@@ -153,18 +153,11 @@ async def find_unique_locator_action(
     Phase: Error Handling and Logging
     Requirements: 8.2, 8.4, 9.1
     """
-    # Import config and settings here to avoid circular imports
+    # Import config here to avoid circular imports
     from browser_service.config import config
-    try:
-        from src.backend.core.config import settings as _nl_settings
-    except ImportError:
-        _nl_settings = None
 
-    # Resolve timeout for smart locator finder (default matches NL repo config)
-    if _nl_settings is not None and hasattr(_nl_settings, 'CUSTOM_ACTION_TIMEOUT'):
-        custom_action_timeout = _nl_settings.CUSTOM_ACTION_TIMEOUT
-    else:
-        custom_action_timeout = 5
+    # Budget for the strategy cascade — CUSTOM_ACTION_TIMEOUT env var, default 5
+    custom_action_timeout = config.locator.custom_action_timeout
 
     logger.info(f"🎯 Custom Action: find_unique_locator called for {element_id}")
     logger.info(f"   Description: {element_description}")

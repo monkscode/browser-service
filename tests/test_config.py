@@ -449,3 +449,47 @@ class TestVertexAIValidation:
         cfg.llm.model_provider = "openai"
         errors = cfg.validate()
         assert any("openai" in e for e in errors)
+
+
+class TestCustomActionTimeoutConfig:
+    """
+    CUSTOM_ACTION_TIMEOUT is a browser-service env var (Task 4 / D5).
+
+    Before this knob existed, the locator-finder budget was resolved by
+    importing nlrf settings with a silent fallback to a hard-coded 5 —
+    setting the env var in browser-service changed nothing.
+    """
+
+    def _make_config(self, monkeypatch, value=None):
+        if value is None:
+            monkeypatch.delenv("CUSTOM_ACTION_TIMEOUT", raising=False)
+        else:
+            monkeypatch.setenv("CUSTOM_ACTION_TIMEOUT", value)
+        with patch(
+            "browser_service.config.BrowserServiceConfig._get_google_model",
+            return_value="gemini-2.5-flash",
+        ):
+            from browser_service.config import BrowserServiceConfig
+            return BrowserServiceConfig()
+
+    def test_default_is_5_when_unset(self, monkeypatch):
+        """No env var → 5 seconds (the historical hard-coded value)."""
+        cfg = self._make_config(monkeypatch)
+        assert cfg.locator.custom_action_timeout == 5
+
+    def test_env_var_overrides_default(self, monkeypatch):
+        """CUSTOM_ACTION_TIMEOUT=30 → 30. The knob must actually work."""
+        cfg = self._make_config(monkeypatch, "30")
+        assert cfg.locator.custom_action_timeout == 30
+
+    def test_non_numeric_falls_back_and_records_error(self, monkeypatch):
+        """Garbage input keeps the default and surfaces a parse error via validate()."""
+        cfg = self._make_config(monkeypatch, "abc")
+        assert cfg.locator.custom_action_timeout == 5
+        assert any("CUSTOM_ACTION_TIMEOUT" in e for e in cfg._parse_errors)
+
+    def test_non_positive_rejected_by_validate(self, monkeypatch):
+        """0 or negative budgets are configuration errors, matching ELEMENT_TIMEOUT."""
+        cfg = self._make_config(monkeypatch, "0")
+        errors = cfg.validate()
+        assert any("CUSTOM_ACTION_TIMEOUT" in e for e in errors)

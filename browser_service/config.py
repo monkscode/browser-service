@@ -62,6 +62,11 @@ class LocatorConfig:
     # Try N different offsets
     coordinate_offset_attempts: int = 7
 
+    # Budget (seconds) for one find_unique_locator call — the whole strategy
+    # cascade shares it. On expiry the finder returns a structured
+    # found=False result instead of hanging the agent step.
+    custom_action_timeout: int = 5
+
     # Coordinate offsets to try (pixels)
     coordinate_offsets: List[Dict[str, Any]] = field(default_factory=lambda: [
         {"x": 100, "y": 0, "reason": "escape sidebar/left panel"},
@@ -118,7 +123,8 @@ class BrowserServiceConfig:
             content_based_retries=self._int_env("CONTENT_BASED_RETRIES", 7),
             coordinate_based_retries=self._int_env("COORDINATE_BASED_RETRIES", 7),
             element_type_retries=self._int_env("ELEMENT_TYPE_RETRIES", 5),
-            coordinate_offset_attempts=self._int_env("COORDINATE_OFFSET_ATTEMPTS", 7)
+            coordinate_offset_attempts=self._int_env("COORDINATE_OFFSET_ATTEMPTS", 7),
+            custom_action_timeout=self._int_env("CUSTOM_ACTION_TIMEOUT", 5)
         )
 
         # LLM configuration
@@ -298,6 +304,9 @@ class BrowserServiceConfig:
 
         if self.locator.coordinate_offset_attempts < 0:
             errors.append(f"COORDINATE_OFFSET_ATTEMPTS must be >= 0, got {self.locator.coordinate_offset_attempts}")
+
+        if self.locator.custom_action_timeout < 1:
+            errors.append(f"CUSTOM_ACTION_TIMEOUT must be >= 1, got {self.locator.custom_action_timeout}")
 
         # Validate concurrency configuration
         if self.max_concurrent_tasks < 1:

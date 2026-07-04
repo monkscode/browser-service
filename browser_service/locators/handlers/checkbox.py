@@ -11,9 +11,9 @@ Strategy order:
 
   1. Direct attribute anchors from ``element_data`` — id / name+value /
      name. Most stable when classifier hit Tier 0.
-  2. ``find_checkbox_or_radio_by_label(...)`` — relocated verbatim from
+  2. ``find_checkbox_or_radio_by_label(...)`` — relocated from
      ``smart_locator.py``. Walks ``<label>`` / nested input / adjacent
-     input / nth-of-type patterns from the visible label text. Re-
+     input patterns from the visible label text. Re-
      exported so the existing text-first call site in
      ``_find_element_by_expected_text`` keeps working unchanged.
   3. Custom-widget anchors for ``role=checkbox|radio|switch`` —
@@ -37,7 +37,6 @@ Depends on:
     - browser_service.locators.classifier.ElementTypeInfo (type hint only)
 """
 
-import re
 import structlog
 from typing import TYPE_CHECKING, Optional
 
@@ -271,7 +270,6 @@ async def find_checkbox_or_radio_by_label(
       1. ``<label for="id">text</label> <input id="id" type="checkbox">``
       2. ``<label><input type="checkbox"> text</label>``
       3. ``<input type="checkbox"> text`` (no label, adjacent text)
-      4. Text node followed by checkbox/radio at index N
 
     Args:
         page: Playwright page object.
@@ -422,51 +420,6 @@ async def find_checkbox_or_radio_by_label(
                 pass
     except Exception as e:
         logger.info("checkbox.adjacent_search_error", error=str(e))
-
-    # Strategy 3: nth-of-type for checkbox lists ("checkbox 1", "checkbox 2").
-    try:
-        number_match = re.search(r"(\d+)\s*$", text)
-        if number_match:
-            index = int(number_match.group(1))
-
-            for input_type, all_selector in (
-                ("checkbox", 'input[type="checkbox"]'),
-                ("radio", 'input[type="radio"]'),
-            ):
-                count = await page.locator(all_selector).count()
-                if count >= index:
-                    nth_locator = f"{all_selector} >> nth={index - 1}"
-                    if await page.locator(nth_locator).count() == 1:
-                        element = page.locator(nth_locator).first
-                        input_id = await element.get_attribute("id")
-                        input_name = await element.get_attribute("name")
-                        input_value = await element.get_attribute("value")
-
-                        if input_id:
-                            final_locator = f"id={input_id}"
-                        elif (
-                            input_type == "radio"
-                            and input_name
-                            and input_value
-                        ):
-                            final_locator = (
-                                f'input[type="radio"][name="{input_name}"]'
-                                f'[value="{input_value}"]'
-                            )
-                        elif input_name:
-                            final_locator = f'input[type="{input_type}"][name="{input_name}"]'
-                        else:
-                            final_locator = (
-                                f'{all_selector}:nth-of-type({index})'
-                            )
-
-                        logger.info("checkbox.found_by_index", input_type=input_type, index=index, locator=final_locator)
-                        return {
-                            "locator": final_locator,
-                            "element_type": input_type,
-                        }
-    except Exception as e:
-        logger.info("checkbox.index_search_error", error=str(e))
 
     logger.info("checkbox.finder_not_found", label=text)
     return None

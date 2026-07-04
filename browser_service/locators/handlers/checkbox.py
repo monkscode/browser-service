@@ -287,11 +287,19 @@ async def find_checkbox_or_radio_by_label(
     logger.info("checkbox.finder_start", label=text)
 
     # Strategy 1: <label> with matching text → use its 'for' attribute.
+    # Exact match first — has-text is a substring match, so "Option 1"
+    # would hit "Option 10" when that label comes first in the DOM.
     try:
-        label_locator = f'label:has-text("{text}")'
-        label_count = await page.locator(label_locator).count()
+        label_locator = None
+        for candidate in (
+            f'label:text-is("{text}")',
+            f'label:has-text("{text}")',
+        ):
+            if await page.locator(candidate).count() >= 1:
+                label_locator = candidate
+                break
 
-        if label_count >= 1:
+        if label_locator:
             for_attr = await page.locator(label_locator).first.get_attribute(
                 "for"
             )

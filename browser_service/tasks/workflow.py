@@ -18,6 +18,27 @@ import time
 logger = logging.getLogger(__name__)
 from typing import Dict, Any, List, Optional
 
+from browser_service.locators.stability import (
+    STABLE,
+    score_stability,
+    stability_rank,
+)
+
+
+def rerank_sort_key(loc: dict) -> tuple:
+    """
+    PHASE-2 re-rank order (E1): stability tier first, quality score second.
+
+    A volatile id scores 100 on TYPE alone, so score-only sorting would
+    re-promote it above the stable name= the locator engine deliberately
+    chose — the re-ranker must read the same stability verdict as the
+    engine's candidate ordering or one silently undoes the other.
+    """
+    return (
+        stability_rank(loc.get('stability', STABLE)),
+        -loc.get('quality_score', 0),
+    )
+
 
 def bind_request_context(workflow_id=None, org_id=None, user_id=None) -> None:
     """Bind the FastAPI-supplied correlation id + org/user into structlog so every
@@ -1442,8 +1463,10 @@ def process_workflow_task(
                     logger.warning(f"⚠️ {element_id}: No locators available after filtering!")
                     continue
 
-                # Sort by score (highest first)
-                scored_locators.sort(key=lambda x: x.get('quality_score', 0), reverse=True)
+                # Stability tier first, quality score second (E1) — see
+                # rerank_sort_key for why score-only sorting would undo the
+                # locator engine's demotion.
+                scored_locators.sort(key=rerank_sort_key)
 
                 # Log top 3 locators with their scores for debugging
                 locator_type_label = "COLLECTION" if is_collection else "UNIQUE"
@@ -1523,6 +1546,16 @@ def process_workflow_task(
 
                 # Check if element has ID attribute but best_locator is not ID type
                 if element_id_attr and element_id_attr != '':
+                    # A volatile id (ext-gen1042, tomselect-3, ...) was
+                    # deliberately demoted by the stability scorer (E1) —
+                    # forcing it back here would undo the demotion.
+                    if score_stability('id', element_id_attr) != STABLE:
+                        logger.info(
+                            f"   ⏭️ {elem_id}: id '{element_id_attr}' is volatile — "
+                            f"keeping stability-demoted best_locator {best_locator}"
+                        )
+                        continue
+
                     # Determine if best_locator is an ID locator.
                     # Accepts both Playwright explicit format (id=value) and
                     # CSS hash format (#value) — both target the ID attribute.

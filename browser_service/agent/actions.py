@@ -31,6 +31,8 @@ import logging
 import time
 from typing import Dict, Any, Optional
 
+from browser_service.locators.stability import classify_locator
+
 # Get logger
 logger = logging.getLogger(__name__)
 
@@ -328,11 +330,23 @@ async def find_unique_locator_action(
                                 elem_has_text = bool(text_content and text_content.strip())
                                 elem_data_available = True
 
+                            # Acceptance unchanged (a volatile candidate that
+                            # falls through could end in found=false, which
+                            # must not rise) — but the payload reports the
+                            # tier honestly so nlrf can warn or heal (E1).
+                            candidate_stability = classify_locator(final_locator)
+                            if candidate_stability != 'stable':
+                                logger.warning(
+                                    f"   ⚠️ Agent-provided candidate is {candidate_stability}: "
+                                    f"{final_locator} — accepted, reported for healing"
+                                )
+
                             return {
                                 'element_id': element_id,
                                 'description': element_description,
                                 'found': True,
                                 'best_locator': final_locator,  # Use converted locator
+                                'stability': candidate_stability,
                                 'all_locators': [{
                                     'type': 'candidate',
                                     'locator': final_locator,  # Use converted locator
@@ -342,7 +356,8 @@ async def find_unique_locator_action(
                                     'unique': True,
                                     'valid': True,
                                     'validated': True,
-                                    'validation_method': 'playwright'
+                                    'validation_method': 'playwright',
+                                    'stability': candidate_stability
                                 }],
                                 'element_info': {},
                                 'coordinates': {'x': x, 'y': y},

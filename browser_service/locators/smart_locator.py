@@ -3592,11 +3592,13 @@ async def find_unique_locator_at_coordinates(
                 if iframe_context:
                     locator = _make_composite_locator(locator)
                 
+                collection_stability = classify_locator(locator)
                 return {
                     'element_id': element_id,
                     'description': element_description,
                     'found': True,
                     'best_locator': locator,
+                    'stability': collection_stability,
                     'is_collection': True,
                     'element_type': 'collection',
                     'all_locators': [{
@@ -3609,7 +3611,8 @@ async def find_unique_locator_at_coordinates(
                         'valid': True,
                         'validated': True,
                         'semantic_match': True,
-                        'validation_method': 'playwright'
+                        'validation_method': 'playwright',
+                        'stability': collection_stability
                     }],
                     'element_info': {
                         'expected_text': expected_text,
@@ -3679,11 +3682,16 @@ async def find_unique_locator_at_coordinates(
                 strategy_name = 'Text-first locator from expected_text'
                 locator_type = 'text-first'
             
+            # Text-first locators can carry nth= disambiguation (positional)
+            # or data-bound text like "Cart (3 items)" (volatile) — classify
+            # the finished locator so the payload is honest about it.
+            text_first_stability = classify_locator(text_locator)
             return {
                 'element_id': element_id,
                 'description': element_description,
                 'found': True,
                 'best_locator': text_locator,
+                'stability': text_first_stability,
                 'element_type': element_type,  # NEW: Pass element_type to caller
                 'all_locators': [{
                     'type': locator_type,
@@ -3695,7 +3703,8 @@ async def find_unique_locator_at_coordinates(
                     'valid': True,
                     'validated': True,
                     'semantic_match': True,  # By definition, text-first is semantically correct
-                    'validation_method': 'playwright'
+                    'validation_method': 'playwright',
+                    'stability': text_first_stability
                 }],
                 'element_info': {'expected_text': expected_text, 'element_type': element_type} if element_type else {'expected_text': expected_text},
                 'coordinates': {'x': x, 'y': y, 'note': 'Not used - text-first approach succeeded'},
@@ -3771,11 +3780,13 @@ async def find_unique_locator_at_coordinates(
 
             if accept:
                 logger.info(f"✅ Semantic locator found: {semantic_locator}")
+                semantic_stability = classify_locator(semantic_locator)
                 return {
                     'element_id': element_id,
                     'description': element_description,
                     'found': True,
                     'best_locator': semantic_locator,
+                    'stability': semantic_stability,
                     'all_locators': [{
                         'type': 'semantic',
                         'locator': semantic_locator,
@@ -3786,7 +3797,8 @@ async def find_unique_locator_at_coordinates(
                         'valid': True,
                         'validated': True,
                         'semantic_match': semantic_match,
-                        'validation_method': validation_method
+                        'validation_method': validation_method,
+                        'stability': semantic_stability
                     }],
                     'element_info': {'description': element_description, 'actual_text': actual_text} if actual_text else {'description': element_description},
                     'coordinates': {'x': x, 'y': y, 'note': 'Not used - semantic approach succeeded'},
@@ -3853,13 +3865,16 @@ async def find_unique_locator_at_coordinates(
             if not semantic_match:
                 logger.info(f"   ⚠️ Semantic mismatch: expected '{expected_text}' but found '{accessibility_result['accessible_name']}'")
         
+        accessibility_stability = classify_locator(locator)
         return _apply_iframe_prefix_to_result({
             # CRITICAL: workflow.py extraction requires these fields
             'element_id': element_id,
             'description': element_description,
             'found': True,  # CRITICAL: Required by registration.py to recognize as success
             'best_locator': locator,
-            'all_locators': [{'locator': locator, 'method': 'accessibility_role', 'priority': 1}],
+            'stability': accessibility_stability,
+            'all_locators': [{'locator': locator, 'method': 'accessibility_role', 'priority': 1,
+                              'stability': accessibility_stability}],
             'preferred_method': 'accessibility_role',
             'validated': True,
             'count': accessibility_result.get('count', 1),

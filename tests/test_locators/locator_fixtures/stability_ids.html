@@ -16,5 +16,10 @@
 
   <!-- Bare all-digit id (q01 GitHub shape): stays stable, keeps winning. -->
   <a id="880667900" href="/monkscode/my-repo">my-repo</a>
+
+  <!-- Volatile id + stable name, NO accessible name (no label/placeholder/
+       aria): STEP 1/2/2.5 all fail, forcing the coordinate path (STEP 3). -->
+  <input type="hidden" name="csrf" value="x">
+  <input type="text" id="ext-gen3003" name="payload_ref">
 </body>
 </html>

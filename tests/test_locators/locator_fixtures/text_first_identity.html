@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>TEXT-FIRST identity fixture (Task 8 / A5)</title>
+</head>
+<body style="margin:0">
+  <!-- Wrong-singleton case: the element vision sees is the icon button
+       (aria-label only, no text content). The ONLY exact text match for
+       "Search" is the hidden span in the collapsed menu — text="Search"
+       returns count==1 on a node that is not the element at the coords.
+       role=button[name="Search"] matches only the icon button. -->
+  <button aria-label="Search" style="position:absolute;left:100px;top:20px;width:40px;height:40px">&#128269;</button>
+  <div style="display:none"><span>Search</span></div>
+
+  <!-- Far-singleton case: unique visible text, nowhere near the coords
+       used in the test (which point at the Submit button below). -->
+  <div style="position:absolute;left:900px;top:20px">Promotions</div>
+
+  <!-- Happy path: a normal text button; coords point at its center. -->
+  <button style="position:absolute;left:100px;top:400px;width:120px;height:36px">Submit</button>
+</body>
+</html>

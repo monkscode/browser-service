@@ -7,6 +7,7 @@ Given coordinates, systematically tries different approaches to find unique loca
 """
 
 import logging
+import math
 import re
 from typing import Any, Optional
 
@@ -50,6 +51,11 @@ DROPDOWN_CSS_PATTERNS = [
 ]
 
 DROPDOWN_KEYWORDS = ['dropdown', 'select', 'combobox', 'multiselect', 'picker', 'chooser']
+
+# Max distance (px) between browser-use coordinates and an element's center
+# for the element to count as "the one the vision model saw". Shared by
+# multi-match disambiguation and the text-singleton identity check (A5).
+COORD_DISTANCE_THRESHOLD = 100
 
 
 def _escape_css_selector(value: str) -> str:
@@ -612,8 +618,6 @@ async def _disambiguate_by_coordinates(page, selector: str, x: float, y: float) 
     Returns:
         Dict with 'locator' and 'disambiguated': True if found, None otherwise
     """
-    import math
-    
     try:
         locator = page.locator(selector)
         count = await locator.count()
@@ -675,8 +679,7 @@ async def _disambiguate_by_coordinates(page, selector: str, x: float, y: float) 
         # ========================================
         min_distance = float('inf')
         closest_idx = -1
-        DISTANCE_THRESHOLD = 100
-        
+
         for i in range(count):
             try:
                 element = locator.nth(i)
@@ -694,17 +697,51 @@ async def _disambiguate_by_coordinates(page, selector: str, x: float, y: float) 
             except Exception as e:
                 logger.info(f"   Distance check failed for element {i}: {e}")
         
-        if closest_idx >= 0 and min_distance < DISTANCE_THRESHOLD:
+        if closest_idx >= 0 and min_distance < COORD_DISTANCE_THRESHOLD:
             indexed_selector = f"{base_selector_for_nth} >> nth={closest_idx}"
             logger.info(f"   ✅ DISAMBIGUATED (closest distance): Element {closest_idx} is {min_distance:.1f}px away")
             return {'locator': indexed_selector, 'disambiguated': True, 'strategy': 'closest_distance', 'distance': min_distance}
-        
-        logger.info(f"   ⚠️ DISAMBIGUATION FAILED: No element within {DISTANCE_THRESHOLD}px (closest: {min_distance:.1f}px)")
+
+        logger.info(f"   ⚠️ DISAMBIGUATION FAILED: No element within {COORD_DISTANCE_THRESHOLD}px (closest: {min_distance:.1f}px)")
         return None
         
     except Exception as e:
         logger.info(f"   Disambiguation error: {e}")
         return None
+
+
+async def _singleton_matches_coordinates(page, selector: str, x: float, y: float) -> tuple[bool, str]:
+    """
+    Identity check for a count==1 text match: is it the element the vision
+    model saw at (x, y)? (A5)
+
+    Same contract as multi-match disambiguation: the coordinates must fall
+    inside the element's bounding box, or its center must be within
+    COORD_DISTANCE_THRESHOLD. A hidden element (no bounding box) can never
+    be what vision saw. Fails open on errors — the text already matched,
+    and a transient check failure is not evidence of a wrong element.
+
+    Returns:
+        Tuple of (is_match: bool, reason: str)
+    """
+    try:
+        box = await page.locator(selector).bounding_box()
+        if not box:
+            return False, "hidden (no bounding box)"
+
+        if (box['x'] <= x <= box['x'] + box['width'] and
+                box['y'] <= y <= box['y'] + box['height']):
+            return True, "coords inside bounding box"
+
+        center_x = box['x'] + box['width'] / 2
+        center_y = box['y'] + box['height'] / 2
+        distance = math.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+        if distance < COORD_DISTANCE_THRESHOLD:
+            return True, f"center {distance:.0f}px from coords"
+        return False, f"center {distance:.0f}px from coords (limit {COORD_DISTANCE_THRESHOLD}px)"
+    except Exception as e:
+        logger.warning(f"   ⚠️ Singleton identity check errored — accepting unchecked: {e}")
+        return True, f"identity check skipped ({e})"
 
 
 async def _checkbox_evidence_corroborated(
@@ -885,6 +922,18 @@ async def _find_element_by_expected_text(
         try:
             count = await page.locator(selector).count()
             if count == 1:
+                # A singleton is only "lucky" — verify it is the element the
+                # vision model saw before trusting it (A5). A hidden duplicate
+                # of the text must not shadow the real element; the next
+                # selector (e.g. role=button[name=…]) may match it correctly.
+                if x is not None and y is not None:
+                    is_match, reason = await _singleton_matches_coordinates(page, selector, x, y)
+                    if not is_match:
+                        logger.info(
+                            f"   ⚠️ '{selector}' is unique but {reason} — "
+                            f"not the element at ({x}, {y}), trying next selector"
+                        )
+                        continue
                 logger.info(f"   ✅ TEXT-FIRST SUCCESS: Found unique element with '{selector}'")
                 # Return as dict for consistency, but no special element_type
                 return {'locator': selector}
@@ -3564,8 +3613,11 @@ async def find_unique_locator_at_coordinates(
             # If expected_text provided, validate that we found the right element
             semantic_match = True
             actual_text = ""
+            validation_method = "playwright"
+            accept = True
             if expected_text:
                 semantic_match, actual_text = await validate_semantic_match(None, expected_text, page=search_context, locator=semantic_locator)
+                accept = semantic_match
                 if not semantic_match:
                     logger.warning(f"⚠️ Description-based locator found BUT text doesn't match!")
                     logger.warning(f"   Expected: '{expected_text}'")
@@ -3574,8 +3626,18 @@ async def find_unique_locator_at_coordinates(
                     # Don't return - continue to try coordinates
                 else:
                     logger.info(f"✅ Semantic locator is correct (text matches)")
-            
-            if semantic_match:
+            else:
+                # The locator was built from description keywords alone
+                # (substring matchers) and there is no expected_text to check
+                # it against. Acceptance unchanged, but reported UNVERIFIED
+                # instead of validated (A6).
+                semantic_match = False
+                validation_method = "description_derived"
+                logger.info(
+                    "   ⚠️ No expected_text — accepting description-derived locator UNVERIFIED (A6)"
+                )
+
+            if accept:
                 logger.info(f"✅ Semantic locator found: {semantic_locator}")
                 return {
                     'element_id': element_id,
@@ -3592,7 +3654,7 @@ async def find_unique_locator_at_coordinates(
                         'valid': True,
                         'validated': True,
                         'semantic_match': semantic_match,
-                        'validation_method': 'playwright'
+                        'validation_method': validation_method
                     }],
                     'element_info': {'description': element_description, 'actual_text': actual_text} if actual_text else {'description': element_description},
                     'coordinates': {'x': x, 'y': y, 'note': 'Not used - semantic approach succeeded'},
@@ -3603,7 +3665,7 @@ async def find_unique_locator_at_coordinates(
                         'validated': 1,
                         'best_type': 'semantic',
                         'best_strategy': 'Semantic locator from description',
-                        'validation_method': 'playwright'
+                        'validation_method': validation_method
                     },
                     # Top-level validation fields (required by workflow validation)
                     'validated': True,

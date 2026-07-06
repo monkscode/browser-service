@@ -33,6 +33,7 @@ import structlog
 from typing import TYPE_CHECKING, Optional
 
 from .base import build_locator_result
+from browser_service.locators.stability import STABLE, score_stability
 
 if TYPE_CHECKING:
     from ..classifier import ElementTypeInfo
@@ -54,7 +55,6 @@ _DESCRIPTION_UI_SUFFIXES: tuple[str, ...] = (
 )
 
 _TS_CONTROL_SUFFIX = "-ts-control"
-_AUTO_GENERATED_SELECT_PREFIX = "tomselect-"
 
 
 def _css_id_attr(value: str) -> str:
@@ -120,10 +120,14 @@ def _is_real_select_id(select_id: Optional[str]) -> bool:
     page renders — a locator built on it cannot be re-derived from a
     description, so we treat such ids as unusable for Strategies 1a/1b
     and fall through to label-based strategies.
+
+    The check is the shared stability scorer (E1), so every other
+    session-generated shape (ext-gen, ember, UUID, ...) is suppressed by
+    the same rule that ranks candidates pipeline-wide.
     """
     if not select_id:
         return False
-    return not select_id.startswith(_AUTO_GENERATED_SELECT_PREFIX)
+    return score_stability("id", select_id) == STABLE
 
 
 def _select_id_from_input_id(input_id: Optional[str]) -> Optional[str]:
@@ -451,7 +455,7 @@ async def _tom_select(
     has_real_select_id = _is_real_select_id(select_id)
     has_real_input_id = (
         input_id is not None
-        and not input_id.startswith(_AUTO_GENERATED_SELECT_PREFIX)
+        and score_stability("id", input_id) == STABLE
     )
 
     # Auto-generated select_ids (tomselect-N) are positionally unstable — the N
@@ -461,7 +465,7 @@ async def _tom_select(
     result_select_id = select_id if has_real_select_id else None
     if result_select_id is None and select_id is not None:
         logger.info("tom_select.select_id_suppressed", select_id=select_id,
-                    reason="auto-generated prefix, unstable across sessions")
+                    reason="volatile per stability scorer, unstable across sessions")
 
     # ---- Strategy 1a: id-anchored input ----
     if has_real_input_id:

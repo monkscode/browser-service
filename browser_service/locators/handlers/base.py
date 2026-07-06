@@ -12,8 +12,10 @@ Referenced by:
     - browser_service.locators.handlers.collection
 
 Depends on:
-    - (none — stdlib only)
+    - browser_service.locators.stability
 """
+
+from browser_service.locators.stability import classify_locator
 
 
 def build_locator_result(
@@ -27,6 +29,7 @@ def build_locator_result(
     classifier_signals,
     unique: bool = True,
     count: int = 1,
+    stability: str | None = None,
     all_locator_extra: dict | None = None,
     validation_summary_extra: dict | None = None,
     **top_level_extra,
@@ -50,6 +53,12 @@ def build_locator_result(
         ``all_locators[0]``.  Single-element handlers pass the default (1).
         Collection handlers pass the actual collection count; their subsequent
         ``result["count"] = n`` after this call is a harmless no-op overwrite.
+    stability :
+        Stability tier ("stable" | "volatile" | "positional", E1).  When
+        omitted, the finished locator is classified — ordinal strategies
+        like ``(//div[...])[N]`` come back "positional", embedded
+        framework ids "volatile".  Set at the top level and inside
+        ``all_locators[0]``.
     all_locator_extra :
         Extra fields merged into ``all_locators[0]`` (e.g. ``quality_score``).
     validation_summary_extra :
@@ -62,6 +71,8 @@ def build_locator_result(
         **before** the invariant base keys so that base values always win
         over any accidental name collision in the extras.
     """
+    resolved_stability = stability or classify_locator(best_locator)
+
     all_locator_entry: dict = {
         "type": element_type,
         "locator": best_locator,
@@ -71,6 +82,7 @@ def build_locator_result(
         "unique": unique,
         "valid": True,
         "validation_method": "playwright",
+        "stability": resolved_stability,
     }
     if all_locator_extra:
         all_locator_entry.update(all_locator_extra)
@@ -95,6 +107,7 @@ def build_locator_result(
         "found": True,
         "best_locator": best_locator,
         "element_type": element_type,
+        "stability": resolved_stability,
         "count": count,
         "unique": unique,
         "valid": True,

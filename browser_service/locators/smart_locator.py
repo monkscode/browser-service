@@ -11,6 +11,16 @@ import math
 import re
 from typing import Any, Optional
 
+from browser_service.locators.stability import (
+    POSITIONAL,
+    STABLE,
+    VOLATILE,
+    classify_locator,
+    is_dynamic_text,
+    score_stability,
+    stability_rank,
+)
+
 logger = logging.getLogger(__name__)
 
 # Configuration Constants
@@ -255,7 +265,8 @@ def _generate_attribute_css(element_data: dict) -> list[dict]:
             'locator': locator,
             'type': 'role-css',
             'priority': 12,  # New priority slot
-            'strategy': f'Role-based CSS ({role})'
+            'strategy': f'Role-based CSS ({role})',
+            'stability': STABLE
         })
         logger.debug(f"   📋 Generated role-based CSS: {locator}")
     
@@ -266,7 +277,8 @@ def _generate_attribute_css(element_data: dict) -> list[dict]:
             'locator': locator,
             'type': 'type-css',
             'priority': 13,
-            'strategy': f'Input type CSS ({input_type})'
+            'strategy': f'Input type CSS ({input_type})',
+            'stability': STABLE
         })
         logger.debug(f"   📋 Generated type-based CSS: {locator}")
     
@@ -283,7 +295,8 @@ def _generate_attribute_css(element_data: dict) -> list[dict]:
                     'locator': locator,
                     'type': 'class-css',
                     'priority': 14,
-                    'strategy': f'Semantic class CSS (.{cls})'
+                    'strategy': f'Semantic class CSS (.{cls})',
+                    'stability': score_stability('class', cls)
                 })
                 logger.debug(f"   📋 Generated semantic class CSS: {locator}")
                 break  # Use only the first semantic class
@@ -2346,23 +2359,27 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
     """
     locator_candidates = []
 
-    # Priority 1: ID (most stable)
+    # Priority 1: ID (most stable — unless the VALUE is session-generated;
+    # stability demotes those below stable candidates in the caller's sort)
     if element_data.get('id'):
         element_id_val = element_data['id']
+        id_stability = score_stability('id', element_id_val)
         # Handle numeric IDs with attribute selector
         if element_id_val.isdigit():
             locator_candidates.append({
                 'locator': f'[id="{element_id_val}"]',
                 'type': 'id-attr',
                 'priority': PRIORITY_ID,
-                'strategy': 'ID attribute selector (numeric ID)'
+                'strategy': 'ID attribute selector (numeric ID)',
+                'stability': id_stability
             })
         else:
             locator_candidates.append({
                 'locator': f'#{element_id_val}',  # Use CSS ID selector - Playwright native format
                 'type': 'id',
                 'priority': PRIORITY_ID,
-                'strategy': 'ID selector from element_data'
+                'strategy': 'ID selector from element_data',
+                'stability': id_stability
             })
     
     # Priority 2: test attribute (very stable for testing)
@@ -2375,35 +2392,42 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
             'locator': f'[{test_attr}="{element_data["dataTestId"]}"]',
             'type': test_attr,
             'priority': PRIORITY_TEST_ID,
-            'strategy': f'{test_attr} from element_data'
+            'strategy': f'{test_attr} from element_data',
+            'stability': score_stability(test_attr, element_data['dataTestId'])
         })
-    
+
     # Priority 3: name attribute
     if element_data.get('name'):
         locator_candidates.append({
             'locator': f'[name="{element_data["name"]}"]',
             'type': 'name',
             'priority': PRIORITY_NAME,
-            'strategy': 'Name attribute from element_data'
+            'strategy': 'Name attribute from element_data',
+            'stability': score_stability('name', element_data['name'])
         })
     
     # Priority 4: aria-label (with role if available)
     if element_data.get('ariaLabel'):
         aria_label = element_data['ariaLabel']
+        # aria-labels carry visible content: "Cart (3 items)" dies at RF
+        # runtime when the count changes (B3).
+        aria_stability = VOLATILE if is_dynamic_text(aria_label) else STABLE
         role = element_data.get('role')
         if role:
             locator_candidates.append({
                 'locator': f'[role="{role}"][aria-label="{aria_label}"]',
                 'type': 'aria-role',
                 'priority': PRIORITY_ARIA_LABEL,
-                'strategy': 'ARIA label + role from element_data'
+                'strategy': 'ARIA label + role from element_data',
+                'stability': aria_stability
             })
         else:
             locator_candidates.append({
                 'locator': f'[aria-label="{aria_label}"]',
                 'type': 'aria-label',
                 'priority': PRIORITY_ARIA_LABEL,
-                'strategy': 'ARIA label from element_data'
+                'strategy': 'ARIA label from element_data',
+                'stability': aria_stability
             })
     
     # Priority 5: placeholder (for inputs)
@@ -2412,7 +2436,8 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
             'locator': f'[placeholder="{element_data["placeholder"]}"]',
             'type': 'placeholder',
             'priority': PRIORITY_PLACEHOLDER,
-            'strategy': 'Placeholder attribute from element_data'
+            'strategy': 'Placeholder attribute from element_data',
+            'stability': STABLE
         })
     
     # Priority 5.5: Parent-context CSS locators (for elements without id/name)
@@ -2437,7 +2462,8 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
                 'locator': css_locator,
                 'type': 'parent-id-css',
                 'priority': PRIORITY_CSS_PARENT_ID,
-                'strategy': f'Parent ID context + tag (#{parent_id} {tag_name})'
+                'strategy': f'Parent ID context + tag (#{parent_id} {tag_name})',
+                'stability': score_stability('id', parent_id)
             })
             logger.info(f"   📋 Added parent-context CSS: {css_locator}")
         
@@ -2453,7 +2479,8 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
                     'locator': css_locator,
                     'type': 'parent-class-css',
                     'priority': PRIORITY_CSS_CLASS,
-                    'strategy': f'Parent class context + tag (.{first_class} {tag_name})'
+                    'strategy': f'Parent class context + tag (.{first_class} {tag_name})',
+                    'stability': score_stability('class', first_class)
                 })
                 logger.info(f"   📋 Added parent-context CSS: {css_locator}")
 
@@ -2734,16 +2761,19 @@ async def _generate_locators_from_element_data(
                     'locator': shortened_xpath,
                     'type': 'shortened-xpath',
                     'priority': 15,  # Before full xpath
-                    'strategy': 'Shortened XPath (unique suffix)'
+                    'strategy': 'Shortened XPath (unique suffix)',
+                    'stability': classify_locator(shortened_xpath)
                 })
-            
+
             # Add full xpath as last resort with lowest priority
             strategy_note = 'Full XPath' + (' (iframe element)' if in_iframe else ' (last resort)')
+            full_xpath_locator = f'xpath={full_xpath}'
             locator_candidates.append({
-                'locator': f'xpath={full_xpath}',
+                'locator': full_xpath_locator,
                 'type': 'full-xpath',
                 'priority': 19,  # Demoted to last resort
-                'strategy': strategy_note
+                'strategy': strategy_note,
+                'stability': classify_locator(full_xpath_locator)
             })
             
             if in_iframe:
@@ -2752,9 +2782,18 @@ async def _generate_locators_from_element_data(
             # Skip xpath - let TEXT-FIRST (STEP 1) handle with disambiguation
             logger.info(f"   ⏭️ Skipping xpath - expected_text available, will use TEXT-FIRST strategy")
     
-    # Sort candidates by priority (lower number = higher priority)
-    locator_candidates.sort(key=lambda c: c.get('priority', 100))
-    
+    # Sort candidates by stability tier first, then priority (E1): a
+    # session-generated id (ext-gen1042) sinks below a stable name= but
+    # stays in the list as a last resort — demoted, never deleted, so a
+    # volatile-only element is still returned (marked) and found=false
+    # cannot rise (locked decision #3).
+    locator_candidates.sort(
+        key=lambda c: (
+            stability_rank(c.get('stability', STABLE)),
+            c.get('priority', 100),
+        )
+    )
+
     # Try each candidate locator in priority order
     for candidate in locator_candidates:
         locator = candidate['locator']
@@ -2839,12 +2878,20 @@ async def _generate_locators_from_element_data(
                     element_type = 'table-row'
                     logger.info(f"      Element type: table-row")
                 
+                candidate_stability = candidate.get('stability', STABLE)
+                if candidate_stability == VOLATILE:
+                    logger.warning(
+                        f"   ⚠️ Emitting VOLATILE locator {locator} — no stable "
+                        f"candidate validated; expect breakage in a fresh session"
+                    )
+
                 return {
                     'element_id': element_id,
                     'description': element_description,
                     'found': True,
                     'best_locator': locator,
                     'element_type': element_type,
+                    'stability': candidate_stability,
                     'all_locators': [{
                         'type': candidate['type'],
                         'locator': locator,
@@ -2855,7 +2902,8 @@ async def _generate_locators_from_element_data(
                         'valid': True,
                         'validated': True,
                         'semantic_match': semantic_match,
-                        'validation_method': validation_method
+                        'validation_method': validation_method,
+                        'stability': candidate_stability
                     }],
                     'element_info': {
                         'tagName': element_data.get('tagName', ''),
@@ -3364,7 +3412,16 @@ async def find_unique_locator_at_coordinates(
         for loc in result.get('all_locators', []):
             if loc.get('locator') and not loc['locator'].startswith(iframe_context):
                 loc['locator'] = _make_composite_locator(loc['locator'])
-        
+
+        # An ordinal iframe hop (iframe >> nth=N >>> ...) encodes DOM order:
+        # the whole composite is positional even when the inner locator is
+        # stable (B2).
+        best = result.get('best_locator', '')
+        if best and is_positional_locator(best):
+            result['stability'] = POSITIONAL
+            for loc in result.get('all_locators', []):
+                loc['stability'] = POSITIONAL
+
         result['iframe_context'] = iframe_context
         return result
     

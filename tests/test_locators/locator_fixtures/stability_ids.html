@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head><title>Stability scoring fixtures (Task 10)</title></head>
+<body>
+  <!-- Volatile framework id WITH a stable alternative: the name must win. -->
+  <form id="login-form">
+    <label for="ext-gen1042">Username</label>
+    <input type="text" id="ext-gen1042" name="username" placeholder="Enter username">
+  </form>
+
+  <!-- Volatile framework id and NOTHING else usable: returned, marked volatile. -->
+  <button id="ext-gen2001" type="button">Refresh grid</button>
+
+  <!-- Stable hand-authored id: keeps winning exactly as before. -->
+  <input type="text" id="save_button" name="save">
+
+  <!-- Bare all-digit id (q01 GitHub shape): stays stable, keeps winning. -->
+  <a id="880667900" href="/monkscode/my-repo">my-repo</a>
+</body>
+</html>

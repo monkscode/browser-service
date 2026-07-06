@@ -247,101 +247,146 @@ async def _find_collection_by_text_traversal(page, expected_text: str) -> Option
     logger.info("collection.text_traversal_start", text=text)
 
     try:
-        # Step 1: Find element containing the expected text
-        text_locator = page.locator(f"text={text}").first
+        # Step 1: Find the beacon element. Prefer an exact text match — a
+        # substring beacon can start the walk from the wrong instance (A4).
+        # browser-use truncates long expected_text with a literal ellipsis
+        # ("A Light in the ..."), so a truncated beacon prefix-matches via
+        # the substring engine instead.
+        needle = text
+        truncated = needle.endswith("...") or needle.endswith("…")
+        if truncated:
+            needle = needle.rstrip(".…").strip()
+            if not needle:
+                logger.info("collection.beacon_empty_after_truncation", text=text)
+                return None
+
+        text_locator = None
+        if not truncated and '"' not in needle:
+            exact = page.locator(f'text="{needle}"').first
+            if await exact.count() > 0:
+                text_locator = exact
+
+        if text_locator is None:
+            text_locator = page.locator(f"text={needle}").first
         count = await text_locator.count()
 
         if count == 0:
             logger.info("collection.text_not_found", text=text)
             return None
 
-        # Step 2: Traverse UP to find the row container using JavaScript
+        # Step 2: Traverse UP to find the row container using JavaScript.
+        # Semantic class matching is per hyphen/underscore SEGMENT — the old
+        # substring regex made 'flex-grow-1' a row container ("g-r-o-w").
+        # Framework layout classes (row, col-*, flex utilities …) are never
+        # emitted and never count toward sibling similarity (A4).
         row_info = await text_locator.evaluate("""
             (el) => {
-                let current = el;
+                const isLayoutClass = (cls) => {
+                    const c = cls.toLowerCase();
+                    return ['row', 'rows', 'container', 'grid', 'flex', 'wrapper'].includes(c) ||
+                        /^col(-|$)/.test(c) ||
+                        /^(flex|align|justify|order|offset)-/.test(c) ||
+                        /^[a-z]{1,2}-/.test(c);
+                };
+                const SEMANTIC = ['row', 'tr', 'item', 'record', 'entry', 'card', 'group'];
+                const hasSemanticSegment = (cls) =>
+                    cls.toLowerCase().split(/[-_]/).some(seg => SEMANTIC.includes(seg));
+                const cssSafe = (s) => /^[A-Za-z][A-Za-z0-9_-]*$/.test(s);
 
-                // Traverse up to find a row-like parent
+                let current = el;
                 while (current && current.parentElement) {
                     current = current.parentElement;
                     const tag = current.tagName.toLowerCase();
-                    const className = current.className || '';
+                    if (tag === 'body' || tag === 'html') break;
+                    const className = (typeof current.className === 'string' ? current.className : '') || '';
+                    const classes = className.split(/\\s+/).filter(c => c.length > 0);
                     const role = current.getAttribute('role') || '';
 
-                    // Check if this looks like a row container
-                    const isRowLike = (
-                        tag === 'tr' ||
-                        tag === 'li' ||
-                        role === 'row' ||
-                        role === 'listitem' ||
-                        /row|tr-group|item|record|entry/i.test(className)
+                    const structural = tag === 'tr' || tag === 'li' ||
+                        role === 'row' || role === 'listitem';
+                    if (!structural && !classes.some(hasSemanticSegment)) continue;
+
+                    // A non-structural element with nothing but layout
+                    // classes has no semantic anchor - not a data row.
+                    const meaningful = classes.filter(c => !isLayoutClass(c));
+                    if (!structural && meaningful.length === 0) continue;
+
+                    const parent = current.parentElement;
+                    if (!parent) continue;
+
+                    // Collection = >1 siblings sharing the row's meaningful
+                    // class set. Same tag alone is not enough - a lone
+                    // styled banner next to unrelated same-tag panels is
+                    // not a collection.
+                    const similar = Array.from(parent.children).filter(s =>
+                        s.tagName === current.tagName &&
+                        meaningful.every(c => s.classList.contains(c))
                     );
+                    if (similar.length <= 1) continue;
 
-                    if (isRowLike) {
-                        // Found the row! Now verify it's part of a collection
-                        const parent = current.parentElement;
-                        if (parent) {
-                            const siblings = Array.from(parent.children);
-                            const sameTagSiblings = siblings.filter(s =>
-                                s.tagName === current.tagName
-                            );
+                    // Emitted class: semantic first, then any meaningful
+                    // class long enough to be a component name.
+                    const bestClass =
+                        meaningful.find(c => hasSemanticSegment(c) && cssSafe(c)) ||
+                        meaningful.find(c => c.length > 5 && cssSafe(c)) ||
+                        null;
 
-                            if (sameTagSiblings.length > 1) {
-                                // This IS a collection row!
-                                // Find the best class to use as a locator
-                                const classes = className.split(' ').filter(c => c.length > 0);
-
-                                // Prefer classes with semantic meaning
-                                const semanticPatterns = ['row', 'tr', 'item', 'record', 'entry', 'group'];
-                                let bestClass = null;
-
-                                for (const cls of classes) {
-                                    const clsLower = cls.toLowerCase();
-                                    for (const pattern of semanticPatterns) {
-                                        if (clsLower.includes(pattern)) {
-                                            bestClass = cls;
-                                            break;
-                                        }
-                                    }
-                                    if (bestClass) break;
-                                }
-
-                                // Fallback: use first class that's longer than 5 chars
-                                if (!bestClass) {
-                                    bestClass = classes.find(c => c.length > 5) || classes[0];
-                                }
-
-                                return {
-                                    tag: tag,
-                                    className: bestClass,
-                                    allClasses: className,
-                                    siblingCount: sameTagSiblings.length,
-                                    role: role,
-                                    parentTag: parent.tagName.toLowerCase()
-                                };
-                            }
-                        }
+                    // Scope anchor: the row's own parent (id > class > tag).
+                    let parentAnchor = null;
+                    const ptag = parent.tagName.toLowerCase();
+                    if (parent.id && cssSafe(parent.id)) {
+                        parentAnchor = '#' + parent.id;
+                    } else {
+                        const pcn = (typeof parent.className === 'string' ? parent.className : '') || '';
+                        const parentClass = pcn.split(/\\s+/).filter(c => c.length > 0)
+                            .find(c => !isLayoutClass(c) && cssSafe(c));
+                        parentAnchor = parentClass ? '.' + parentClass :
+                            (ptag !== 'body' && ptag !== 'html' ? ptag : null);
                     }
+
+                    return {
+                        tag: tag,
+                        className: bestClass,
+                        allClasses: className,
+                        parentAnchor: parentAnchor,
+                        siblingCount: similar.length,
+                        role: role,
+                        parentTag: ptag
+                    };
                 }
                 return null;
             }
         """)
 
         if row_info:
-            logger.info("collection.row_container_found", tag=row_info["tag"], cls=row_info.get("className", ""))
+            logger.info("collection.row_container_found", tag=row_info["tag"], cls=row_info.get("className") or "")
             logger.info("collection.sibling_count", count=row_info["siblingCount"])
 
-            # Generate collection locator
-            if row_info.get('className'):
-                locator = f".{row_info['className']}"
-            elif row_info.get('tag') == 'tr':
-                locator = 'tbody tr'
-            elif row_info.get('tag') == 'li':
-                locator = 'ul li, ol li'
+            # Generate collection locator, scoped to the row's own parent —
+            # never a bare page-global class (A4: `.row` matched every grid
+            # row on the page, chrome included).
+            tag = row_info.get('tag', '')
+            best_class = row_info.get('className')
+            anchor = row_info.get('parentAnchor')
+
+            if best_class:
+                suffix = f"{tag}.{best_class}"
+            elif tag in ('tr', 'li'):
+                suffix = tag
             elif row_info.get('role') == 'row':
-                locator = '[role="row"]'
+                suffix = '[role="row"]'
             else:
                 logger.info("collection.indeterminate_locator", row_info=str(row_info))
                 return None
+
+            if anchor:
+                locator = f"{anchor} > {suffix}"
+            elif best_class or row_info.get('role') == 'row':
+                locator = suffix
+            elif tag == 'tr':
+                locator = 'tbody tr'
+            else:  # tag == 'li'
+                locator = 'ul li, ol li'
 
             # Validate the locator
             try:

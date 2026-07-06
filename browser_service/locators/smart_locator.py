@@ -2762,11 +2762,15 @@ async def _generate_locators_from_element_data(
                                 validation_method = "coordinates"
                                 logger.info(f"   ✅ Dropdown validated via coordinates at {confirmed_coords}")
                             else:
-                                logger.info(f"   ⚠️ {candidate['type']}: coordinate validation also failed ({coord_reason})")
-                                logger.info(f"      Accepting unique locator anyway (trusting browser-use vision)")
-                                # For dropdowns, still accept unique locator even if coords don't match exactly
-                                semantic_match = True
-                                validation_method = "trust_unique"
+                                # Semantic text AND coordinates both flagged the wrong
+                                # element — two independent signals are never overridden
+                                # (A3). Reject and let later candidates / pipeline steps
+                                # find it or fail loudly.
+                                logger.info(
+                                    f"   ⚠️ {candidate['type']}: coordinate validation also failed ({coord_reason}) "
+                                    f"— rejecting despite uniqueness (trying next)"
+                                )
+                                continue
                         else:
                             # Not a form control or dropdown - standard text mismatch handling
                             logger.info(f"   ⚠️ {candidate['type']}: unique but text mismatch (trying next)")

@@ -63,6 +63,28 @@ def by_type(strategies: list, type_name: str) -> list:
     return [s for s in strategies if s['type'] == type_name]
 
 
+class TestNameStrategyBrowserForm:
+    """E8: browser-only — the name strategy always emits the Playwright
+    attribute-selector form. The SeleniumLibrary `name=` prefix branch was
+    deleted with dual-library support (Task 11); Browser Library has no
+    name= engine, so the prefix form never worked in browser mode anyway.
+    """
+
+    def test_name_emitted_as_css_attribute_selector(self):
+        strategies = _build_coordinate_strategies(make_element_data(name='username'))
+        name = by_type(strategies, 'name')
+        assert len(name) == 1
+        assert name[0]['locator'] == '[name="username"]'
+
+    def test_name_value_with_double_quote_is_escaped(self):
+        strategies = _build_coordinate_strategies(make_element_data(name='say-"hi"'))
+        assert by_type(strategies, 'name')[0]['locator'] == '[name="say-\\"hi\\""]'
+
+    def test_no_name_no_strategy(self):
+        strategies = _build_coordinate_strategies(make_element_data())
+        assert by_type(strategies, 'name') == []
+
+
 class TestDataQaStrategyForm:
     """C2: data-qa must be emitted as a CSS attribute selector.
 

@@ -7,10 +7,10 @@ from browser_service.tasks import process_workflow_task
 
 
 async def main():
-    # Configure the service
+    # Configure the service. Browser Library (Playwright) is the only
+    # supported Robot Framework target — no library selection needed.
     config.GEMINI_API_KEY = "your-api-key-here"
-    config.ROBOT_LIBRARY = "browser"
-    
+
     # Example workflow
     workflow = {
         "url": "https://example.com",

@@ -366,8 +366,7 @@ def process_workflow_task(
             # we use a simplified prompt where the agent only finds elements and returns coordinates.
             # Then Python uses Playwright's built-in methods for locator extraction and F12-style validation.
 
-            library_type = config.robot_library
-            logger.info(f"🔧 Using {library_type} library with Playwright validation")
+            logger.info("🔧 Using Browser Library with Playwright validation")
 
             # ========================================
             # FEATURE FLAG: ENABLE_CUSTOM_ACTIONS
@@ -382,7 +381,6 @@ def process_workflow_task(
                 user_query=user_query,
                 url=url,
                 elements=elements,
-                library_type=library_type,
                 include_custom_action=enable_custom_actions_flag,
                 client_hints=client_config.system_prompt_additions
             )
@@ -477,7 +475,6 @@ def process_workflow_task(
                         user_query=user_query,
                         url=url,
                         elements=elements,
-                        library_type=library_type,
                         include_custom_action=False,  # Fallback to legacy mode
                         client_hints=client_config.system_prompt_additions
                     )
@@ -1087,8 +1084,7 @@ def process_workflow_task(
                                                     x=coords['x'],
                                                     y=coords['y'],
                                                     element_id=elem_id,
-                                                    element_description=elem_desc,
-                                                    library_type=library_type  # Pass library type from outer scope
+                                                    element_description=elem_desc
                                                 )
 
                                                 if smart_result.get('found') and smart_result.get('best_locator'):

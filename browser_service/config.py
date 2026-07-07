@@ -186,8 +186,22 @@ class BrowserServiceConfig:
                 # in startup output before validate() is called.
                 logger.error(f"❌ Failed to load Vertex AI credentials: {e}")
 
-        # Robot Framework library type
+        # Robot Framework library type. Browser Library (Playwright) is the only
+        # supported target: the locator engine emits Playwright-only syntax
+        # (role=, text=, >>> iframe piercing), so any other value would produce
+        # valid-looking tests that fail on every step. Fail fast at construction —
+        # validate() is not called on the production startup path.
         self.robot_library = os.getenv("ROBOT_LIBRARY", "browser")
+        if self.robot_library == "selenium":
+            raise ValueError(
+                "ROBOT_LIBRARY=selenium is no longer supported; this service "
+                "generates Browser Library (Playwright) locators only. Remove "
+                "the setting or set ROBOT_LIBRARY=browser."
+            )
+        if self.robot_library != "browser":
+            raise ValueError(
+                f"ROBOT_LIBRARY must be 'browser', got '{self.robot_library}'"
+            )
 
         # Browser headless mode
         # When true: Browser runs without UI (faster, for CI/CD)
@@ -312,13 +326,6 @@ class BrowserServiceConfig:
         if self.max_concurrent_tasks < 1:
             errors.append(
                 f"MAX_CONCURRENT_TASKS must be >= 1, got {self.max_concurrent_tasks}"
-            )
-
-        # Validate robot library type
-        valid_libraries = ["browser", "selenium"]
-        if self.robot_library not in valid_libraries:
-            errors.append(
-                f"ROBOT_LIBRARY must be one of {valid_libraries}, got '{self.robot_library}'"
             )
 
         return errors

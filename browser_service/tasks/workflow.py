@@ -458,7 +458,7 @@ def process_workflow_task(
                 # Pass elements so the action handler can set is_done=True automatically when all
                 # expected element IDs have been processed, terminating the agent loop without
                 # relying on the LLM to call done() with the correct JSON format.
-                custom_actions_enabled = register_custom_actions(agent, page=None, elements=elements, workflow_id=task_id)
+                custom_actions_enabled = register_custom_actions(agent, page=None, elements=elements)
 
 
                 if custom_actions_enabled:

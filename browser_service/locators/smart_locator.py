@@ -1798,7 +1798,6 @@ async def _find_element_via_accessibility(
     y: float,
     element_description: str,
     expected_text: Optional[str] = None,
-    library_type: str = "browser",
     search_context=None,
     iframe_context: Optional[str] = None
 ) -> Optional[dict]:
@@ -2944,7 +2943,7 @@ async def _generate_locators_from_element_data(
     return None
 
 
-def _build_coordinate_strategies(element_data: dict, library_type: str = "browser") -> list[dict]:
+def _build_coordinate_strategies(element_data: dict) -> list[dict]:
     """
     Build the coordinate-fallback locator strategies from extracted element data.
 
@@ -2995,26 +2994,16 @@ def _build_coordinate_strategies(element_data: dict, library_type: str = "browse
         })
 
     # Strategy 5: name (Priority 3)
-    # Note: Browser Library (Playwright) doesn't support name= prefix
-    # SeleniumLibrary supports name= prefix
+    # Browser Library (Playwright) has no name= engine — only the CSS
+    # attribute form resolves.
     if element_data['name']:
-        if library_type == "browser":
-            # Browser Library: use attribute selector
-            name_escaped = element_data['name'].replace('"', '\\"')
-            locator_strategies.append({
-                'type': 'name',
-                'locator': f'[name="{name_escaped}"]',
-                'priority': PRIORITY_NAME,
-                'strategy': 'Name attribute'
-            })
-        else:
-            # SeleniumLibrary: use name= prefix
-            locator_strategies.append({
-                'type': 'name',
-                'locator': f"name={element_data['name']}",
-                'priority': PRIORITY_NAME,
-                'strategy': 'Name attribute'
-            })
+        name_escaped = element_data['name'].replace('"', '\\"')
+        locator_strategies.append({
+            'type': 'name',
+            'locator': f'[name="{name_escaped}"]',
+            'priority': PRIORITY_NAME,
+            'strategy': 'Name attribute'
+        })
 
     # Strategy 6: aria-label (Priority 4)
     if element_data['ariaLabel']:
@@ -3381,7 +3370,6 @@ async def find_unique_locator_at_coordinates(
     element_id: str,
     element_description: str,
     expected_text: Optional[str] = None,
-    library_type: str = "browser",
     element_data: Optional[dict] = None,  # Element attributes from browser-use DOM (id, class, text, etc.)
     search_context=None,  # Either page or frame_locator for iframe context
     iframe_context: Optional[str] = None,  # Iframe locator (e.g., 'iframe[id="main"]') for composite locators
@@ -3422,7 +3410,6 @@ async def find_unique_locator_at_coordinates(
         element_description: Human-readable description (primary source for semantic locators)
         expected_text: The actual visible text AI sees on the element (e.g., "Submit", "Nike Air Max 270").
                       Used for semantic validation AND for text-first locator search.
-        library_type: "browser" or "selenium" - determines locator format
         element_data: Optional dict with element attributes from browser-use DOM:
                      {"tagName": "a", "id": "", "textContent": "Services", "href": "/services", ...}
         search_context: The context to use for locator searches (page or frame_locator).
@@ -3847,7 +3834,6 @@ async def find_unique_locator_at_coordinates(
         y=y,
         element_description=element_description,
         expected_text=expected_text,
-        library_type=library_type,
         search_context=search_context,
         iframe_context=iframe_context
     )
@@ -4147,7 +4133,7 @@ async def find_unique_locator_at_coordinates(
         }
 
     # Step 3: Try multiple locator strategies in priority order
-    locator_strategies = _build_coordinate_strategies(element_data, library_type)
+    locator_strategies = _build_coordinate_strategies(element_data)
 
     logger.info(
         f"🔍 Generated {len(locator_strategies)} locator strategies to test")

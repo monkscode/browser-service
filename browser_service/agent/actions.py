@@ -476,7 +476,6 @@ async def find_unique_locator_action(
                     element_id=element_id,
                     element_description=element_description,
                     expected_text=expected_text,  # Pass expected_text for semantic validation
-                    library_type=config.robot_library,  # Use configured library type
                     element_data=element_data,  # Pass element attributes from browser-use DOM
                     is_collection=is_collection,  # Pass collection flag for multi-element detection
                     browser_session=browser_session,  # For resolved_node lookup (DELTA 1)

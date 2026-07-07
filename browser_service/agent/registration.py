@@ -760,7 +760,7 @@ async def _do_interaction(
     return note, status, action, value
 
 
-def register_custom_actions(agent, page=None, elements=None, workflow_id: str = "") -> bool:
+def register_custom_actions(agent, page=None, elements=None) -> bool:
     """
     Register custom actions with browser-use agent.
 
@@ -1182,16 +1182,6 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                             )
 
                             if dom_node is not None:
-                                try:
-                                    stable_hash = dom_node.compute_stable_hash()
-                                except Exception as e:
-                                    logger.debug(f"   ⚠️ compute_stable_hash failed: {e}")
-                                else:
-                                    logger.info(
-                                        f"📊 LOCATOR_PROBE workflow_id={workflow_id or 'unknown'} "
-                                        f"stable_hash={stable_hash} "
-                                        f"element_id={params.element_id}"
-                                    )
                                 logger.info(f"   ✅ Found element [{idx}] at coordinates!")
                                 elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
                                 logger.info(f"   📝 Element tag: <{elem_tag}>")

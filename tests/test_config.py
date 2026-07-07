@@ -8,7 +8,7 @@ Purpose: Verify that configuration defaults, env-var overrides, model name
 Each test targets a distinct code path in config.py:
   - Default values (no env vars)
   - Env-var override for headless mode
-  - Env-var override for robot_library
+  - ROBOT_LIBRARY: only 'browser' accepted; 'selenium' rejected at construction
   - LLM model name normalisation (_get_google_model strips "gemini/")
   - Batch config defaults
   - Locator config defaults + custom offsets
@@ -95,10 +95,15 @@ class TestBrowserServiceConfigDefaults:
         cfg = self._make_config({"BROWSER_HEADLESS": "false"})
         assert cfg.headless is False
 
-    def test_robot_library_env_override(self):
-        """ROBOT_LIBRARY=selenium is accepted."""
-        cfg = self._make_config({"ROBOT_LIBRARY": "selenium"})
-        assert cfg.robot_library == "selenium"
+    def test_robot_library_selenium_rejected_at_startup(self):
+        """ROBOT_LIBRARY=selenium fails construction with a migration message."""
+        with pytest.raises(ValueError, match="no longer supported"):
+            self._make_config({"ROBOT_LIBRARY": "selenium"})
+
+    def test_robot_library_unknown_rejected_at_startup(self):
+        """Any non-'browser' ROBOT_LIBRARY value fails construction."""
+        with pytest.raises(ValueError, match="ROBOT_LIBRARY"):
+            self._make_config({"ROBOT_LIBRARY": "puppeteer"})
 
     def test_default_max_concurrent_tasks(self):
         """Default MAX_CONCURRENT_TASKS is 10."""
@@ -128,7 +133,6 @@ class TestBrowserServiceConfigValidation:
         """A properly configured instance has no validation errors."""
         cfg = self._make_config_raw()
         cfg.llm.google_api_key = "valid-key"
-        cfg.robot_library = "browser"
         errors = cfg.validate()
         assert errors == []
 
@@ -138,14 +142,6 @@ class TestBrowserServiceConfigValidation:
         cfg.llm.google_api_key = ""
         errors = cfg.validate()
         assert any("GEMINI_API_KEY" in e for e in errors)
-
-    def test_validate_invalid_robot_library(self):
-        """Invalid ROBOT_LIBRARY value is reported."""
-        cfg = self._make_config_raw()
-        cfg.llm.google_api_key = "key"
-        cfg.robot_library = "puppeteer"
-        errors = cfg.validate()
-        assert any("ROBOT_LIBRARY" in e for e in errors)
 
     def test_validate_invalid_batch_values(self):
         """Negative/zero batch values are all reported."""
@@ -387,7 +383,6 @@ class TestVertexAIValidation:
         from browser_service.config import BatchConfig, LocatorConfig
         cfg.batch = BatchConfig()
         cfg.locator = LocatorConfig()
-        cfg.robot_library = "browser"
         cfg.headless = True
         cfg.enable_custom_actions = True
         cfg.max_concurrent_tasks = 10

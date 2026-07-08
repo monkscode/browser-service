@@ -79,7 +79,7 @@ logger = logging.getLogger(__name__)
 # Allowed suspected_type values. ``probe_specialized_type`` returns the
 # empty result for anything else — no JS is even executed.
 _SUPPORTED_TYPES: frozenset[str] = frozenset({
-    "dropdown", "checkbox", "radio", "collection",
+    "dropdown", "checkbox", "radio", "collection", "file-upload",
 })
 
 # Result shape returned when the probe cannot run (no page, bad type,
@@ -140,6 +140,41 @@ _PROBE_JS = r"""
     if (!candidate) {
         return { confirmed: false, framework: '', signals: ['no-element'],
                  anchor_xpath: '', anchor_tag: '' };
+    }
+
+    // ---- file-upload: nearest-container input[type=file] scan (G5) ----
+    // The generic walk below adds ancestor NODES without their child
+    // trees, so a file input that is the candidate's SIBLING (the
+    // standard styled-button shape) is invisible to it — while the
+    // ancestor-sibling rings WOULD see a NEIGHBORING widget's input and
+    // false-positive. File upload needs same-container semantics: climb
+    // at most 4 scopes (self + 3 ancestors), never scan body-wide. The
+    // anchor is the input itself so the handler can emit ITS locator —
+    // hidden file inputs are legal Upload File By Selector targets.
+    if (suspectedType === 'file-upload') {
+        let hit = null;
+        let scopeLabel = '';
+        if (candidate.tagName === 'INPUT' &&
+            (candidate.type === 'file' || candidate.getAttribute('type') === 'file')) {
+            hit = candidate;
+            scopeLabel = 'self';
+        } else {
+            let scope = candidate;
+            for (let d = 0; d < 4 && scope && scope !== document.body; d++) {
+                const found = scope.querySelector &&
+                    scope.querySelector('input[type="file"]');
+                if (found) { hit = found; scopeLabel = 'container[' + d + ']'; break; }
+                scope = scope.parentElement;
+            }
+        }
+        if (!hit) {
+            return { confirmed: false, framework: '',
+                     signals: ['file-upload:no-input-in-container'],
+                     anchor_xpath: '', anchor_tag: '' };
+        }
+        return { confirmed: true, framework: 'native',
+                 signals: [scopeLabel + ':tag:input[type=file]'],
+                 anchor_xpath: xpathOf(hit), anchor_tag: 'input' };
     }
 
     // ---- Build candidate set: self + descendants + ancestors +

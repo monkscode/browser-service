@@ -117,6 +117,13 @@ _RADIO_DESC_KEYWORDS: tuple[str, ...] = (
     "radio button", "radio option",
 )
 
+# Deliberately NOT including bare "import": list-page toolbars carry
+# Import buttons that merely navigate (ASTPP #import) — a file-upload
+# hunt there wastes a probe and risks anchoring an unrelated input.
+_FILE_UPLOAD_DESC_KEYWORDS: tuple[str, ...] = (
+    "upload", "choose file", "browse", "attach", "file input",
+)
+
 _TIER1_HIGH_WEIGHT = 3    # tagName / role / vision hint (each a strong signal)
 _TIER1_MEDIUM_WEIGHT = 2  # className
 _TIER1_LOW_WEIGHT = 1     # description
@@ -133,6 +140,7 @@ _VISION_HINT_TO_TYPE: dict[str, str] = {
     "checkbox": "checkbox",
     "radio": "radio",
     "table": "collection",
+    "file-upload": "file-upload",
     # The following hints don't trigger specialized routing today; they
     # propagate as informational signals only.
     "input": "input",
@@ -377,6 +385,7 @@ def _tier1_vote(
         "collection": 0,
         "checkbox": 0,
         "radio": 0,
+        "file-upload": 0,
     }
     signal_log: list[str] = []
 
@@ -430,6 +439,9 @@ def _tier1_vote(
     if any(kw in desc for kw in _RADIO_DESC_KEYWORDS):
         votes["radio"] += _TIER1_LOW_WEIGHT
         signal_log.append(f"desc:radio(+{_TIER1_LOW_WEIGHT})")
+    if any(kw in desc for kw in _FILE_UPLOAD_DESC_KEYWORDS):
+        votes["file-upload"] += _TIER1_LOW_WEIGHT
+        signal_log.append(f"desc:file-upload(+{_TIER1_LOW_WEIGHT})")
 
     # vision hint signal (+3) — strong, but treated as ONE source of truth.
     # The dispatcher requires DOM probe corroboration before any specialized

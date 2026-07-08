@@ -1027,7 +1027,8 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
             # never unilateral. See docs/ELEMENT_TYPE_CLASSIFIER_ARCHITECTURE.md.
             element_type: Optional[Literal[
                 "dropdown", "checkbox", "radio", "input", "button",
-                "link", "image", "label", "text-area", "table", "other",
+                "link", "image", "label", "text-area", "table",
+                "file-upload", "other",
             ]] = Field(
                 default=None,
                 description=(

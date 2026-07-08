@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>File upload fixture (ASTPP import-page shapes)</title>
+  <style>
+    .btn { padding: 8px 16px; border: 1px solid #888; background: #eee; cursor: pointer; }
+    .section { margin: 24px; padding: 16px; border: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+
+  <!-- Toolbar: an Import LINK with no file input anywhere near it.
+       The probe must NOT confirm file-upload here (it navigates to the
+       import page; clicking it never opens a dialog). -->
+  <div class="section" id="toolbar">
+    <a href="/import" id="import">Import</a>
+    <button type="button" class="btn" id="delete">Delete</button>
+  </div>
+
+  <!-- ASTPP customer-import shape: hidden file input with a stable id,
+       visible styled button as the click target. -->
+  <div class="section" id="customer-import">
+    <label>Customer CSV</label>
+    <input type="file" id="customer_import_mapper" style="display:none">
+    <button type="button" class="btn browse-customer">Browse</button>
+  </div>
+
+  <!-- Second upload widget: input has NO id, only a name. Ensures the
+       page has TWO file inputs, so the bare input[type=file] fallback is
+       ambiguous and id/name anchoring must win. -->
+  <div class="section" id="ratedeck-import">
+    <label>Ratedeck CSV</label>
+    <input type="file" name="ratedeck_csv" hidden>
+    <button type="button" class="btn browse-ratedeck">Choose file</button>
+  </div>
+
+  <!-- Visible native file input (direct-click case). -->
+  <div class="section" id="avatar-upload">
+    <label for="avatar_file">Avatar</label>
+    <input type="file" id="avatar_file">
+  </div>
+
+</body>
+</html>

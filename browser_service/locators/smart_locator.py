@@ -603,6 +603,7 @@ from .classifier import classify_element_type
 from .handlers import checkbox as _checkbox_handler
 from .handlers import collection as _collection_handler
 from .handlers import dropdown as _dropdown_handler
+from .handlers import file_upload as _file_upload_handler
 from .handlers.checkbox import (
     find_checkbox_or_radio_by_label as _find_checkbox_or_radio_by_label,
     resolve_hidden_input_proxy as _resolve_hidden_input_proxy,
@@ -2795,13 +2796,17 @@ async def _generate_locators_from_element_data(
     # "unknown" but the vision hint mapped to a specialized type.
     suspected_type = ""
     probe_mode = ""
-    if type_info.primary_type in ("dropdown", "collection", "checkbox", "radio"):
+    if type_info.primary_type in (
+        "dropdown", "collection", "checkbox", "radio", "file-upload",
+    ):
         suspected_type = type_info.primary_type
         probe_mode = "confirmation"
     elif type_info.primary_type == "unknown" and vision_type_hint:
         from .classifier import map_vision_hint
         mapped = map_vision_hint(vision_type_hint)
-        if mapped in ("dropdown", "collection", "checkbox", "radio"):
+        if mapped in (
+            "dropdown", "collection", "checkbox", "radio", "file-upload",
+        ):
             suspected_type = mapped
             probe_mode = "discovery"
 
@@ -2882,6 +2887,29 @@ async def _generate_locators_from_element_data(
                 dropdown_result, type_info, probe_result, vision_type_hint
             )
             return dropdown_result
+        # Else: fall through to the generic 21-strategy below.
+
+    elif type_info.primary_type == "file-upload":
+        # G5: the correct element to return is NOT the styled button
+        # vision clicked — it is the file input the probe anchored.
+        # The handler needs probe_result for that anchor.
+        file_upload_result = await _file_upload_handler.find_locator(
+            page=search_context,
+            element_data=element_data,
+            type_info=type_info,
+            element_id=element_id,
+            element_description=element_description,
+            expected_text=expected_text,
+            search_context=search_context,
+            iframe_context=iframe_context,
+            confirmed_coords=confirmed_coords,
+            probe_result=probe_result,
+        )
+        if file_upload_result is not None:
+            _attach_classifier_metadata(
+                file_upload_result, type_info, probe_result, vision_type_hint
+            )
+            return file_upload_result
         # Else: fall through to the generic 21-strategy below.
 
     elif type_info.primary_type == "collection":

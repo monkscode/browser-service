@@ -769,6 +769,113 @@ async def _upgrade_to_visible_only(search_context, locator: str) -> Optional[str
     return None
 
 
+async def _upgrade_to_row_anchor(
+    search_context,
+    locator: str,
+    row_anchor_text: Optional[str],
+    x: Optional[float] = None,
+    y: Optional[float] = None,
+) -> Optional[dict]:
+    """
+    Row-anchored uniqueness rescue (G1/G8 / Task B).
+
+    Data grids repeat identical action controls on every row (ASTPP:
+    ``a[title="Edit"]`` x12). The only thing that distinguishes "Edit
+    customer 64625" from the other Edit links is the ROW'S DATA, and
+    only the QA step knows which datum identifies the row — so the
+    anchor comes from the vision agent (``row_anchor_text``), never
+    from guessing a cell value that may be data-bound (balance,
+    timestamps).
+
+    When the candidate matches >1 elements, try the row-scoped chain
+    ``tr:has-text("{anchor}") >> {candidate}`` (then ``li:`` for
+    repeated card/list layouts). Emit it only when exactly one element
+    matches — rescued by the visible-only filter when a hidden template
+    row duplicates the anchor — and, when coordinates are available,
+    only when that element is the one the vision model actually saw.
+
+    XPath-shaped candidates are skipped: whether a chained
+    ``xpath=//...`` resolves relative to the row or from the document
+    root depends on the selector-engine version (verified relative in
+    our pinned Python Playwright, but the generated test runs under RF
+    Browser's own bundled engine). A locator whose meaning can differ
+    between discovery and runtime is exactly what this feature exists
+    to eliminate, and xpath candidates are last-resort priority anyway.
+
+    Anchored-on-QA-data is as stable as the QA case itself: callers
+    keep the base candidate's stability score (classify_locator agrees
+    — ``:has-text()`` carries no positional pattern). If the anchor
+    data changes rows at RF runtime, the locator follows the data; if
+    a second row ever matches, the test fails loudly on strict-mode
+    ambiguity instead of silently acting on a wrong row.
+
+    Returns:
+        ``{'locator': composite}`` on success;
+        ``{'ambiguous': True}`` when the anchor matches several rows
+        (Option 1: caller falls through to existing behavior and flags
+        the payload ``row_anchor_ambiguous`` — demote, never delete);
+        ``None`` when the upgrade does not apply.
+    """
+    anchor = (row_anchor_text or '').strip()
+    if not anchor:
+        return None
+    if locator.startswith(('xpath=', '//', '(//')):
+        logger.debug(
+            f"   Row-anchor upgrade skipped for xpath candidate {locator!r} "
+            f"(chained-xpath scoping is engine-version-dependent)"
+        )
+        return None
+
+    escaped = anchor.replace('\\', '\\\\').replace('"', '\\"')
+
+    for container in ('tr', 'li'):
+        composite = f'{container}:has-text("{escaped}") >> {locator}'
+        try:
+            count = await search_context.locator(composite).count()
+        except Exception as e:
+            logger.debug(f"   Row-anchor probe failed for {composite!r}: {e}")
+            return None
+
+        if count == 0:
+            continue
+
+        if count > 1:
+            # A hidden template row (modal grid copy) may duplicate the
+            # anchor — unique-among-visible still wins (same rescue as G2).
+            visible = await _upgrade_to_visible_only(search_context, composite)
+            if visible:
+                composite = visible
+            else:
+                logger.info(
+                    f"   ⚠️ ROW ANCHOR AMBIGUOUS: '{anchor}' matches "
+                    f"{count} elements via {container}-scoped chain — "
+                    f"falling through (flagged)"
+                )
+                return {'ambiguous': True}
+
+        # Exactly one match — when vision coordinates are available,
+        # require them to land on it: a unique match in a DIFFERENT row
+        # (anchor text elsewhere) must not be emitted.
+        if x is not None and y is not None:
+            is_match, reason = await _singleton_matches_coordinates(
+                search_context, composite, x, y
+            )
+            if not is_match:
+                logger.info(
+                    f"   ⚠️ Row-anchored match is not the element vision "
+                    f"saw ({reason}) — skipping row anchor"
+                )
+                return None
+
+        logger.info(
+            f"   📌 ROW ANCHOR UPGRADE: '{locator}' anchored to the row "
+            f"containing '{anchor}' → '{composite}'"
+        )
+        return {'locator': composite}
+
+    return None
+
+
 async def _singleton_matches_coordinates(page, selector: str, x: float, y: float) -> tuple[bool, str]:
     """
     Identity check for a count==1 text match: is it the element the vision
@@ -849,6 +956,7 @@ async def _find_element_by_expected_text(
     vision_type_hint: Optional[str] = None,
     probe_page=None,
     iframe_context: Optional[str] = None,
+    row_anchor_text: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Try to find element directly by the expected visible text.
@@ -1013,10 +1121,27 @@ async def _find_element_by_expected_text(
                 # Return as dict for consistency, but no special element_type
                 return {'locator': selector}
             elif count > 1:
-                # NEW: Try to disambiguate using coordinates if available
+                # G1: row-anchored rescue comes BEFORE nth= disambiguation —
+                # anchoring to the QA-named row data survives reorder; nth=
+                # silently acts on a different row when sort/data changes.
+                row_ambiguous = False
+                if row_anchor_text:
+                    row = await _upgrade_to_row_anchor(
+                        page, selector, row_anchor_text, x=x, y=y
+                    )
+                    if row and row.get('locator'):
+                        logger.info(f"   ✅ TEXT-FIRST SUCCESS (row-anchored): {row['locator']}")
+                        return {'locator': row['locator'], 'row_anchored': True}
+                    row_ambiguous = bool(row and row.get('ambiguous'))
+                # Try to disambiguate using coordinates if available
                 if x is not None and y is not None:
                     result = await _disambiguate_by_coordinates(page, selector, x, y)
                     if result:
+                        if row_ambiguous:
+                            # Option 1 (owner, 2026-07-08): ambiguous anchor
+                            # falls through to today's behavior, flagged so
+                            # nlrf can warn — demote, never delete.
+                            result['row_anchor_ambiguous'] = True
                         logger.info(f"   ✅ TEXT-FIRST SUCCESS (disambiguated): {result['locator']}")
                         return result
                 else:
@@ -1036,7 +1161,9 @@ async def _find_element_by_expected_text(
     return None
 
 
-async def _find_element_by_description(page, description: str) -> Optional[str]:
+async def _find_element_by_description(
+    page, description: str, row_anchor_text: Optional[str] = None
+) -> Optional[str]:
     """
     Fallback: Try to find element by its description when coordinates fail.
     Returns the unique locator string if found, None otherwise.
@@ -1109,6 +1236,15 @@ async def _find_element_by_description(page, description: str) -> Optional[str]:
                     logger.info(f"   ✅ Found unique element with semantic locator: {selector}")
                     return selector
                 elif count > 1:
+                    # G1: row-anchored rescue for per-row action controls.
+                    # This path has no coordinates, so ambiguity cannot be
+                    # flagged here — it falls through unchanged.
+                    if row_anchor_text:
+                        row = await _upgrade_to_row_anchor(
+                            page, selector, row_anchor_text
+                        )
+                        if row and row.get('locator'):
+                            return row['locator']
                     # G2: hidden duplicates — unique-among-visible still wins.
                     upgraded = await _upgrade_to_visible_only(page, selector)
                     if upgraded:
@@ -2569,6 +2705,7 @@ async def _generate_locators_from_element_data(
     vision_type_hint: Optional[str] = None,  # LLM's visual classification (1 of 2 sources of truth)
     vision_framework_hint: Optional[str] = None,  # LLM's framework guess
     page=None,  # Page-level reference for DOM probe (vs. search_context which can be frame_locator)
+    row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
 ) -> Optional[dict]:
     """
     Generate and validate locators from element_data extracted from browser-use DOM.
@@ -2866,10 +3003,28 @@ async def _generate_locators_from_element_data(
     )
 
     # Try each candidate locator in priority order
+    row_anchor_ambiguous_seen = False
     for candidate in locator_candidates:
         locator = candidate['locator']
         try:
             count = await search_context.locator(locator).count()
+
+            # G1: per-row action controls (Edit/Delete icons repeated on
+            # every grid row) are only distinguishable by the row's data —
+            # anchor to the QA-named row before any other rescue.
+            row_anchored = False
+            if count > 1 and row_anchor_text:
+                _rc = confirmed_coords or (None, None)
+                row = await _upgrade_to_row_anchor(
+                    search_context, locator, row_anchor_text,
+                    x=_rc[0], y=_rc[1],
+                )
+                if row and row.get('locator'):
+                    locator = row['locator']
+                    count = 1
+                    row_anchored = True
+                elif row and row.get('ambiguous'):
+                    row_anchor_ambiguous_seen = True
 
             # G2: hidden duplicates (closed modals, dual navs) must not kill
             # the candidate when exactly one match is visible — upgrade to a
@@ -2975,6 +3130,8 @@ async def _generate_locators_from_element_data(
                     'element_type': element_type,
                     'stability': candidate_stability,
                     **({'visibility_filtered': True} if visibility_filtered else {}),
+                    **({'row_anchored': True} if row_anchored else {}),
+                    **({'row_anchor_ambiguous': True} if row_anchor_ambiguous_seen else {}),
                     'all_locators': [{
                         'type': candidate['type'],
                         'locator': locator,
@@ -2987,7 +3144,8 @@ async def _generate_locators_from_element_data(
                         'semantic_match': semantic_match,
                         'validation_method': validation_method,
                         'stability': candidate_stability,
-                        **({'visibility_filtered': True} if visibility_filtered else {})
+                        **({'visibility_filtered': True} if visibility_filtered else {}),
+                        **({'row_anchored': True} if row_anchored else {})
                     }],
                     'element_info': {
                         'tagName': element_data.get('tagName', ''),
@@ -3354,6 +3512,9 @@ async def _validate_strategy_candidates(
     search_context,
     sorted_strategies: list,
     expected_text: Optional[str] = None,
+    row_anchor_text: Optional[str] = None,
+    x: Optional[float] = None,
+    y: Optional[float] = None,
 ) -> list[dict]:
     """
     Validate strategy candidates for uniqueness against the live DOM.
@@ -3379,6 +3540,25 @@ async def _validate_strategy_candidates(
             # NOTE: Use search_context (either page or frame_locator) for validation
             # This ensures iframe locators are validated inside the iframe
             count = await search_context.locator(strategy['locator']).count()
+
+            # G1: row-anchored rescue for per-row action controls — the
+            # QA-named row datum scopes the repeated candidate to its row;
+            # stability stays that of the base (data-derived anchor).
+            if count > 1 and row_anchor_text:
+                row = await _upgrade_to_row_anchor(
+                    search_context, strategy['locator'], row_anchor_text,
+                    x=x, y=y,
+                )
+                if row and row.get('locator'):
+                    strategy = {
+                        **strategy,
+                        'locator': row['locator'],
+                        'row_anchored': True,
+                    }
+                    count = 1
+                elif row and row.get('ambiguous'):
+                    # Option 1: fall through flagged — demote, never delete.
+                    strategy = {**strategy, 'row_anchor_ambiguous': True}
 
             # G2: rescue candidates whose only duplicates are hidden DOM
             # (closed modals, dual navs) — unique-among-visible upgrades to
@@ -3476,6 +3656,7 @@ async def find_unique_locator_at_coordinates(
     browser_session=None,  # BrowserSession for resolved_node lookup (DELTA 1)
     vision_type_hint: Optional[str] = None,  # LLM's visual classification (1 of 2 sources of truth)
     vision_framework_hint: Optional[str] = None,  # LLM's framework guess
+    row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
 ) -> dict:
     """
     Find a unique locator for an element using a semantic-first approach.
@@ -3628,6 +3809,7 @@ async def find_unique_locator_at_coordinates(
             vision_type_hint=vision_type_hint,  # 1 of 2 sources of truth (probe is the other)
             vision_framework_hint=vision_framework_hint,
             page=page,  # Page-level for DOM probe (search_context may be frame_locator)
+            row_anchor_text=row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
         )
         if result:
             # Add approach metrics for pattern analysis
@@ -3747,6 +3929,7 @@ async def find_unique_locator_at_coordinates(
             vision_type_hint=vision_type_hint,
             probe_page=page,  # Page-level for the DOM probe (search_context may be a frame_locator)
             iframe_context=iframe_context,
+            row_anchor_text=row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
         )
         
         if text_result:
@@ -3788,6 +3971,10 @@ async def find_unique_locator_at_coordinates(
                 'found': True,
                 'best_locator': text_locator,
                 'stability': text_first_stability,
+                # G1 row-anchor contract: anchored composite, or ambiguous
+                # anchor that fell through to nth= (nlrf warns on the flag).
+                **({'row_anchored': True} if text_result.get('row_anchored') else {}),
+                **({'row_anchor_ambiguous': True} if text_result.get('row_anchor_ambiguous') else {}),
                 'element_type': element_type,  # NEW: Pass element_type to caller
                 'all_locators': [{
                     'type': locator_type,
@@ -3840,7 +4027,9 @@ async def find_unique_locator_at_coordinates(
     if element_description and element_description.strip():
         logger.info(f"🔍 Step 2: Trying SEMANTIC locators from description: '{element_description}'")
         
-        semantic_locator = await _find_element_by_description(search_context, element_description)
+        semantic_locator = await _find_element_by_description(
+            search_context, element_description, row_anchor_text=row_anchor_text
+        )
         
         if semantic_locator:
             # Add iframe prefix if needed
@@ -4258,7 +4447,8 @@ async def find_unique_locator_at_coordinates(
         key=lambda x: (stability_rank(x.get('stability', STABLE)), x['priority']),
     )
     validated_locators = await _validate_strategy_candidates(
-        search_context, sorted_strategies, expected_text=expected_text
+        search_context, sorted_strategies, expected_text=expected_text,
+        row_anchor_text=row_anchor_text, x=x, y=y,
     )
 
     # Step 5: Select best locator (unique, lowest priority number)

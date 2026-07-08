@@ -274,6 +274,18 @@ PARAMETERS:
     ⚠️ When you see "loop: FOR" in ELEMENTS TO FIND, you MUST set is_collection=true
     ⚠️ This ensures we return a multi-element locator (e.g., .rt-tr-group) not single-element
     ⚠️ Examples: table rows, list items, all cells in a column
+  • row_anchor_text (str, ★ REQUIRED FOR ROW-SPECIFIC ACTIONS ★): The row-identifying data
+    when the target is a PER-ROW control inside a table or repeated list.
+    ⚠️ Tables repeat the same Edit/Delete/Download icons on EVERY row - only the row's
+    DATA distinguishes them. Without this, the locator may act on the WRONG row later!
+    ⚠️ Use the row-identifying datum FROM THE TASK (account number, customer name, invoice
+    id) exactly as it appears in the row's text.
+    ⚠️ Example: task says "Edit customer 64625", the Edit icon is in the row showing 64625
+    → find_unique_locator(..., row_anchor_text="64625")
+    ⚠️ Also for row checkboxes and row links: "Select the row for John Smith"
+    → row_anchor_text="John Smith"
+    ⚠️ Leave blank for elements that appear ONCE on the page (toolbar buttons, form fields,
+    menu links) - this parameter is ONLY for controls repeated across rows/items.
 """
 
 # Example workflow demonstrating the complete flow

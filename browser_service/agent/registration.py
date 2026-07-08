@@ -954,6 +954,20 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                 default=None,
                 description="Set to true if this element represents a COLLECTION (e.g., table rows, list items). When true, returns multi-element locator instead of single-element locator."
             )
+            row_anchor_text: Optional[str] = Field(
+                default=None,
+                description=(
+                    "When the target is a PER-ROW action inside a table or "
+                    "repeated list (Edit/Delete/Download icon, row checkbox, "
+                    "row link) and the task identifies WHICH row by its data, "
+                    "pass that row-identifying text EXACTLY as visible in the "
+                    "row. Example: task 'Edit customer 64625' -> "
+                    "row_anchor_text='64625'. The engine anchors the locator "
+                    "to the row containing this text instead of a brittle "
+                    "positional index. Leave blank for elements that appear "
+                    "once on the page (toolbar buttons, form fields)."
+                )
+            )
             # Vision-derived classification piggybacked on the per-step LLM
             # call. The locator pipeline corroborates this against a live
             # Playwright DOM probe before committing to a specialized
@@ -1327,6 +1341,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     browser_session=browser_session,  # For resolved_node lookup (DELTA 1)
                     vision_type_hint=params.element_type,  # LLM's visual type classification (1 of 2 sources)
                     vision_framework_hint=params.framework_hint,  # LLM's framework guess (any specialized type)
+                    row_anchor_text=params.row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
                 )
 
                 # Convert result to ActionResult format

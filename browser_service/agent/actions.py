@@ -104,6 +104,7 @@ async def find_unique_locator_action(
     browser_session=None,  # BrowserSession for resolved_node lookup in smart_locator
     vision_type_hint: Optional[str] = None,  # LLM's visual type classification (any specialized type)
     vision_framework_hint: Optional[str] = None,  # LLM's framework guess (any specialized type)
+    row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
 ) -> Dict[str, Any]:
     """
     Custom action that agent can call to find and validate unique locator.
@@ -481,6 +482,7 @@ async def find_unique_locator_action(
                     browser_session=browser_session,  # For resolved_node lookup (DELTA 1)
                     vision_type_hint=vision_type_hint,  # LLM's visual classification (1 of 2 sources)
                     vision_framework_hint=vision_framework_hint,  # LLM's framework guess
+                    row_anchor_text=row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
                 ),
                 timeout=custom_action_timeout
             )

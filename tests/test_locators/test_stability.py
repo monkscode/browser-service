@@ -47,6 +47,8 @@ class TestScoreStabilityVolatile:
         "gwt-uid-23",           # GWT
         "tomselect-2",          # Tom Select (the original incident)
         "tomselect-1-ts-control",
+        "cke_10",               # CKEditor 4 toolbar init-order counter (G6)
+        "cke_75",
         "radix-:r1:",           # Radix UI
         ":r0:",                 # React useId
         ":r2a:",
@@ -98,6 +100,10 @@ class TestScoreStabilityStable:
         "tab-1",
         "step-2",
         "item3",
+        # CKEditor name-derived values are deterministic, only the bare
+        # counter shape (cke_10) is session-volatile (G6)
+        "cke_wysiwyg_frame",
+        "cke_editor1",
         # Digits, but not a suffix-counter shape
         "q4-2025-report",
     ])

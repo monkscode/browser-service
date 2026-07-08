@@ -123,7 +123,8 @@ class TestDetectIframeContext:
         from browser_service.agent.registration import _detect_iframe_context
         return _detect_iframe_context
 
-    def _make_iframe_element(self, x, y, w, h, iframe_id="", iframe_name=""):
+    def _make_iframe_element(self, x, y, w, h, iframe_id="", iframe_name="",
+                             iframe_title="", iframe_class=""):
         elem = MagicMock()
         elem.node_name = "iframe"
         pos = MagicMock()
@@ -132,7 +133,12 @@ class TestDetectIframeContext:
         pos.width = w
         pos.height = h
         elem.absolute_position = pos
-        elem.attributes = {"id": iframe_id, "name": iframe_name}
+        elem.attributes = {
+            "id": iframe_id,
+            "name": iframe_name,
+            "title": iframe_title,
+            "class": iframe_class,
+        }
         return elem
 
     def test_coords_inside_iframe_by_id(self):
@@ -175,6 +181,109 @@ class TestDetectIframeContext:
         locator, _ = fn(selector_map, (100, 100))
         assert "iframe" in locator
         assert "nth=" in locator
+
+    # --- G6 / Task F: title and class before the ordinal fallback -------
+    # The ordinal shifts when an async third-party iframe (ASTPP:
+    # #jsd-widget support chat) loads at a different moment between
+    # discovery and RF runtime — iframe >> nth=N then points at a
+    # DIFFERENT frame. A stable title/class names the frame by what it
+    # is instead of where it sits.
+
+    def test_iframe_by_title(self):
+        """CKEditor case: no id/name, stable title → iframe[title=...]."""
+        fn = self._get_fn()
+        editor = self._make_iframe_element(
+            0, 0, 800, 600, iframe_title="Rich Text Editor, template",
+            iframe_class="cke_wysiwyg_frame cke_reset",
+        )
+        widget = self._make_iframe_element(
+            900, 900, 50, 50, iframe_id="jsd-widget")
+        locator, _ = fn({0: editor, 1: widget}, (100, 100))
+        assert locator == 'iframe[title="Rich Text Editor, template"]'
+
+    def test_title_quotes_escaped(self):
+        fn = self._get_fn()
+        iframe = self._make_iframe_element(
+            0, 0, 800, 600, iframe_title='He said "hi"')
+        locator, _ = fn({0: iframe}, (100, 100))
+        assert locator == 'iframe[title="He said \\"hi\\""]'
+
+    def test_dynamic_title_skipped(self):
+        """A data-bound title (date) dies next session → not an anchor."""
+        fn = self._get_fn()
+        iframe = self._make_iframe_element(
+            0, 0, 800, 600, iframe_title="Report 2026-07-08")
+        locator, _ = fn({0: iframe}, (100, 100))
+        assert "nth=" in locator
+
+    def test_duplicate_title_skipped(self):
+        """Two iframes sharing a title → frame_locator would be ambiguous."""
+        fn = self._get_fn()
+        a = self._make_iframe_element(0, 0, 400, 600, iframe_title="Ad")
+        b = self._make_iframe_element(500, 0, 400, 600, iframe_title="Ad")
+        locator, _ = fn({0: a, 1: b}, (100, 100))
+        assert "nth=" in locator
+
+    def test_iframe_by_unique_stable_class(self):
+        """No id/name/title → first stable, unique, identifier-shaped class."""
+        fn = self._get_fn()
+        editor = self._make_iframe_element(
+            0, 0, 800, 600, iframe_class="cke_wysiwyg_frame cke_reset")
+        widget = self._make_iframe_element(
+            900, 900, 50, 50, iframe_class="jsd-frame")
+        locator, _ = fn({0: editor, 1: widget}, (100, 100))
+        assert locator == "iframe.cke_wysiwyg_frame"
+
+    def test_volatile_class_skipped(self):
+        """An init-order counter class (cke_1) is dead next session —
+        the scorer must veto it (couples with the cke_\\d+ scorer rule)."""
+        fn = self._get_fn()
+        iframe = self._make_iframe_element(0, 0, 800, 600,
+                                           iframe_class="cke_1")
+        locator, _ = fn({0: iframe}, (100, 100))
+        assert "nth=" in locator
+
+    def test_volatile_class_skipped_next_class_used(self):
+        fn = self._get_fn()
+        iframe = self._make_iframe_element(
+            0, 0, 800, 600, iframe_class="cke_1 cke_wysiwyg_frame")
+        locator, _ = fn({0: iframe}, (100, 100))
+        assert locator == "iframe.cke_wysiwyg_frame"
+
+    def test_non_identifier_class_skipped(self):
+        """Tailwind-style class (w-1/2) is not a valid bare .class selector."""
+        fn = self._get_fn()
+        iframe = self._make_iframe_element(0, 0, 800, 600,
+                                           iframe_class="w-1/2")
+        locator, _ = fn({0: iframe}, (100, 100))
+        assert "nth=" in locator
+
+    def test_shared_class_skipped(self):
+        """A class carried by another iframe too is ambiguous → ordinal."""
+        fn = self._get_fn()
+        a = self._make_iframe_element(0, 0, 400, 600,
+                                      iframe_class="widget-frame")
+        b = self._make_iframe_element(500, 0, 400, 600,
+                                      iframe_class="widget-frame extra")
+        locator, _ = fn({0: a, 1: b}, (100, 100))
+        assert "nth=" in locator
+
+    def test_id_still_wins_over_title(self):
+        """Cascade order unchanged at the top: id beats title/class."""
+        fn = self._get_fn()
+        iframe = self._make_iframe_element(
+            0, 0, 800, 600, iframe_id="main-frame",
+            iframe_title="Rich Text Editor", iframe_class="cke_wysiwyg_frame")
+        locator, _ = fn({0: iframe}, (100, 100))
+        assert locator == 'iframe[id="main-frame"]'
+
+    def test_ordinal_counts_prior_iframes(self):
+        """The ordinal fallback still counts iframes in selector_map order."""
+        fn = self._get_fn()
+        first = self._make_iframe_element(900, 900, 50, 50)   # not containing
+        second = self._make_iframe_element(0, 0, 800, 600)    # target, bare
+        locator, _ = fn({0: first, 1: second}, (100, 100))
+        assert locator == "iframe >> nth=1"
 
     def test_empty_selector_map(self):
         """None or empty selector_map → (None, None)."""

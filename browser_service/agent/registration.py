@@ -36,8 +36,18 @@ import logging
 import re
 from typing import Optional
 
+from browser_service.locators.stability import (
+    STABLE,
+    is_dynamic_text,
+    score_stability,
+)
+
 # Get logger
 logger = logging.getLogger(__name__)
+
+# Class tokens usable as a bare `.class` selector — anything with CSS meta
+# characters (Tailwind `w-1/2`, `md:flex`) is skipped rather than escaped.
+_CSS_IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_-]*$')
 
 
 class _PlaywrightConnectionError(RuntimeError):
@@ -120,39 +130,81 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
     """
     if not selector_map or not coords:
         return None, None
-    
+
     x, y = coords
-    iframe_ordinal = 0
-    
-    for _idx, elem in selector_map.items():
-        if hasattr(elem, 'node_name') and elem.node_name.lower() == 'iframe':
-            if hasattr(elem, 'absolute_position') and elem.absolute_position:
-                pos = elem.absolute_position
-                # Check if coordinates are within iframe bounds
-                if (pos.x <= x <= pos.x + pos.width and
-                    pos.y <= y <= pos.y + pos.height):
-                    # Get iframe identifier
-                    attrs = elem.attributes if hasattr(elem, 'attributes') else {}
-                    iframe_id = attrs.get('id', '')
-                    iframe_name = attrs.get('name', '')
-                    
-                    # Generate locator for the iframe using attribute selectors
-                    # Escape special characters to prevent selector injection
-                    if iframe_id:
-                        # Escape \ and " for CSS attribute selector
-                        iframe_id_escaped = iframe_id.replace('\\', '\\\\').replace('"', '\\"')
-                        iframe_locator = f'iframe[id="{iframe_id_escaped}"]'
-                    elif iframe_name:
-                        iframe_name_escaped = iframe_name.replace('\\', '\\\\').replace('"', '\\"')
-                        iframe_locator = f'iframe[name="{iframe_name_escaped}"]'
-                    else:
-                        # Fallback: use ordinal-based selector (0-indexed count of iframes)
-                        iframe_locator = f"iframe >> nth={iframe_ordinal}"
-                    
-                    logger.info(f"🖼️ IFRAME DETECTED: Element at ({x}, {y}) is inside {iframe_locator}")
-                    return iframe_locator, iframe_id or iframe_name or str(iframe_ordinal)
-            iframe_ordinal += 1
-    
+
+    def _esc(value: str) -> str:
+        """Escape \\ and " for a CSS attribute selector."""
+        return value.replace('\\', '\\\\').replace('"', '\\"')
+
+    def _attrs_of(node) -> dict:
+        return node.attributes if hasattr(node, 'attributes') else {}
+
+    # Collect iframes first (selector_map order = ordinal parity with the
+    # pre-G6 behavior) so title/class uniqueness can be checked against
+    # the other iframes browser-use indexed.
+    iframes = [
+        elem for elem in selector_map.values()
+        if hasattr(elem, 'node_name') and elem.node_name.lower() == 'iframe'
+    ]
+
+    for iframe_ordinal, elem in enumerate(iframes):
+        if not (hasattr(elem, 'absolute_position') and elem.absolute_position):
+            continue
+        pos = elem.absolute_position
+        # Check if coordinates are within iframe bounds
+        if not (pos.x <= x <= pos.x + pos.width and
+                pos.y <= y <= pos.y + pos.height):
+            continue
+
+        attrs = _attrs_of(elem)
+        iframe_id = attrs.get('id', '')
+        iframe_name = attrs.get('name', '')
+        iframe_title = (attrs.get('title', '') or '').strip()
+        iframe_classes = (attrs.get('class', '') or '').split()
+        others = [o for o in iframes if o is not elem]
+
+        # Generate locator for the iframe using attribute selectors.
+        # Cascade (G6): id → name → title → unique stable class → ordinal.
+        # The ordinal is last because async third-party iframes (ASTPP:
+        # #jsd-widget) shift iframe order between discovery and RF
+        # runtime — `iframe >> nth=N` then points at a DIFFERENT frame.
+        iframe_locator = None
+        if iframe_id:
+            iframe_locator = f'iframe[id="{_esc(iframe_id)}"]'
+        elif iframe_name:
+            iframe_locator = f'iframe[name="{_esc(iframe_name)}"]'
+        else:
+            title_taken_by_other = any(
+                (_attrs_of(o).get('title', '') or '').strip() == iframe_title
+                for o in others
+            )
+            if (iframe_title and not is_dynamic_text(iframe_title)
+                    and not title_taken_by_other):
+                # CKEditor 4 body: title="Rich Text Editor, {field}" —
+                # deterministic per editor instance, no id/name.
+                iframe_locator = f'iframe[title="{_esc(iframe_title)}"]'
+            else:
+                for cls in iframe_classes:
+                    if not _CSS_IDENTIFIER_RE.match(cls):
+                        continue  # CSS meta chars — not a bare .class token
+                    if score_stability('class', cls) != STABLE:
+                        continue  # init-order counters (cke_1) die next session
+                    if any(cls in (_attrs_of(o).get('class', '') or '').split()
+                           for o in others):
+                        continue  # shared with another iframe — ambiguous
+                    iframe_locator = f'iframe.{cls}'
+                    break
+            if iframe_locator is None:
+                # Last resort: ordinal (0-indexed count of iframes).
+                # Downstream marks the whole composite positional (B2).
+                iframe_locator = f"iframe >> nth={iframe_ordinal}"
+
+        logger.info(f"🖼️ IFRAME DETECTED: Element at ({x}, {y}) is inside {iframe_locator}")
+        identifier = (iframe_id or iframe_name or iframe_title
+                      or str(iframe_ordinal))
+        return iframe_locator, identifier
+
     return None, None
 
 

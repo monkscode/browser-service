@@ -57,6 +57,9 @@ _FRAMEWORK_ID_PATTERNS = (
     re.compile(r"select2-"),             # Select2 (random middle segments)
     re.compile(r"gwt-uid-\d+"),          # GWT
     re.compile(r"tomselect-\d+"),        # Tom Select init-order counter
+    re.compile(r"cke_\d+"),              # CKEditor 4 init-order counter (G6);
+                                         # name-derived cke_editor1 /
+                                         # cke_wysiwyg_frame stay stable
     re.compile(r"radix-"),               # Radix UI generated id
     re.compile(r":r[0-9a-z]+:"),         # React useId
 )

@@ -724,6 +724,50 @@ async def _disambiguate_by_coordinates(page, selector: str, x: float, y: float) 
         return None
 
 
+async def _upgrade_to_visible_only(search_context, locator: str) -> Optional[str]:
+    """
+    Visibility-aware uniqueness rescue (G2 / Task A).
+
+    Sites routinely keep hidden template DOM in the page permanently —
+    closed Bootstrap modals with duplicated ids, mobile/desktop dual
+    navs, inactive tab panels. A candidate that is unique among VISIBLE
+    elements then fails the raw count()==1 check against its hidden
+    twins and the cascade decays toward parent-CSS/positional locators
+    (ASTPP audit: up to 19 duplicated ids per page).
+
+    When the candidate matches >1 elements but exactly one is visible,
+    return the composite ``{locator} >> visible=true`` instead of
+    discarding it. Generic by construction: the ``>>`` chain works for
+    every selector engine (css/#id, [attr=...], text=, xpath=), so all
+    candidate families take the same path on any site. The visibility
+    filter re-evaluates at RF runtime and selects whichever copy is
+    visible then — the QA intent ("the Save you can see"). If several
+    copies are visible at runtime the test fails loudly on strict-mode
+    ambiguity rather than silently clicking a wrong element.
+
+    Stability is a property of the base candidate: ``visible=true``
+    encodes no DOM order, so callers keep the base stability score
+    (classify_locator agrees — no positional pattern matches).
+
+    Returns the composite locator string, or None when the upgrade does
+    not apply (0 or 2+ visible matches, or the probe errored).
+    """
+    composite = f"{locator} >> visible=true"
+    try:
+        visible_count = await search_context.locator(composite).count()
+    except Exception as e:
+        logger.debug(f"   Visible-only upgrade check failed for {locator!r}: {e}")
+        return None
+
+    if visible_count == 1:
+        logger.info(
+            f"   👁️ VISIBILITY UPGRADE: '{locator}' matches multiple elements "
+            f"but exactly one is visible → '{composite}'"
+        )
+        return composite
+    return None
+
+
 async def _singleton_matches_coordinates(page, selector: str, x: float, y: float) -> tuple[bool, str]:
     """
     Identity check for a count==1 text match: is it the element the vision
@@ -959,6 +1003,12 @@ async def _find_element_by_expected_text(
                         logger.info(f"   ✅ TEXT-FIRST SUCCESS (disambiguated): {result['locator']}")
                         return result
                 else:
+                    # G2: no coordinates to disambiguate with, but hidden
+                    # duplicates must not kill a visible-unique text match.
+                    upgraded = await _upgrade_to_visible_only(page, selector)
+                    if upgraded:
+                        logger.info(f"   ✅ TEXT-FIRST SUCCESS (visible-only): {upgraded}")
+                        return {'locator': upgraded}
                     logger.info(f"   ⚠️ Multiple matches ({count}) for: {selector} (no coords for disambiguation)")
             # count == 0: no matches, try next
         except Exception as e:
@@ -1042,12 +1092,16 @@ async def _find_element_by_description(page, description: str) -> Optional[str]:
                     logger.info(f"   ✅ Found unique element with semantic locator: {selector}")
                     return selector
                 elif count > 1:
+                    # G2: hidden duplicates — unique-among-visible still wins.
+                    upgraded = await _upgrade_to_visible_only(page, selector)
+                    if upgraded:
+                        return upgraded
                     logger.info(f"   ⚠️ Multiple matches ({count}) for: {selector}")
                 # count == 0: no matches, try next
             except Exception as e:
                 logger.info(f"   ⚠️ Selector failed: {selector} - {e}")
                 pass
-        
+
         logger.warning(f"   ❌ No unique element found for description: {description}")
         return None
     except Exception as e:
@@ -2799,7 +2853,18 @@ async def _generate_locators_from_element_data(
         locator = candidate['locator']
         try:
             count = await search_context.locator(locator).count()
-            
+
+            # G2: hidden duplicates (closed modals, dual navs) must not kill
+            # the candidate when exactly one match is visible — upgrade to a
+            # visible-only composite and validate that instead.
+            visibility_filtered = False
+            if count > 1:
+                upgraded = await _upgrade_to_visible_only(search_context, locator)
+                if upgraded:
+                    locator = upgraded
+                    count = 1
+                    visibility_filtered = True
+
             if count == 1:
                 # SEMANTIC VALIDATION: Verify we found the RIGHT element
                 semantic_match = True
@@ -2892,6 +2957,7 @@ async def _generate_locators_from_element_data(
                     'best_locator': locator,
                     'element_type': element_type,
                     'stability': candidate_stability,
+                    **({'visibility_filtered': True} if visibility_filtered else {}),
                     'all_locators': [{
                         'type': candidate['type'],
                         'locator': locator,
@@ -2903,7 +2969,8 @@ async def _generate_locators_from_element_data(
                         'validated': True,
                         'semantic_match': semantic_match,
                         'validation_method': validation_method,
-                        'stability': candidate_stability
+                        'stability': candidate_stability,
+                        **({'visibility_filtered': True} if visibility_filtered else {})
                     }],
                     'element_info': {
                         'tagName': element_data.get('tagName', ''),
@@ -3295,7 +3362,22 @@ async def _validate_strategy_candidates(
             # NOTE: Use search_context (either page or frame_locator) for validation
             # This ensures iframe locators are validated inside the iframe
             count = await search_context.locator(strategy['locator']).count()
-            
+
+            # G2: rescue candidates whose only duplicates are hidden DOM
+            # (closed modals, dual navs) — unique-among-visible upgrades to
+            # a visible-only composite; stability stays that of the base.
+            if count > 1:
+                upgraded = await _upgrade_to_visible_only(
+                    search_context, strategy['locator']
+                )
+                if upgraded:
+                    strategy = {
+                        **strategy,
+                        'locator': upgraded,
+                        'visibility_filtered': True,
+                    }
+                    count = 1
+
             # Determine validation status
             is_unique = (count == 1)
             is_valid = (count == 1)  # Only unique locators are valid

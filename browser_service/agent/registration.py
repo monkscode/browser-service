@@ -457,6 +457,7 @@ async def _dispatch_browser_use_event(
 async def _do_interaction_playwright(
     active_page, locator_str: str, action: str, value: str, element_id: str, performed_actions: set,
     dropdown_framework: str = "", select_id: str | None = None,
+    datepicker_framework: str = "",
 ):
     """Playwright fallback with layered retry chains.
 
@@ -467,6 +468,37 @@ async def _do_interaction_playwright(
         if action in ("input", "type"):
             if not value:
                 return "", "not_applicable"
+
+            # Tier 0 (flatpickr): the widget's own API is the only
+            # deterministic path — the input is readonly, so fill() below
+            # would wait its full timeout and triple_click would open the
+            # calendar overlay and leave it over the page. setDate parses
+            # the value with the instance's own date format (lenient with
+            # date-only values — verified live on ASTPP 2026-07-08).
+            if datepicker_framework == "flatpickr":
+                try:
+                    diag = await loc.evaluate(
+                        """(el, v) => {
+                            try {
+                                const fp = el._flatpickr;
+                                if (!fp) return 'no_fp';
+                                fp.setDate(v, true);
+                                if (!fp.selectedDates || fp.selectedDates.length === 0) return 'no_date';
+                                return 'ok';
+                            } catch(e) {
+                                return 'error:' + e.message;
+                            }
+                        }""",
+                        value,
+                    )
+                    if diag == "ok":
+                        performed_actions.add(element_id)
+                        return f"\n✅ AUTO-ACTION COMPLETE: Set date '{value}' (flatpickr setDate JS)", "auto_ok"
+                    logger.info(f"   ⚠️ flatpickr.tier0_js_failed: reason={diag} locator={locator_str!r} value={value!r}")
+                except Exception as e:
+                    logger.warning(f"   ⚠️ flatpickr.tier0_exception: locator={locator_str!r} error={e}")
+                # Fall through to the generic input tiers — fail-open,
+                # same contract as the Tom Select JS tiers.
 
             # Tier 1: fill() — fires input/change events
             try:
@@ -744,6 +776,7 @@ async def _do_interaction(
     performed_actions: set,
     dropdown_framework: str = "",
     select_id: str | None = None,
+    datepicker_framework: str = "",
 ):
     """Orchestrate the interaction for one element — event path first, Playwright fallback second.
 
@@ -784,7 +817,12 @@ async def _do_interaction(
     # Calling get_element_by_index() (a real CDP round-trip) only to get (None, None) from
     # _dispatch_browser_use_event is wasteful. Playwright's loc.check() / loc.uncheck() are
     # state-aware; go there directly without any event-path overhead.
-    if action not in ("check", "uncheck") and dropdown_framework != "tom-select":
+    # flatpickr skips it for the same reason: TypeTextEvent "succeeds" against the
+    # readonly input without changing widget state — only the Playwright path's
+    # setDate JS tier actually sets the date.
+    if (action not in ("check", "uncheck")
+            and dropdown_framework != "tom-select"
+            and datepicker_framework != "flatpickr"):
         if element_index is not None and browser_session is not None:
             try:
                 node = await asyncio.wait_for(
@@ -806,6 +844,7 @@ async def _do_interaction(
     note, status = await _do_interaction_playwright(
         active_page, locator_str, action, value, element_id, performed_actions,
         dropdown_framework=dropdown_framework, select_id=select_id,
+        datepicker_framework=datepicker_framework,
     )
     if action in ("click", "submit", "select") and status == "auto_ok":
         await _wait_for_page_stability(active_page)
@@ -1028,7 +1067,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
             element_type: Optional[Literal[
                 "dropdown", "checkbox", "radio", "input", "button",
                 "link", "image", "label", "text-area", "table",
-                "file-upload", "other",
+                "file-upload", "date-picker", "other",
             ]] = Field(
                 default=None,
                 description=(
@@ -1044,6 +1083,8 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                 # Dropdown frameworks
                 "tom-select", "select2", "kendo", "react-select",
                 "vue-select", "ant-design", "material-ui",
+                # Date-picker frameworks
+                "flatpickr",
                 # Table / grid frameworks
                 "datatables", "ag-grid", "material-table", "react-table",
                 # Generic — visible widget looks like a plain HTML control
@@ -1430,6 +1471,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         _element_specs, _performed_actions,
                         dropdown_framework=result.get("dropdown_framework") or "",
                         select_id=result.get("select_id") or None,
+                        datepicker_framework=result.get("datepicker_framework") or "",
                     )
                     result["interaction_status"] = interaction_status
                     _idx = params.element_index

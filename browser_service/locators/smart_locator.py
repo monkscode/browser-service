@@ -602,6 +602,7 @@ async def validate_semantic_match(
 from .classifier import classify_element_type
 from .handlers import checkbox as _checkbox_handler
 from .handlers import collection as _collection_handler
+from .handlers import date_picker as _date_picker_handler
 from .handlers import dropdown as _dropdown_handler
 from .handlers import file_upload as _file_upload_handler
 from .handlers.checkbox import (
@@ -2798,6 +2799,7 @@ async def _generate_locators_from_element_data(
     probe_mode = ""
     if type_info.primary_type in (
         "dropdown", "collection", "checkbox", "radio", "file-upload",
+        "date-picker",
     ):
         suspected_type = type_info.primary_type
         probe_mode = "confirmation"
@@ -2806,6 +2808,7 @@ async def _generate_locators_from_element_data(
         mapped = map_vision_hint(vision_type_hint)
         if mapped in (
             "dropdown", "collection", "checkbox", "radio", "file-upload",
+            "date-picker",
         ):
             suspected_type = mapped
             probe_mode = "discovery"
@@ -2910,6 +2913,30 @@ async def _generate_locators_from_element_data(
                 file_upload_result, type_info, probe_result, vision_type_hint
             )
             return file_upload_result
+        # Else: fall through to the generic 21-strategy below.
+
+    elif type_info.primary_type == "date-picker":
+        # G4: commits only on flatpickr (readonly inputs where Fill Text
+        # dies) — native input[type=date] falls through unchanged. The
+        # handler needs probe_result for the wrap-mode button → sibling
+        # input anchor.
+        date_picker_result = await _date_picker_handler.find_locator(
+            page=search_context,
+            element_data=element_data,
+            type_info=type_info,
+            element_id=element_id,
+            element_description=element_description,
+            expected_text=expected_text,
+            search_context=search_context,
+            iframe_context=iframe_context,
+            confirmed_coords=confirmed_coords,
+            probe_result=probe_result,
+        )
+        if date_picker_result is not None:
+            _attach_classifier_metadata(
+                date_picker_result, type_info, probe_result, vision_type_hint
+            )
+            return date_picker_result
         # Else: fall through to the generic 21-strategy below.
 
     elif type_info.primary_type == "collection":

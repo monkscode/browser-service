@@ -124,6 +124,14 @@ _FILE_UPLOAD_DESC_KEYWORDS: tuple[str, ...] = (
     "upload", "choose file", "browse", "attach", "file input",
 )
 
+# Deliberately NOT including bare "date": it substring-matches
+# update/validate/candidate/consolidate — phrase-safe forms only.
+_DATE_PICKER_DESC_KEYWORDS: tuple[str, ...] = (
+    "date picker", "datepicker", "date field", "date range",
+    "date filter", "from date", "to date", "start date", "end date",
+    "due date", "date of", "calendar",
+)
+
 _TIER1_HIGH_WEIGHT = 3    # tagName / role / vision hint (each a strong signal)
 _TIER1_MEDIUM_WEIGHT = 2  # className
 _TIER1_LOW_WEIGHT = 1     # description
@@ -141,6 +149,7 @@ _VISION_HINT_TO_TYPE: dict[str, str] = {
     "radio": "radio",
     "table": "collection",
     "file-upload": "file-upload",
+    "date-picker": "date-picker",
     # The following hints don't trigger specialized routing today; they
     # propagate as informational signals only.
     "input": "input",
@@ -300,6 +309,14 @@ def _tier0_dom_rules(
                 "date-picker", "native", "high",
                 ["tagName=input", "type=date", "tier:0"],
             )
+        # flatpickr always stamps its class on the real input (ASTPP:
+        # readonly text inputs). Input-scoped on purpose — the calendar
+        # overlay's own chrome must not classify.
+        if "flatpickr-input" in classes_lower.split():
+            return ElementTypeInfo(
+                "date-picker", "flatpickr", "high",
+                ["tagName=input", "className:flatpickr-input", "tier:0"],
+            )
 
     # Rule 6: <tr>
     if tag == "tr":
@@ -386,6 +403,7 @@ def _tier1_vote(
         "checkbox": 0,
         "radio": 0,
         "file-upload": 0,
+        "date-picker": 0,
     }
     signal_log: list[str] = []
 
@@ -427,7 +445,15 @@ def _tier1_vote(
     # description signals (+1) — lowest weight; a single description hint
     # alone produces "low" confidence so the dispatcher can let the handler
     # decide whether to commit.
-    if any(kw in desc for kw in _DROPDOWN_DESC_KEYWORDS):
+    date_desc_hit = any(kw in desc for kw in _DATE_PICKER_DESC_KEYWORDS)
+    dropdown_desc_keywords = _DROPDOWN_DESC_KEYWORDS
+    if date_desc_hit:
+        # "date picker" contains the dropdown keyword "picker" — the date
+        # phrase is more specific, so "picker" alone must not tie the vote.
+        dropdown_desc_keywords = tuple(
+            kw for kw in _DROPDOWN_DESC_KEYWORDS if kw != "picker"
+        )
+    if any(kw in desc for kw in dropdown_desc_keywords):
         votes["dropdown"] += _TIER1_LOW_WEIGHT
         signal_log.append(f"desc:dropdown(+{_TIER1_LOW_WEIGHT})")
     if any(kw in desc for kw in _COLLECTION_DESC_KEYWORDS):
@@ -442,6 +468,9 @@ def _tier1_vote(
     if any(kw in desc for kw in _FILE_UPLOAD_DESC_KEYWORDS):
         votes["file-upload"] += _TIER1_LOW_WEIGHT
         signal_log.append(f"desc:file-upload(+{_TIER1_LOW_WEIGHT})")
+    if date_desc_hit:
+        votes["date-picker"] += _TIER1_LOW_WEIGHT
+        signal_log.append(f"desc:date-picker(+{_TIER1_LOW_WEIGHT})")
 
     # vision hint signal (+3) — strong, but treated as ONE source of truth.
     # The dispatcher requires DOM probe corroboration before any specialized

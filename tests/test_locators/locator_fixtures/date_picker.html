@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Date picker fixture — Task D (G4)</title>
+  <style>
+    section { margin: 24px; padding: 12px; border: 1px solid #ccc; }
+    input { display: inline-block; min-width: 180px; padding: 6px; }
+    .calendar-toggle { padding: 6px 10px; }
+  </style>
+</head>
+<body>
+
+  <!-- ASTPP customerReport shape: readonly flatpickr inputs with stable ids.
+       Both share name="callstart[]" (real site fact) so a name-based locator
+       is NON-unique — id must win. -->
+  <section id="filter-panel">
+    <label for="customer_cdr_from_date">From Date</label>
+    <input type="text" id="customer_cdr_from_date" name="callstart[]"
+           class="text field form-control flatpickr-input" readonly>
+    <label for="customer_cdr_to_date">To Date</label>
+    <input type="text" id="customer_cdr_to_date" name="callstart[]"
+           class="text field form-control flatpickr-input" readonly>
+  </section>
+
+  <!-- wrap-mode shape: vision clicks the calendar BUTTON next to an id-less
+       input — the container scan must anchor the sibling input. -->
+  <section id="event-form">
+    <div class="flatpickr-wrap">
+      <input type="text" name="event_date" class="flatpickr-input" readonly>
+      <button type="button" class="calendar-toggle" data-toggle>&#128197;</button>
+    </div>
+  </section>
+
+  <!-- Native date input: Tier-0 date-picker/native — handler must FALL
+       THROUGH so the generic path keeps emitting the plain id. -->
+  <section id="profile">
+    <label for="dob">Date of birth</label>
+    <input type="date" id="dob" name="dob">
+  </section>
+
+  <!-- Decoy: plain text input with no datepicker anywhere in its container —
+       the probe must reject, never scan body-wide. -->
+  <section id="toolbar">
+    <input type="text" id="search_box" name="q" placeholder="Search">
+  </section>
+
+  <script>
+    // Minimal flatpickr stub: the real structural signals (class +
+    // el._flatpickr with setDate/selectedDates/config) without vendoring
+    // the library. setDate records calls on window.__setDateCalls so
+    // interaction tests can assert the widget API was used.
+    document.querySelectorAll('input.flatpickr-input').forEach(function (el) {
+      el._flatpickr = {
+        config: { dateFormat: 'Y-m-d H:i:S', enableTime: true },
+        selectedDates: [],
+        setDate: function (v, trigger) {
+          this.selectedDates = [new Date(2026, 6, 1)];
+          el.value = String(v);
+          if (trigger) el.dispatchEvent(new Event('change', { bubbles: true }));
+          window.__setDateCalls = (window.__setDateCalls || []);
+          window.__setDateCalls.push([el.id || el.name, String(v)]);
+        }
+      };
+    });
+  </script>
+</body>
+</html>

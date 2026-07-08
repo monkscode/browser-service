@@ -80,6 +80,7 @@ logger = logging.getLogger(__name__)
 # empty result for anything else — no JS is even executed.
 _SUPPORTED_TYPES: frozenset[str] = frozenset({
     "dropdown", "checkbox", "radio", "collection", "file-upload",
+    "date-picker",
 })
 
 # Result shape returned when the probe cannot run (no page, bad type,
@@ -174,6 +175,54 @@ _PROBE_JS = r"""
         }
         return { confirmed: true, framework: 'native',
                  signals: [scopeLabel + ':tag:input[type=file]'],
+                 anchor_xpath: xpathOf(hit), anchor_tag: 'input' };
+    }
+
+    // ---- date-picker: nearest-container date-input scan (G4) ----
+    // Same-container semantics as the file-upload scan above: flatpickr
+    // often hides behind a calendar toggle BUTTON (wrap mode), so the
+    // input to anchor is the candidate's SIBLING — invisible to the
+    // generic walk, while ancestor-sibling rings would false-positive on
+    // a NEIGHBORING widget's input. Climb at most 4 scopes, never scan
+    // body-wide. The anchor is the input itself: flatpickr stamps class
+    // 'flatpickr-input' + property el._flatpickr on the REAL input (the
+    // only legal setDate target); input[type=date] is plain native.
+    if (suspectedType === 'date-picker') {
+        function isDateInput(n) {
+            if (!n || n.tagName !== 'INPUT') return false;
+            const c = ((n.className && n.className.toString &&
+                        n.className.toString()) || '').toLowerCase();
+            return !!n._flatpickr ||
+                   c.split(/\s+/).indexOf('flatpickr-input') !== -1 ||
+                   n.type === 'date' || n.getAttribute('type') === 'date';
+        }
+        let hit = null;
+        let scopeLabel = '';
+        if (isDateInput(candidate)) {
+            hit = candidate;
+            scopeLabel = 'self';
+        } else {
+            let scope = candidate;
+            for (let d = 0; d < 4 && scope && scope !== document.body; d++) {
+                const found = scope.querySelector &&
+                    scope.querySelector('input.flatpickr-input, input[type="date"]');
+                if (found) { hit = found; scopeLabel = 'container[' + d + ']'; break; }
+                scope = scope.parentElement;
+            }
+        }
+        if (!hit) {
+            return { confirmed: false, framework: '',
+                     signals: ['date-picker:no-input-in-container'],
+                     anchor_xpath: '', anchor_tag: '' };
+        }
+        const hitCls = ((hit.className && hit.className.toString &&
+                         hit.className.toString()) || '').toLowerCase();
+        const isFlatpickr = !!hit._flatpickr ||
+            hitCls.split(/\s+/).indexOf('flatpickr-input') !== -1;
+        return { confirmed: true,
+                 framework: isFlatpickr ? 'flatpickr' : 'native',
+                 signals: [scopeLabel + (isFlatpickr
+                     ? ':flatpickr-input' : ':tag:input[type=date]')],
                  anchor_xpath: xpathOf(hit), anchor_tag: 'input' };
     }
 

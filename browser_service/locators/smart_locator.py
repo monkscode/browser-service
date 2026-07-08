@@ -605,6 +605,7 @@ from .handlers import collection as _collection_handler
 from .handlers import dropdown as _dropdown_handler
 from .handlers.checkbox import (
     find_checkbox_or_radio_by_label as _find_checkbox_or_radio_by_label,
+    resolve_hidden_input_proxy as _resolve_hidden_input_proxy,
 )
 from .handlers.dropdown import _xpath_string_literal
 from .handlers.collection import (
@@ -926,6 +927,22 @@ async def _find_element_by_expected_text(
                 checkbox_result = await _find_checkbox_or_radio_by_label(page, text)
 
                 if checkbox_result:
+                    # G3: a styled switch's real input can be display:none —
+                    # discovery-time JS clicks succeed on it, but the
+                    # generated RF Click would time out. Redirect to the
+                    # visible clickable and keep the input for state reads.
+                    proxy_info = await _resolve_hidden_input_proxy(
+                        page, checkbox_result['locator']
+                    )
+                    if proxy_info:
+                        checkbox_result = {
+                            **checkbox_result,
+                            'hidden_input': True,
+                            'input_locator': checkbox_result['locator'],
+                        }
+                        if proxy_info.get('locator'):
+                            checkbox_result['locator'] = proxy_info['locator']
+                            checkbox_result['proxy_kind'] = proxy_info['proxy_kind']
                     # Return the checkbox/radio input locator instead of text
                     logger.info(f"   ✅ Returning checkbox/radio locator: {checkbox_result['locator']}")
                     return checkbox_result
@@ -3755,6 +3772,16 @@ async def find_unique_locator_at_coordinates(
             # or data-bound text like "Cart (3 items)" (volatile) — classify
             # the finished locator so the payload is honest about it.
             text_first_stability = classify_locator(text_locator)
+
+            # Carry the hidden-input redirect contract (G3) into element_info
+            # so the Assembler can click the proxy but read state from the
+            # real input.
+            _text_element_info = {'expected_text': expected_text}
+            if element_type:
+                _text_element_info['element_type'] = element_type
+            for _g3_key in ('hidden_input', 'input_locator', 'proxy_kind'):
+                if _g3_key in text_result:
+                    _text_element_info[_g3_key] = text_result[_g3_key]
             return {
                 'element_id': element_id,
                 'description': element_description,
@@ -3775,7 +3802,7 @@ async def find_unique_locator_at_coordinates(
                     'validation_method': 'playwright',
                     'stability': text_first_stability
                 }],
-                'element_info': {'expected_text': expected_text, 'element_type': element_type} if element_type else {'expected_text': expected_text},
+                'element_info': _text_element_info,
                 'coordinates': {'x': x, 'y': y, 'note': 'Not used - text-first approach succeeded'},
                 'validation_summary': {
                     'total_generated': 1,

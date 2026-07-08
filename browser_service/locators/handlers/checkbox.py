@@ -90,26 +90,28 @@ async def find_locator(
         search_context=search_context,
     )
     if attr_result:
-        return _build_result(
+        return await _build_result(
             locator=attr_result["locator"],
             strategy_name=attr_result["strategy"],
             element_id=element_id,
             element_description=element_description,
             type_info=type_info,
             element_type=attr_result.get("element_type", primary_type),
+            search_context=search_context,
         )
 
     # ---- Strategy 2: label-text search (legacy logic, native widgets) ----
     if label and framework == "native":
         legacy = await find_checkbox_or_radio_by_label(search_context, label)
         if legacy:
-            return _build_result(
+            return await _build_result(
                 locator=legacy["locator"],
                 strategy_name="Label-text search (native checkbox/radio)",
                 element_id=element_id,
                 element_description=element_description,
                 type_info=type_info,
                 element_type=legacy.get("element_type", primary_type),
+                search_context=search_context,
             )
 
     # ---- Strategy 3: custom-widget role + aria-label anchor ----
@@ -123,13 +125,14 @@ async def find_locator(
             label=label,
         )
         if custom_result:
-            return _build_result(
+            return await _build_result(
                 locator=custom_result["locator"],
                 strategy_name=custom_result["strategy"],
                 element_id=element_id,
                 element_description=element_description,
                 type_info=type_info,
                 element_type=primary_type,
+                search_context=search_context,
             )
 
     logger.info("checkbox.all_strategies_exhausted", primary_type=primary_type, framework=framework)
@@ -224,28 +227,170 @@ async def _locator_unique(search_context, locator: str) -> bool:
 
 
 # ----------------------------------------------------------------------
+# Hidden-input redirection (G3 / Task C)
+# ----------------------------------------------------------------------
+# Styled-switch CSS patterns hide the real <input> (display:none) and
+# draw a slider/label instead. The input is the CORRECT element
+# semantically, but RF Browser's Click / Check Checkbox needs a bounding
+# box, so a hidden input times out at runtime — while discovery-time
+# interaction (JS events) succeeds, making generation look fine. The
+# worst failure mode: green generation, red test.
+#
+# Fix: after resolving the input, probe visibility. If hidden, emit the
+# associated clickable instead (clicking a label toggles its input —
+# standard HTML semantics). Generic across styled-toggle patterns:
+# label[for=id] → wrapping <label> → adjacent sibling. All CSS forms,
+# all scored stable by the stability scorer (no order-encoding).
+
+_HIDDEN_PROBE_JS = """
+el => {
+    const out = {
+        tag: el.tagName.toLowerCase(),
+        id: el.id || '',
+        hasLabelFor: false,
+        hasWrappingLabel: false,
+        siblingTag: '',
+    };
+    if (out.tag !== 'input') return out;
+    if (el.id) {
+        try {
+            out.hasLabelFor = !!el.ownerDocument.querySelector(
+                `label[for="${CSS.escape(el.id)}"]`
+            );
+        } catch (e) { /* leave false */ }
+    }
+    out.hasWrappingLabel = !!el.closest('label');
+    const sib = el.nextElementSibling;
+    if (sib) out.siblingTag = sib.tagName.toLowerCase();
+    return out;
+}
+"""
+
+
+def _css_quote(value: str) -> str:
+    """Escape a raw value for embedding in a double-quoted CSS string."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+async def resolve_hidden_input_proxy(
+    search_context, input_locator: str
+) -> Optional[dict]:
+    """
+    When a resolved checkbox/radio input is hidden, find its visible
+    clickable proxy (G3 / Task C).
+
+    Returns:
+      - ``None`` — input is visible (or not an <input>, or the probe
+        errored): no redirection, caller keeps the locator as-is.
+      - ``{"hidden_input": True, "locator": <proxy>, "proxy_kind": ...}``
+        — a unique, visible proxy was found; caller should emit it as
+        best_locator and keep ``input_locator`` for state reads.
+      - ``{"hidden_input": True, "locator": None, "proxy_kind": ""}`` —
+        input is hidden but no proxy qualified; caller keeps the input
+        locator (today's behavior) with the flag for observability.
+    """
+    try:
+        first = search_context.locator(input_locator).first
+        if await first.is_visible():
+            return None
+        probe = await first.evaluate(_HIDDEN_PROBE_JS)
+    except Exception as e:
+        logger.info("checkbox.hidden_probe_failed", error=str(e))
+        return None
+
+    if not probe or probe.get("tag") != "input":
+        # Custom widgets (role="switch" divs/spans) ARE the visible
+        # control — redirection only applies to real hidden inputs.
+        return None
+
+    el_id = (probe.get("id") or "").strip()
+    # CSS form of the input, needed for :has() and sibling candidates.
+    # Attribute-selector form avoids CSS identifier-escaping issues.
+    input_css: Optional[str] = (
+        f'input[id="{_css_quote(el_id)}"]' if el_id else None
+    )
+    if input_css is None:
+        loc = input_locator.strip()
+        if not (loc.startswith(("xpath=", "text=", "role=", "//"))
+                or ">>" in loc):
+            input_css = loc  # already a plain CSS selector
+
+    candidates: list[tuple[str, str]] = []
+    if el_id and probe.get("hasLabelFor"):
+        candidates.append(
+            (f'label[for="{_css_quote(el_id)}"]', "label-for")
+        )
+    if input_css and probe.get("hasWrappingLabel"):
+        candidates.append((f"label:has({input_css})", "wrapping-label"))
+    if input_css and probe.get("siblingTag"):
+        candidates.append(
+            (f'{input_css} + {probe["siblingTag"]}', "adjacent-sibling")
+        )
+
+    for proxy, kind in candidates:
+        try:
+            if await search_context.locator(proxy).count() != 1:
+                continue
+            if not await search_context.locator(proxy).first.is_visible():
+                continue
+        except Exception:
+            continue
+        logger.info(
+            "checkbox.hidden_input_redirected",
+            proxy_kind=kind, input_locator=input_locator, proxy=proxy,
+        )
+        return {"hidden_input": True, "locator": proxy, "proxy_kind": kind}
+
+    logger.info("checkbox.hidden_input_no_proxy", input_locator=input_locator)
+    return {"hidden_input": True, "locator": None, "proxy_kind": ""}
+
+
+# ----------------------------------------------------------------------
 # Result construction
 # ----------------------------------------------------------------------
 
 
-def _build_result(
+async def _build_result(
     locator: str,
     strategy_name: str,
     element_id: str,
     element_description: str,
     type_info: "ElementTypeInfo",
     element_type: str,
+    search_context,
 ) -> dict:
-    """Standard handler result-dict shape — delegates to base.build_locator_result."""
+    """
+    Standard handler result-dict shape — delegates to base.build_locator_result.
+
+    Applies the hidden-input redirect (G3) first: when the resolved input
+    is display:none, best_locator becomes the visible clickable proxy and
+    ``element_info`` carries ``hidden_input`` + ``input_locator`` so the
+    Assembler clicks the proxy but reads state from the real input.
+    """
+    extra: dict = {}
+    best_locator = locator
+    proxy_info = await resolve_hidden_input_proxy(search_context, locator)
+    if proxy_info:
+        element_info: dict = {"hidden_input": True, "input_locator": locator}
+        if proxy_info.get("locator"):
+            best_locator = proxy_info["locator"]
+            element_info["proxy_kind"] = proxy_info["proxy_kind"]
+            strategy_name = (
+                f"{strategy_name} → hidden-input redirect "
+                f"({proxy_info['proxy_kind']})"
+            )
+        extra["element_info"] = element_info
+
     return build_locator_result(
         element_id=element_id,
         description=element_description,
-        best_locator=locator,
+        best_locator=best_locator,
         element_type=element_type,
         strategy_name=strategy_name,
         classifier_confidence=type_info.confidence,
         classifier_signals=type_info.signals,
         framework=type_info.framework,
+        **extra,
     )
 
 

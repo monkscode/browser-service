@@ -4735,6 +4735,7 @@ async def find_unique_locator_at_coordinates(
             # .get: some element_data producers (JS extraction paths) predate
             # the Task G aria pipe and don't carry the key.
             'ariaInvalid': element_data.get('ariaInvalid', ''),
+            'parentClassName': element_data.get('parentClassName', ''),
             'name': element_data['name'],
             'testId': element_data['dataTestId'],
             'actual_text': actual_text,  # Add actual text for debugging

@@ -133,6 +133,37 @@ class TestExtractDomNodeAttributes:
         result = self._get_fn()(self._make_node({"id": "email"}))
         assert result["ariaInvalid"] == ""
 
+    # --- Task G parent scan: Bootstrap-3-style parent-level error marker ---
+
+    def test_parent_class_extracted(self):
+        """Bootstrap 3 marks invalid fields on the PARENT div
+        (form-group has-error) — the field's own class list stays clean.
+        The extractor must carry the immediate parent's classes so nlrf's
+        marker scan can cover that convention (JS-extraction element_data
+        producers already emit parentClassName; this aligns the DOM-node
+        path)."""
+        parent = MagicMock()
+        parent.attributes = {"class": "form-group has-error"}
+        node = self._make_node({"id": "email", "class": "form-control"})
+        node.parent_node = parent
+        result = self._get_fn()(node)
+        assert result["parentClassName"] == "form-group has-error"
+
+    def test_parent_class_defaults_empty_without_parent(self):
+        """Root-level elements (no parent) must report empty string."""
+        node = self._make_node({"id": "email"})
+        node.parent_node = None
+        result = self._get_fn()(node)
+        assert result["parentClassName"] == ""
+
+    def test_parent_class_defaults_empty_without_parent_attributes(self):
+        """A parent node without an attributes dict must not raise."""
+        parent = MagicMock(spec=[])
+        node = self._make_node({"id": "email"})
+        node.parent_node = parent
+        result = self._get_fn()(node)
+        assert result["parentClassName"] == ""
+
 
 class TestDetectIframeContext:
     """Tests for _detect_iframe_context."""

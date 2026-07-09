@@ -94,6 +94,12 @@ def _extract_dom_node_attributes(dom_node) -> dict:
         if (not attrs.get('data-testid') and attrs.get('data-test'))
         else 'data-testid'
     )
+    # Task G parent scan: Bootstrap-3-style conventions mark invalid fields
+    # on the PARENT div (form-group has-error) while the field's own class
+    # list stays clean — carry the immediate parent's classes as evidence.
+    parent = getattr(dom_node, 'parent_node', None)
+    parent_attrs = getattr(parent, 'attributes', None) if parent is not None else None
+    parent_class = parent_attrs.get('class', '') if isinstance(parent_attrs, dict) else ''
     return {
         'tagName': dom_node.node_name.lower() if hasattr(dom_node, 'node_name') else '',
         'id': attrs.get('id', ''),
@@ -103,6 +109,7 @@ def _extract_dom_node_attributes(dom_node) -> dict:
         # Task G (nlrf G7): ARIA invalid-state signal — nlrf's state-verification
         # assembler emits a Get Attribute assertion when the field carries it.
         'ariaInvalid': attrs.get('aria-invalid', ''),
+        'parentClassName': parent_class,
         'placeholder': attrs.get('placeholder', ''),
         'title': attrs.get('title', ''),
         'href': attrs.get('href', ''),

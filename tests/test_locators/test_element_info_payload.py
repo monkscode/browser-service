@@ -30,3 +30,9 @@ class TestElementInfoPayloadContract:
 
     def test_aria_invalid_in_payload(self):
         assert "'ariaInvalid': element_data.get('ariaInvalid', '')" in SRC
+
+    def test_parent_class_in_payload(self):
+        """Bootstrap-3-style sites mark errors on the PARENT div — nlrf's
+        marker scan reads element_info.parentClassName to assert
+        `${locator} >> xpath=..` instead of falling to the placeholder."""
+        assert "'parentClassName': element_data.get('parentClassName', '')" in SRC

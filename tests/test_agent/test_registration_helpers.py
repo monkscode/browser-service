@@ -115,6 +115,24 @@ class TestExtractDomNodeAttributes:
         assert result["dataTestId"] == ""
         assert result["dataTestAttr"] == "data-testid"
 
+    # --- Task G (nlrf G7): aria-invalid rides the extraction pipe ---
+
+    def test_aria_invalid_extracted(self):
+        """aria-invalid is the ARIA state signal for invalid fields —
+        nlrf's state-verification assembler emits a Get Attribute
+        assertion when the observed field carries it, covering sites
+        that mark errors via ARIA instead of a CSS class."""
+        result = self._get_fn()(
+            self._make_node({"id": "email", "aria-invalid": "true"})
+        )
+        assert result["ariaInvalid"] == "true"
+
+    def test_aria_invalid_defaults_empty(self):
+        """Fields without the attribute must report empty string, not
+        raise — most elements never set aria-invalid."""
+        result = self._get_fn()(self._make_node({"id": "email"}))
+        assert result["ariaInvalid"] == ""
+
 
 class TestDetectIframeContext:
     """Tests for _detect_iframe_context."""

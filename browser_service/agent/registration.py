@@ -100,6 +100,9 @@ def _extract_dom_node_attributes(dom_node) -> dict:
         'name': attrs.get('name', ''),
         'className': attrs.get('class', ''),
         'ariaLabel': attrs.get('aria-label', ''),
+        # Task G (nlrf G7): ARIA invalid-state signal — nlrf's state-verification
+        # assembler emits a Get Attribute assertion when the field carries it.
+        'ariaInvalid': attrs.get('aria-invalid', ''),
         'placeholder': attrs.get('placeholder', ''),
         'title': attrs.get('title', ''),
         'href': attrs.get('href', ''),

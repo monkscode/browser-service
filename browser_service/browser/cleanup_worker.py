@@ -73,6 +73,14 @@ def _find_chrome_orphans(browser_pid: int, logger: logging.Logger) -> list:
                 text=True,
                 timeout=8,
             )
+            if result.returncode != 0:
+                # A failed query must not masquerade as "no orphans found" —
+                # that silently disables the safety net (the pre-87fa0f8 bug).
+                logger.warning(
+                    f"   ⚠️ Orphan sweep query failed (rc={result.returncode}): "
+                    f"{(result.stderr or '').strip()[:200]}"
+                )
+                return []
             pids = []
             for row in csv.DictReader(io.StringIO(result.stdout)):
                 name = (row.get("Name") or "").lower()
@@ -92,6 +100,14 @@ def _find_chrome_orphans(browser_pid: int, logger: logging.Logger) -> list:
                 text=True,
                 timeout=8,
             )
+            # pgrep rc=1 means "no processes matched" — a normal empty sweep.
+            # rc>=2 is a real failure (syntax/fatal) and must be visible.
+            if result.returncode not in (0, 1):
+                logger.warning(
+                    f"   ⚠️ Orphan sweep query failed (rc={result.returncode}): "
+                    f"{(result.stderr or '').strip()[:200]}"
+                )
+                return []
             return [int(p) for p in result.stdout.split() if p.strip().isdigit()]
     except Exception as e:
         logger.warning(f"   ⚠️ Orphan sweep query failed: {e}")

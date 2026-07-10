@@ -100,6 +100,47 @@ class TestFindChromeOrphansFailSafe:
         assert _find_chrome_orphans(999, logger) == []
         assert logger.warning.called
 
+    @patch("browser_service.browser.cleanup_worker.subprocess.run")
+    @patch("browser_service.browser.cleanup_worker.sys")
+    def test_powershell_nonzero_rc_returns_empty_and_warns(self, mock_sys, mock_run):
+        """A powershell failure (rc!=0) must WARN, not masquerade as a clean
+        empty sweep — silent-empty is how the safety net dies unnoticed."""
+        mock_sys.platform = "win32"
+        mock_run.return_value = MagicMock(
+            stdout="", stderr="Get-CimInstance : Access denied", returncode=1
+        )
+
+        from browser_service.browser.cleanup_worker import _find_chrome_orphans
+        logger = MagicMock()
+        assert _find_chrome_orphans(999, logger) == []
+        assert logger.warning.called
+
+    @patch("browser_service.browser.cleanup_worker.subprocess.run")
+    @patch("browser_service.browser.cleanup_worker.sys")
+    def test_pgrep_fatal_rc_returns_empty_and_warns(self, mock_sys, mock_run):
+        """pgrep rc>=2 is a real failure (rc=1 is just 'no match') — warn."""
+        mock_sys.platform = "linux"
+        mock_run.return_value = MagicMock(
+            stdout="", stderr="pgrep: invalid option", returncode=2
+        )
+
+        from browser_service.browser.cleanup_worker import _find_chrome_orphans
+        logger = MagicMock()
+        assert _find_chrome_orphans(999, logger) == []
+        assert logger.warning.called
+
+    @patch("browser_service.browser.cleanup_worker.subprocess.run")
+    @patch("browser_service.browser.cleanup_worker.sys")
+    def test_pgrep_no_match_does_not_warn(self, mock_sys, mock_run):
+        """rc=1 with empty output is pgrep's normal 'nothing matched' — no noise."""
+        mock_sys.platform = "linux"
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=1)
+
+        from browser_service.browser.cleanup_worker import _find_chrome_orphans
+        logger = MagicMock()
+        assert _find_chrome_orphans(999, logger) == []
+        assert not logger.warning.called
+
 
 class TestMainSweepWiring:
     """main() must use the single-shot sweep and kill orphans by PID."""

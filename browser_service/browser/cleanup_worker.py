@@ -15,8 +15,11 @@ Usage:
 
 import sys
 import os
+import csv
+import io
 import time
 import logging
+import subprocess
 
 
 def _setup_logging() -> logging.Logger:
@@ -42,6 +45,57 @@ def _setup_logging() -> logging.Logger:
         handlers=handlers,
     )
     return logging.getLogger(__name__)
+
+
+def _find_chrome_orphans(browser_pid: int, logger: logging.Logger) -> list:
+    """
+    Find chrome-named children of browser_pid with ONE process-table query.
+
+    psutil.process_iter(['pid','ppid','name']) opens a handle per process on
+    Windows — measured 13.3s for ~456 processes, past the parent's 10s wait
+    in cleanup.py, so the worker was killed mid-sweep on every generation.
+    A single CIM/pgrep query returns the same PID-scoped set in well under
+    the timeout. Kill semantics are unchanged: only chrome-named processes
+    whose PPID is this session's Chrome.
+
+    Returns a list of PIDs; empty on any failure (the sweep is a safety net,
+    never a crash source).
+    """
+    try:
+        if sys.platform.startswith("win"):
+            result = subprocess.run(
+                [
+                    "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                    f"Get-CimInstance Win32_Process -Filter 'ParentProcessId={int(browser_pid)}' | "
+                    "Select-Object ProcessId,Name | ConvertTo-Csv -NoTypeInformation",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            pids = []
+            for row in csv.DictReader(io.StringIO(result.stdout)):
+                name = (row.get("Name") or "").lower()
+                pid_str = row.get("ProcessId")
+                if pid_str and "chrome" in name:
+                    try:
+                        pids.append(int(pid_str))
+                    except ValueError:
+                        pass
+            return pids
+        else:
+            # pgrep matches the pattern against the process name, same
+            # "chrome" substring semantics as the old psutil filter.
+            result = subprocess.run(
+                ["pgrep", "-P", str(int(browser_pid)), "chrome"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            return [int(p) for p in result.stdout.split() if p.strip().isdigit()]
+    except Exception as e:
+        logger.warning(f"   ⚠️ Orphan sweep query failed: {e}")
+        return []
 
 
 def main():
@@ -101,22 +155,18 @@ def main():
     # exits, so orphaned children are still findable by their recorded PPID.
     # -----------------------------------------------------------------------
     try:
-        orphans = [
-            p for p in psutil.process_iter(["pid", "ppid", "name"])
-            if p.info.get("ppid") == browser_pid
-            and "chrome" in p.info.get("name", "").lower()
-        ]
+        orphans = _find_chrome_orphans(browser_pid, logger)
         if orphans:
             logger.info(f"   ⚠️ Found {len(orphans)} orphaned Chrome child(ren) with PPID {browser_pid}")
-            for child in orphans:
+            for orphan_pid in orphans:
                 try:
-                    child.kill()
-                    logger.info(f"   ✅ Killed orphaned Chrome PID {child.info['pid']}")
+                    psutil.Process(orphan_pid).kill()
+                    logger.info(f"   ✅ Killed orphaned Chrome PID {orphan_pid}")
                 except psutil.NoSuchProcess:
                     pass  # Already gone — not an error
                 except psutil.AccessDenied as e:
                     logger.warning(
-                        f"   ⚠️ Access denied killing orphan PID {child.info['pid']}: {e}"
+                        f"   ⚠️ Access denied killing orphan PID {orphan_pid}: {e}"
                     )
         else:
             logger.info(f"   ✅ No orphaned Chrome children found for PPID {browser_pid}")

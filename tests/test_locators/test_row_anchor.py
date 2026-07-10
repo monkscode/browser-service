@@ -29,9 +29,11 @@ import inspect
 from pathlib import Path
 
 from browser_service.locators.smart_locator import (
+    _derive_row_anchor_text_from_description,
     _find_element_by_description,
     _find_element_by_expected_text,
     _generate_locators_from_element_data,
+    _should_treat_as_collection,
     _upgrade_to_row_anchor,
     _validate_strategy_candidates,
 )
@@ -405,3 +407,61 @@ class TestPlumbing:
         src = (REPO_ROOT / 'browser_service' / 'prompts'
                / 'templates.py').read_text(encoding='utf-8')
         assert 'row_anchor_text' in src
+
+
+class TestDeriveRowAnchorFromDescription:
+    """When the caller (vision agent) leaves row_anchor_text unset, a
+    per-row action description already names the anchor as a quoted
+    phrase — recover it deterministically (bench q04 root cause: 'the
+    edit link in the row containing Smith in the first data table')."""
+
+    def test_row_containing_quoted_phrase(self):
+        desc = "the 'edit' link in the row containing 'Smith' in the first data table"
+        assert _derive_row_anchor_text_from_description(desc) == 'Smith'
+
+    def test_double_quotes(self):
+        desc = 'the edit link in the row containing "Smith" in the first table'
+        assert _derive_row_anchor_text_from_description(desc) == 'Smith'
+
+    def test_item_with_phrasing(self):
+        desc = "the delete icon for the item with '64625'"
+        assert _derive_row_anchor_text_from_description(desc) == '64625'
+
+    def test_no_anchor_phrase_returns_none(self):
+        assert _derive_row_anchor_text_from_description("the Submit button") is None
+
+    def test_none_description_returns_none(self):
+        assert _derive_row_anchor_text_from_description(None) is None
+
+    def test_empty_description_returns_none(self):
+        assert _derive_row_anchor_text_from_description('') is None
+
+
+class TestShouldTreatAsCollection:
+    """STEP 0.5 gate: explicit is_collection always wins; the fuzzy
+    keyword fallback (_is_collection_element) must not override a
+    caller-named row anchor — that's what caused q04's bare, non-unique
+    'tbody > tr' locator for a specific per-row click."""
+
+    def test_explicit_collection_wins_even_with_row_anchor(self):
+        assert _should_treat_as_collection(True, 'irrelevant', 'Smith') is True
+
+    def test_explicit_false_is_not_true_but_keyword_may_still_apply(self):
+        # is_collection=False is not the same as "unset" — but the keyword
+        # fallback still applies when nothing overrides it.
+        desc = "all rows in the data table"
+        assert _should_treat_as_collection(False, desc, None) is True
+
+    def test_row_anchor_suppresses_keyword_fallback(self):
+        desc = "the 'edit' link in the row containing 'Smith' in the first data table"
+        assert _should_treat_as_collection(None, desc, 'Smith') is False
+
+    def test_keyword_fallback_fires_without_row_anchor(self):
+        desc = "the 'edit' link in the row containing 'Smith' in the first data table"
+        assert _should_treat_as_collection(None, desc, None) is True
+
+    def test_no_description_no_row_anchor_not_collection(self):
+        assert _should_treat_as_collection(None, None, None) is False
+
+    def test_unrelated_description_not_collection(self):
+        assert _should_treat_as_collection(None, 'the Submit button', None) is False

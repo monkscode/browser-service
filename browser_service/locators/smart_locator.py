@@ -771,6 +771,51 @@ async def _upgrade_to_visible_only(search_context, locator: str) -> Optional[str
     return None
 
 
+_ROW_ANCHOR_DESC_PATTERN = re.compile(
+    r"""\b(?:row|item|record|entry)\s+(?:containing|with|for)\s+['"]([^'"]+)['"]""",
+    re.IGNORECASE,
+)
+
+
+def _derive_row_anchor_text_from_description(description: Optional[str]) -> Optional[str]:
+    """Recover a row-identifying datum from phrasing like "...the row
+    containing 'Smith'..." when the caller left row_anchor_text blank.
+
+    Per-row action descriptions already name the anchor as a quoted phrase
+    (planner echoes the QA step's own wording) — deriving it here means the
+    row-anchor rescue (_upgrade_to_row_anchor) fires even when the vision
+    agent's find_unique_locator call never set row_anchor_text itself.
+    """
+    if not description:
+        return None
+    match = _ROW_ANCHOR_DESC_PATTERN.search(description)
+    return match.group(1).strip() or None if match else None
+
+
+def _should_treat_as_collection(
+    is_collection: Optional[bool],
+    element_description: Optional[str],
+    row_anchor_text: Optional[str],
+) -> bool:
+    """STEP 0.5 gate: does this request want the WHOLE collection, or one
+    row's item?
+
+    An explicit is_collection=True always wins. Otherwise the fallback is
+    a fuzzy substring match on the description (_is_collection_element —
+    "data table", "table rows", ...), which false-positives on per-row
+    action descriptions like "the 'edit' link ... in the first data table"
+    (the table reference there scopes WHICH row to click, not "give me
+    every row"). A row_anchor_text — explicit or description-derived —
+    means the caller named a specific row, so it overrides the fuzzy
+    keyword hit and lets STEP 1's row-anchor rescue run instead.
+    """
+    if is_collection is True:
+        return True
+    if row_anchor_text:
+        return False
+    return bool(element_description) and _is_collection_element({}, element_description)
+
+
 async def _upgrade_to_row_anchor(
     search_context,
     locator: str,
@@ -3765,6 +3810,11 @@ async def find_unique_locator_at_coordinates(
         logger.info(f"   🖼️ Iframe context: {iframe_context}")
     logger.info(f"   Coordinates: ({x}, {y}) [fallback]")
 
+    if not row_anchor_text:
+        row_anchor_text = _derive_row_anchor_text_from_description(element_description)
+        if row_anchor_text:
+            logger.info(f"   📌 Row anchor derived from description: '{row_anchor_text}'")
+
     # DELTA 1: Resolve the DOM node at (x, y) once via get_dom_element_at_coordinates.
     # Cache-hit path returns a fully-populated selector_map node (children_nodes is a list).
     # CDP-fallback path (element not in cache) returns a minimal node with children_nodes=None
@@ -3880,16 +3930,17 @@ async def find_unique_locator_at_coordinates(
     # STEP 0.5: Collection detection (hybrid: is_collection flag + keyword fallback)
     # ========================================
     # Priority 1: Explicit is_collection=True from custom action (most reliable)
-    # Priority 2: Fallback keyword detection in description (backup)
+    # Priority 2: Fallback keyword detection in description (backup, suppressed
+    # when a row_anchor_text names a specific row — see _should_treat_as_collection)
     #
     # DESIGN: If CrewAI determined this is a collection, trust that decision
     # and return a multi-element locator even if only 1 element is currently visible.
-    
+
     explicit_collection = is_collection is True
-    keyword_collection = _is_collection_element({}, element_description) if element_description else False
-    
-    is_collection_request = explicit_collection or keyword_collection
-    
+    is_collection_request = _should_treat_as_collection(
+        is_collection, element_description, row_anchor_text
+    )
+
     if is_collection_request and expected_text:
         logger.info(f"🔍 Step 0.5: Collection detected - trying multi-element approach")
         if explicit_collection:

@@ -272,6 +272,13 @@ def process_workflow_task(
         enable_custom_actions_flag = enable_custom_actions
         logger.info(f"🔧 Using ENABLE_CUSTOM_ACTIONS from API parameter: {enable_custom_actions_flag}")
 
+    # Browser handles for post-completion cleanup (Task 19 / TIER-0 0.2).
+    # run_unified_workflow() deposits whatever resources it created here; the
+    # sync wrapper below runs cleanup_browser_resources() with them AFTER the
+    # task is marked completed, so the polling client never waits through
+    # cleanup (median 11.7s/generation on the 2026-07-06 bench baseline).
+    cleanup_handles: Dict[str, Any] = {}
+
     async def run_unified_workflow():
         """Execute the entire workflow in ONE Agent session."""
         from browser_use.browser.session import BrowserSession
@@ -1792,13 +1799,14 @@ def process_workflow_task(
             # Playwright cache cleanup removed — no module-level cache exists.
             # Each custom action creates and destroys its own Playwright instance.
 
-            # Use comprehensive cleanup utility
-            await cleanup_browser_resources(
-                session=session,
-                connected_browser=connected_browser,
-                playwright_instance=playwright_instance,
-                browser_pid=browser_pid
-            )
+            # Task 19: do NOT clean up here. Deposit the handles for the sync
+            # wrapper, which runs cleanup AFTER publishing the completed status.
+            # This finally runs on success and on exception, so a session whose
+            # start() failed is still captured for cleanup.
+            cleanup_handles["session"] = session
+            cleanup_handles["connected_browser"] = connected_browser
+            cleanup_handles["playwright_instance"] = playwright_instance
+            cleanup_handles["browser_pid"] = browser_pid
 
     # Run the async workflow
     loop = asyncio.new_event_loop()
@@ -1856,6 +1864,26 @@ def process_workflow_task(
             }
         })
     finally:
+        # Task 19 (TIER-0 0.2): browser cleanup runs HERE, after the task was
+        # marked completed above — the polling client already has its results
+        # and stops waiting. The worker thread (and thus the concurrency slot's
+        # real capacity — executor max_workers == max_concurrent_tasks) is
+        # still held until Chrome is confirmed dead, so cleanup cannot leak:
+        # same guarantees as before, minus the user-visible wait.
+        try:
+            loop.run_until_complete(cleanup_browser_resources(
+                session=cleanup_handles.get("session"),
+                connected_browser=cleanup_handles.get("connected_browser"),
+                playwright_instance=cleanup_handles.get("playwright_instance"),
+                browser_pid=cleanup_handles.get("browser_pid"),
+            ))
+        except Exception as cleanup_error:
+            # Results are already published; a cleanup failure must never
+            # clobber them. The orphan-detection logging inside
+            # cleanup_browser_resources() and the PID-scoped cleanup_worker
+            # remain the safety net for leaked Chrome processes.
+            logger.error(f"⚠️ Post-completion browser cleanup failed: {cleanup_error}", exc_info=True)
+
         # Unset the thread-local loop BEFORE closing it.
         # ThreadPoolExecutor reuses worker threads; without this, the next task
         # on the same thread would inherit the closed loop from set_event_loop()

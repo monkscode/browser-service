@@ -546,3 +546,98 @@ class TestWorkflowLLMBranching:
         """local provider raises RuntimeError immediately — no ChatGoogle call."""
         with pytest.raises(RuntimeError, match="not supported"):
             self._run_llm_branch("local")
+
+
+class TestCleanupOffCriticalPath:
+    """Task 19 (TIER-0 0.2): publish results BEFORE browser cleanup runs.
+
+    Cleanup costs a median 11.7s per generation (bench baseline 2026-07-06),
+    all of it spent before the task flips to 'completed' — so the polling
+    client waits through it. The contract under test: the 'completed' status
+    update happens first, cleanup runs after, and a cleanup failure can never
+    clobber already-published results.
+    """
+
+    def _make_processor(self, task_id: str):
+        """Return a TaskProcessor with task_id pre-seeded."""
+        from browser_service.tasks.processor import TaskProcessor
+        tp = TaskProcessor(ThreadPoolExecutor(max_workers=1))
+        tp.submit_task(task_id, lambda: None)
+        return tp
+
+    @staticmethod
+    def _mock_session():
+        """A BrowserSession mock whose start() raises — no real Chrome.
+
+        start() raising drives the coroutine's internal exception handler,
+        which still returns a results dict, so the wrapper publishes
+        'completed' as in production. Cleanup must still receive the
+        session handle (it was constructed before start() failed).
+        """
+        mock_session = MagicMock()
+        mock_session.start = AsyncMock(side_effect=RuntimeError("mock: no browser in test"))
+        return mock_session
+
+    def _run(self, task_id, tp, cleanup_mock, session):
+        from browser_service.tasks.workflow import process_workflow_task
+        with patch("browser_use.browser.session.BrowserSession", return_value=session), \
+             patch("browser_service.tasks.workflow.cleanup_browser_resources", cleanup_mock):
+            process_workflow_task(
+                task_id=task_id,
+                elements=[{"id": "e1", "description": "button", "action": "click"}],
+                url="https://example.com",
+                user_query="click the button",
+                session_config={},
+                task_processor=tp,
+            )
+
+    def test_completed_status_published_before_cleanup_runs(self):
+        """The 'completed' update must land before cleanup starts."""
+        events = []
+        tp = self._make_processor("t-order")
+        real_update = tp.update_task
+
+        def spy_update(task_id, updates):
+            if updates.get("status") == "completed":
+                events.append("completed")
+            return real_update(task_id, updates)
+
+        tp.update_task = spy_update
+
+        async def record_cleanup(**kwargs):
+            events.append("cleanup")
+
+        cleanup_mock = AsyncMock(side_effect=record_cleanup)
+        self._run("t-order", tp, cleanup_mock, self._mock_session())
+
+        assert "completed" in events, "task was never marked completed"
+        assert "cleanup" in events, "cleanup was never called"
+        assert events.index("completed") < events.index("cleanup"), (
+            f"cleanup ran before results were published: {events}"
+        )
+
+    def test_cleanup_still_receives_session_handle(self):
+        """A session constructed before start() failed must still be cleaned up."""
+        session = self._mock_session()
+        cleanup_mock = AsyncMock()
+        tp = self._make_processor("t-handle")
+        self._run("t-handle", tp, cleanup_mock, session)
+
+        cleanup_mock.assert_awaited_once()
+        assert cleanup_mock.await_args.kwargs["session"] is session
+
+    def test_cleanup_failure_does_not_clobber_published_results(self):
+        """A cleanup crash must not replace already-published results."""
+        async def boom(**kwargs):
+            raise RuntimeError("cleanup boom")
+
+        cleanup_mock = AsyncMock(side_effect=boom)
+        tp = self._make_processor("t-boom")
+        self._run("t-boom", tp, cleanup_mock, self._mock_session())  # must not raise
+
+        status = tp.get_task_status("t-boom")
+        assert status["status"] == "completed"
+        assert status["message"].startswith("Workflow completed:"), (
+            f"cleanup failure clobbered results: message={status['message']!r}"
+        )
+        assert "results" in status

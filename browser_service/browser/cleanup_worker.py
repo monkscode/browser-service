@@ -25,7 +25,7 @@ import tempfile
 
 # Leaked browser-use temp profiles (see _sweep_leaked_profiles).
 PROFILE_SWEEP_PREFIX = "browser-use-user-data-dir-"
-PROFILE_SWEEP_MAX_AGE_S = 3600   # never touch a dir younger than 1h — could be a live session
+PROFILE_SWEEP_MAX_AGE_S = 86400  # >24h only (owner-approved gate) — never a live session
 PROFILE_SWEEP_MAX_DELETES = 20   # bounded work per sweep; ~55 dirs/day leak vs 1 sweep per task
 
 

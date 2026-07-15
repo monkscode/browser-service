@@ -229,15 +229,16 @@ class TestSweepLeakedProfiles:
         return d
 
     def test_deletes_only_old_matching_dirs(self, tmp_path):
-        """Old profile dirs go; young dirs, foreign dirs, and files stay."""
+        """>24h profile dirs go; young dirs (even 23h), foreign dirs, and
+        files stay — the 24h gate is the owner-approved threshold."""
         from browser_service.browser.cleanup_worker import _sweep_leaked_profiles
 
-        old = self._make_profile(tmp_path, "browser-use-user-data-dir-aaa", 7200)
-        young = self._make_profile(tmp_path, "browser-use-user-data-dir-bbb", 60)
-        foreign = self._make_profile(tmp_path, "otherapp-user-data-dir-ccc", 7200)
+        old = self._make_profile(tmp_path, "browser-use-user-data-dir-aaa", 90000)
+        young = self._make_profile(tmp_path, "browser-use-user-data-dir-bbb", 82800)
+        foreign = self._make_profile(tmp_path, "otherapp-user-data-dir-ccc", 90000)
         prefix_file = tmp_path / "browser-use-user-data-dir-ddd"
         prefix_file.write_text("not a dir")
-        old_file_time = time.time() - 7200
+        old_file_time = time.time() - 90000
         os.utime(prefix_file, (old_file_time, old_file_time))
 
         _sweep_leaked_profiles(MagicMock(), temp_root=str(tmp_path))
@@ -251,9 +252,9 @@ class TestSweepLeakedProfiles:
         """At most max_deletes dirs are attempted per sweep, oldest first."""
         from browser_service.browser.cleanup_worker import _sweep_leaked_profiles
 
-        oldest = self._make_profile(tmp_path, "browser-use-user-data-dir-a", 10800)
-        older = self._make_profile(tmp_path, "browser-use-user-data-dir-b", 7200)
-        newer = self._make_profile(tmp_path, "browser-use-user-data-dir-c", 5400)
+        oldest = self._make_profile(tmp_path, "browser-use-user-data-dir-a", 260000)
+        older = self._make_profile(tmp_path, "browser-use-user-data-dir-b", 173000)
+        newer = self._make_profile(tmp_path, "browser-use-user-data-dir-c", 90000)
 
         _sweep_leaked_profiles(
             MagicMock(), temp_root=str(tmp_path), max_deletes=2
@@ -267,8 +268,8 @@ class TestSweepLeakedProfiles:
         """A locked/undeletable dir must not abort the sweep."""
         import browser_service.browser.cleanup_worker as worker
 
-        first = self._make_profile(tmp_path, "browser-use-user-data-dir-a", 10800)
-        second = self._make_profile(tmp_path, "browser-use-user-data-dir-b", 7200)
+        first = self._make_profile(tmp_path, "browser-use-user-data-dir-a", 260000)
+        second = self._make_profile(tmp_path, "browser-use-user-data-dir-b", 173000)
 
         # Bind the real function BEFORE patching — the module attribute
         # resolves to the mock at call time.

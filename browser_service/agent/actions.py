@@ -31,10 +31,81 @@ import logging
 import time
 from typing import Dict, Any, Optional
 
+from browser_service.locators.classifier import classify_element_type
 from browser_service.locators.stability import classify_locator
 
 # Get logger
 logger = logging.getLogger(__name__)
+
+
+def _candidate_element_info(element_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """element_info for a candidate-path accept, copied from element_data (E1).
+
+    The fast path used to return element_info={} — element_classes /
+    aria_invalid / parent_classes and the tagName routing fallback all
+    vanished downstream whenever the agent's proposed locator validated.
+    Tolerant .get: element_data producers vary in which keys they carry.
+    """
+    if not element_data:
+        return {}
+    return {
+        'id': element_data.get('id', ''),
+        'tagName': element_data.get('tagName', ''),
+        'text': element_data.get('textContent', '') or element_data.get('text', ''),
+        'className': element_data.get('className', ''),
+        'ariaInvalid': element_data.get('ariaInvalid', ''),
+        'parentClassName': element_data.get('parentClassName', ''),
+        'name': element_data.get('name', ''),
+        'testId': element_data.get('dataTestId', ''),
+        'source': 'candidate_element_data',
+    }
+
+
+def _candidate_tier0_stamp(
+    element_data: Optional[Dict[str, Any]], element_description: str
+) -> Dict[str, Any]:
+    """Classifier stamp for a candidate-path accept — Tier-0 DOM evidence only.
+
+    The full path corroborates classifier verdicts with a DOM probe before
+    any handler commits; the candidate path has no page round-trip, so the
+    stamp is gated to Tier-0 verdicts carrying attribute evidence beyond the
+    bare tag name (type= / className: / role= signals). Bare-tagName verdicts
+    (select/tr/li) stay unstamped — nlrf's tagName fallback already routes
+    those, and stamping tr/li would put 'table-row'/'list-item' into
+    dropdown_framework and fire the DROPDOWN block on collection steps.
+    Vision hints never feed this stamp (they are only corroborated on the
+    probe path).
+
+    select_id: only when the element is itself a <select> with an id — no
+    derivation from input ids, no probe.
+    """
+    if not element_data:
+        return {}
+
+    stamp: Dict[str, Any] = {}
+    if (element_data.get('tagName') or '').lower() == 'select' and element_data.get('id'):
+        stamp['select_id'] = element_data['id']
+
+    type_info = classify_element_type(element_data, element_description)
+    if 'tier:0' not in type_info.signals:
+        return stamp
+    if not any(
+        s.startswith(('type=', 'className:', 'role=')) for s in type_info.signals
+    ):
+        return stamp
+
+    stamp['element_type'] = type_info.primary_type
+    stamp['classifier_confidence'] = type_info.confidence
+    stamp['classifier_signals'] = list(type_info.signals)
+    if type_info.primary_type == 'dropdown':
+        stamp['dropdown_framework'] = type_info.framework or ''
+    elif type_info.primary_type == 'date-picker':
+        stamp['datepicker_framework'] = type_info.framework or ''
+        # Explicit empty: 'flatpickr' in dropdown_framework would misroute
+        # the Assembler's dropdown table (Task D guard — mirrors the
+        # date_picker handler).
+        stamp['dropdown_framework'] = ''
+    return stamp
 
 
 def _log_success_result(element_id: str, result: Dict[str, Any]) -> None:
@@ -342,7 +413,19 @@ async def find_unique_locator_action(
                                     f"{final_locator} — accepted, reported for healing"
                                 )
 
+                            # E1 (Option B): the accept must not starve the
+                            # composer/idiom routing downstream — copy the DOM
+                            # evidence and stamp Tier-0 verdicts.
+                            candidate_stamp = _candidate_tier0_stamp(
+                                element_data, element_description
+                            )
+                            if candidate_stamp:
+                                logger.info(
+                                    f"   🏷️ Candidate Tier-0 stamp: {candidate_stamp}"
+                                )
+
                             return {
+                                **candidate_stamp,
                                 'element_id': element_id,
                                 'description': element_description,
                                 'found': True,
@@ -360,7 +443,7 @@ async def find_unique_locator_action(
                                     'validation_method': 'playwright',
                                     'stability': candidate_stability
                                 }],
-                                'element_info': {},
+                                'element_info': _candidate_element_info(element_data),
                                 'coordinates': {'x': x, 'y': y},
                                 'validation_summary': {
                                     'total_generated': 1,

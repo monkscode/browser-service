@@ -15,6 +15,9 @@ Tests:
   main: orphans killed by PID, slow per-process iteration never used
 """
 
+import os
+import time
+
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -203,3 +206,111 @@ class TestMainSweepWiring:
         self._run_main(fake, orphans=[])
 
         fake.process_iter.assert_not_called()
+
+
+class TestSweepLeakedProfiles:
+    """Age-gated, capped sweep of leaked browser-use temp profile dirs.
+
+    browser-use 0.12.6 mkdtemps a fresh user_data_dir per session
+    (browser-use-user-data-dir-*) and its own teardown never runs because
+    our cleanup kills Chrome first — ~55 leaked dirs/day, ~14 MB each
+    (416 dirs / 6.1 GB measured 2026-07-15). The worker drains them:
+    age-gated so a live session's profile is never touched, capped so a
+    single sweep's work is bounded.
+    """
+
+    def _make_profile(self, root, name, age_s):
+        d = root / name
+        d.mkdir()
+        (d / "Default").mkdir()
+        (d / "Default" / "Cookies").write_text("x")
+        old = time.time() - age_s
+        os.utime(d, (old, old))
+        return d
+
+    def test_deletes_only_old_matching_dirs(self, tmp_path):
+        """Old profile dirs go; young dirs, foreign dirs, and files stay."""
+        from browser_service.browser.cleanup_worker import _sweep_leaked_profiles
+
+        old = self._make_profile(tmp_path, "browser-use-user-data-dir-aaa", 7200)
+        young = self._make_profile(tmp_path, "browser-use-user-data-dir-bbb", 60)
+        foreign = self._make_profile(tmp_path, "otherapp-user-data-dir-ccc", 7200)
+        prefix_file = tmp_path / "browser-use-user-data-dir-ddd"
+        prefix_file.write_text("not a dir")
+        old_file_time = time.time() - 7200
+        os.utime(prefix_file, (old_file_time, old_file_time))
+
+        _sweep_leaked_profiles(MagicMock(), temp_root=str(tmp_path))
+
+        assert not old.exists()
+        assert young.exists()
+        assert foreign.exists()
+        assert prefix_file.exists()
+
+    def test_cap_bounds_work_oldest_first(self, tmp_path):
+        """At most max_deletes dirs are attempted per sweep, oldest first."""
+        from browser_service.browser.cleanup_worker import _sweep_leaked_profiles
+
+        oldest = self._make_profile(tmp_path, "browser-use-user-data-dir-a", 10800)
+        older = self._make_profile(tmp_path, "browser-use-user-data-dir-b", 7200)
+        newer = self._make_profile(tmp_path, "browser-use-user-data-dir-c", 5400)
+
+        _sweep_leaked_profiles(
+            MagicMock(), temp_root=str(tmp_path), max_deletes=2
+        )
+
+        assert not oldest.exists()
+        assert not older.exists()
+        assert newer.exists()
+
+    def test_deletion_failure_warns_and_continues(self, tmp_path):
+        """A locked/undeletable dir must not abort the sweep."""
+        import browser_service.browser.cleanup_worker as worker
+
+        first = self._make_profile(tmp_path, "browser-use-user-data-dir-a", 10800)
+        second = self._make_profile(tmp_path, "browser-use-user-data-dir-b", 7200)
+
+        # Bind the real function BEFORE patching — the module attribute
+        # resolves to the mock at call time.
+        real_rmtree = worker.shutil.rmtree
+
+        def rmtree_first_fails(path, *args, **kwargs):
+            if str(path) == str(first):
+                raise OSError("locked")
+            return real_rmtree(path, *args, **kwargs)
+
+        logger = MagicMock()
+        with patch.object(worker.shutil, "rmtree", side_effect=rmtree_first_fails):
+            worker._sweep_leaked_profiles(logger, temp_root=str(tmp_path))
+
+        assert first.exists()
+        assert not second.exists()
+        assert logger.warning.called
+
+    def test_missing_root_never_raises(self, tmp_path):
+        """The sweep is a safety net, never a crash source."""
+        from browser_service.browser.cleanup_worker import _sweep_leaked_profiles
+
+        _sweep_leaked_profiles(
+            MagicMock(), temp_root=str(tmp_path / "does-not-exist")
+        )
+
+    def test_main_runs_profile_sweep(self):
+        """main() sweeps leaked profiles after the kill/orphan phases."""
+        import browser_service.browser.cleanup_worker as worker
+
+        fake_psutil = MagicMock()
+        fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+        fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+        fake_psutil.TimeoutExpired = type("TimeoutExpired", (Exception,), {})
+        fake_psutil.Process.side_effect = fake_psutil.NoSuchProcess()
+
+        with patch.object(worker.sys, "argv", ["cleanup_worker.py", "999"]), \
+             patch.object(worker.time, "sleep"), \
+             patch.dict("sys.modules", {"psutil": fake_psutil}), \
+             patch.object(worker, "_find_chrome_orphans", return_value=[]), \
+             patch.object(worker, "_sweep_leaked_profiles") as mock_profile_sweep, \
+             patch.object(worker, "_setup_logging", return_value=MagicMock()):
+            worker.main()
+
+        mock_profile_sweep.assert_called_once()

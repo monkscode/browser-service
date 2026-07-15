@@ -93,6 +93,11 @@ def _candidate_tier0_stamp(
         s.startswith(('type=', 'className:', 'role=')) for s in type_info.signals
     ):
         return stamp
+    # role=combobox/listbox is on the approved skip list: a
+    # dropdown/combobox-input stamp matches no composer TYPE rule, while
+    # the tagName fallback (div/input/span/button) routes TYPE 2/3.
+    if type_info.primary_type == 'dropdown' and type_info.framework == 'combobox-input':
+        return stamp
 
     stamp['element_type'] = type_info.primary_type
     stamp['classifier_confidence'] = type_info.confidence

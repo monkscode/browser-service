@@ -167,6 +167,18 @@ class TestTier0ClassifierStamp:
         )
         assert result["element_type"] == "checkbox"
 
+    @pytest.mark.asyncio
+    async def test_role_combobox_not_stamped(self, mock_playwright_page):
+        """role=combobox is on the approved skip list: a dropdown/combobox-input
+        stamp matches no composer TYPE rule, while the tagName fallback routes
+        TYPE 2/3 correctly — same full-path parity as the bare-select skip."""
+        result = await _accept_candidate(
+            mock_playwright_page,
+            element_data={"tagName": "div", "role": "combobox"},
+        )
+        assert "element_type" not in result
+        assert not result.get("dropdown_framework")
+
 
 class TestStampSkips:
     """Bare-tagName and Tier-1 verdicts must NOT stamp (full-path parity)."""

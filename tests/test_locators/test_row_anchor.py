@@ -408,6 +408,15 @@ class TestPlumbing:
                / 'templates.py').read_text(encoding='utf-8')
         assert 'row_anchor_text' in src
 
+    def test_is_collection_guidance_excludes_per_row_actions(self):
+        # F3 (2026-07-16): the is_collection bullet's own examples
+        # ("table rows") misled the vision agent into flagging per-row
+        # clicks as collections (bench q04 r3). The bullet must carry an
+        # explicit exclusion pointing at row_anchor_text.
+        src = (REPO_ROOT / 'browser_service' / 'prompts'
+               / 'templates.py').read_text(encoding='utf-8')
+        assert 'NOT a collection' in src
+
 
 class TestDeriveRowAnchorFromDescription:
     """When the caller (vision agent) leaves row_anchor_text unset, a
@@ -427,6 +436,46 @@ class TestDeriveRowAnchorFromDescription:
         desc = "the delete icon for the item with '64625'"
         assert _derive_row_anchor_text_from_description(desc) == '64625'
 
+    def test_relative_clause_that_contains(self):
+        # 2026-07-16 bench q04 r1: "row that contains 'Smith'" missed the
+        # old pattern and decayed to positional nth=0 — passed by luck.
+        desc = "the edit link in the row that contains 'Smith' in the first table"
+        assert _derive_row_anchor_text_from_description(desc) == 'Smith'
+
+    def test_relative_clause_which_has(self):
+        desc = "the checkbox in the row which has 'Pending'"
+        assert _derive_row_anchor_text_from_description(desc) == 'Pending'
+
+    def test_intervening_noun_before_quoted_anchor(self):
+        desc = "the Edit icon in the row for customer '64625'"
+        assert _derive_row_anchor_text_from_description(desc) == '64625'
+
+    def test_unquoted_numeric_anchor(self):
+        # Grid ids (account numbers, invoice ids) are the canonical row
+        # datum and users don't quote them in natural phrasing.
+        desc = "the Edit icon in the row for customer 4727985745"
+        assert _derive_row_anchor_text_from_description(desc) == '4727985745'
+
+    def test_unquoted_numeric_anchor_without_noun(self):
+        desc = "the download link in the row for 64625"
+        assert _derive_row_anchor_text_from_description(desc) == '64625'
+
+    def test_plural_head_noun_is_not_an_anchor(self):
+        # "all rows with X" is a filtered COLLECTION, not one row's action.
+        desc = "all rows with 'pending' status in the data table"
+        assert _derive_row_anchor_text_from_description(desc) is None
+
+    def test_single_digit_count_is_not_an_anchor(self):
+        # "the row with 3 columns" names a shape, not a row datum.
+        desc = "the row with 3 columns"
+        assert _derive_row_anchor_text_from_description(desc) is None
+
+    def test_unquoted_word_is_not_an_anchor(self):
+        # Only digit-leading tokens qualify unquoted — bare words are
+        # too loose ("the row for editing").
+        desc = "the row for editing"
+        assert _derive_row_anchor_text_from_description(desc) is None
+
     def test_no_anchor_phrase_returns_none(self):
         assert _derive_row_anchor_text_from_description("the Submit button") is None
 
@@ -438,13 +487,23 @@ class TestDeriveRowAnchorFromDescription:
 
 
 class TestShouldTreatAsCollection:
-    """STEP 0.5 gate: explicit is_collection always wins; the fuzzy
-    keyword fallback (_is_collection_element) must not override a
-    caller-named row anchor — that's what caused q04's bare, non-unique
-    'tbody > tr' locator for a specific per-row click."""
+    """STEP 0.5 gate trust order: a named row anchor (explicit param or
+    description-derived) wins over is_collection=True. REVERSES the
+    original explicit-flag-wins contract on 2026-07-16 evidence (owner
+    approved): bench q04 r3's vision call set is_collection=true on a
+    per-row click and omitted row_anchor_text; the collection path then
+    returned a bare 'tbody > tr' with found:true and the assembler
+    improvised an unusable locator. An anchor names ONE row — it is
+    strictly more specific than the hallucination-prone collection flag
+    (8/12 real improvisations in the 507-run scan are this chain).
+    Genuine collections ('get all book titles', 'all rows with X') never
+    derive a singular row anchor, so they keep the collection path."""
 
-    def test_explicit_collection_wins_even_with_row_anchor(self):
-        assert _should_treat_as_collection(True, 'irrelevant', 'Smith') is True
+    def test_row_anchor_overrides_explicit_collection(self):
+        assert _should_treat_as_collection(True, 'irrelevant', 'Smith') is False
+
+    def test_explicit_collection_without_anchor_still_wins(self):
+        assert _should_treat_as_collection(True, 'all book titles on the page', None) is True
 
     def test_explicit_false_is_not_true_but_keyword_may_still_apply(self):
         # is_collection=False is not the same as "unset" — but the keyword

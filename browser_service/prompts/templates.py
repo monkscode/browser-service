@@ -274,6 +274,9 @@ PARAMETERS:
     ⚠️ When you see "loop: FOR" in ELEMENTS TO FIND, you MUST set is_collection=true
     ⚠️ This ensures we return a multi-element locator (e.g., .rt-tr-group) not single-element
     ⚠️ Examples: table rows, list items, all cells in a column
+    ⚠️ A single control inside ONE row (an Edit/Delete/Download icon, a row checkbox) is
+    NOT a collection even though it sits in a table - leave is_collection unset and pass
+    row_anchor_text instead (see below)
   • row_anchor_text (str, ★ REQUIRED FOR ROW-SPECIFIC ACTIONS ★): The row-identifying data
     when the target is a PER-ROW control inside a table or repeated list.
     ⚠️ Tables repeat the same Edit/Delete/Download icons on EVERY row - only the row's

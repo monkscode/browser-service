@@ -771,25 +771,41 @@ async def _upgrade_to_visible_only(search_context, locator: str) -> Optional[str
     return None
 
 
+# Singular head nouns only: "all rowS with X" is a filtered collection,
+# not one row's action, and must not derive an anchor (the \s+ right after
+# the noun rejects the plural). Anchor forms: a quoted phrase, or an
+# unquoted digit-leading token of >=2 chars (grid ids — account numbers,
+# invoice ids — are the canonical row datum and go unquoted in natural
+# phrasing; a lone digit like "3 columns" names a shape, not a datum, and
+# bare words are too loose to trust).
 _ROW_ANCHOR_DESC_PATTERN = re.compile(
-    r"""\b(?:row|item|record|entry)\s+(?:containing|with|for)\s+['"]([^'"]+)['"]""",
-    re.IGNORECASE,
+    r"""\b(?:row|item|record|entry)\s+
+        (?:that\s+|which\s+)?
+        (?:contain(?:s|ing)?|ha(?:s|ving)|with|for|showing|shows|named|labell?ed)\s+
+        (?:the\s+)?(?:[A-Za-z]\w*\s+)?
+        (?:['"]([^'"]+)['"]|(\d[\w.\-]+))""",
+    re.IGNORECASE | re.VERBOSE,
 )
 
 
 def _derive_row_anchor_text_from_description(description: Optional[str]) -> Optional[str]:
     """Recover a row-identifying datum from phrasing like "...the row
-    containing 'Smith'..." when the caller left row_anchor_text blank.
+    containing 'Smith'...", "...the row that contains 'Smith'...", or
+    "...the row for customer 4727985745..." when the caller left
+    row_anchor_text blank.
 
-    Per-row action descriptions already name the anchor as a quoted phrase
-    (planner echoes the QA step's own wording) — deriving it here means the
-    row-anchor rescue (_upgrade_to_row_anchor) fires even when the vision
-    agent's find_unique_locator call never set row_anchor_text itself.
+    Per-row action descriptions already name the anchor (planner echoes the
+    QA step's own wording) — deriving it here means the row-anchor rescue
+    (_upgrade_to_row_anchor) fires even when the vision agent's
+    find_unique_locator call never set row_anchor_text itself.
     """
     if not description:
         return None
     match = _ROW_ANCHOR_DESC_PATTERN.search(description)
-    return match.group(1).strip() or None if match else None
+    if not match:
+        return None
+    anchor = (match.group(1) or match.group(2) or '').strip()
+    return anchor or None
 
 
 def _should_treat_as_collection(
@@ -800,19 +816,27 @@ def _should_treat_as_collection(
     """STEP 0.5 gate: does this request want the WHOLE collection, or one
     row's item?
 
-    An explicit is_collection=True always wins. Otherwise the fallback is
-    a fuzzy substring match on the description (_is_collection_element —
-    "data table", "table rows", ...), which false-positives on per-row
-    action descriptions like "the 'edit' link ... in the first data table"
-    (the table reference there scopes WHICH row to click, not "give me
-    every row"). A row_anchor_text — explicit or description-derived —
-    means the caller named a specific row, so it overrides the fuzzy
-    keyword hit and lets STEP 1's row-anchor rescue run instead.
+    Trust order (revised 2026-07-16, owner-approved): a row_anchor_text —
+    explicit or description-derived — names ONE specific row and wins over
+    everything, including an explicit is_collection=True. The vision agent
+    hallucinates the collection flag on per-row action steps (bench q04 r3:
+    is_collection=true + no anchor on "the 'edit' link in the row containing
+    'Smith'" sent the request down the collection path, which returned a
+    bare 'tbody > tr' claimed found:true — the assembler then improvised an
+    unusable locator; 8/12 real improvisations in the 507-run trace scan are
+    this exact chain). Genuine collections ("get all book titles", "all rows
+    with X") never derive a singular row anchor, so they keep this path.
+
+    Below the anchor check, is_collection=True wins over the fuzzy
+    description fallback (_is_collection_element — "data table", "table
+    rows", ...), which false-positives on per-row action descriptions like
+    "the 'edit' link ... in the first data table" (the table reference there
+    scopes WHICH row to click, not "give me every row").
     """
-    if is_collection is True:
-        return True
     if row_anchor_text:
         return False
+    if is_collection is True:
+        return True
     return bool(element_description) and _is_collection_element({}, element_description)
 
 

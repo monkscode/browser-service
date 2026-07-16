@@ -2861,6 +2861,26 @@ async def _generate_locators_from_element_data(
         f"(confidence={type_info.confidence}, signals={type_info.signals})"
     )
 
+    # Trust order (2026-07-16, owner-approved — same contract as
+    # _should_treat_as_collection at STEP 0.5): a named row anchor means ONE
+    # row's control, never the whole collection. Description keywords like
+    # "... in the customer data table" vote 'collection' here exactly the way
+    # the STEP 0.5 keyword fallback does, and the DOM probe "confirms"
+    # trivially (any per-row control has tr/tbody ancestors) — ASTPP gate
+    # q02 r1 shipped a bare 'tbody > tr' claimed found:true off this route
+    # while the agent's call carried row_anchor_text AND is_collection=False.
+    # Demote to unknown so the generic candidate loop (which owns the
+    # row-anchor rescue) handles the element.
+    if type_info.primary_type == "collection" and row_anchor_text:
+        type_info.signals.append("row-anchor-suppresses-collection")
+        type_info.primary_type = "unknown"
+        type_info.framework = ""
+        type_info.confidence = "low"
+        logger.info(
+            "   📌 Collection classification suppressed: row anchor "
+            f"'{row_anchor_text}' names one row's control"
+        )
+
     # Determine which type to probe and whether we're in confirmation or
     # discovery mode. Discovery mode kicks in when the classifier said
     # "unknown" but the vision hint mapped to a specialized type.
@@ -2875,7 +2895,11 @@ async def _generate_locators_from_element_data(
     elif type_info.primary_type == "unknown" and vision_type_hint:
         from .classifier import map_vision_hint
         mapped = map_vision_hint(vision_type_hint)
-        if mapped in (
+        if mapped == "collection" and row_anchor_text:
+            # Same trust order for the discovery route: a vision hint of
+            # 'collection' must not resurrect the suppressed verdict.
+            type_info.signals.append("row-anchor-suppresses-collection")
+        elif mapped in (
             "dropdown", "collection", "checkbox", "radio", "file-upload",
             "date-picker",
         ):

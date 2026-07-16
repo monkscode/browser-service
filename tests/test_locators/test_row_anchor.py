@@ -241,6 +241,43 @@ class TestElementDataRowAnchor:
         )
         assert result is None  # unchanged pre-fix behavior
 
+    async def test_collection_classification_suppressed_by_row_anchor(self):
+        """ASTPP gate q02 r1 (2026-07-16): the CLASSIFIER voted 'collection'
+        from description keywords ('... in the customer data table') and
+        routed to the collection handler INSIDE STEP 0 — bypassing the
+        STEP 0.5 trust-order gate entirely — even though the agent's call
+        carried row_anchor_text AND is_collection=False. The payload was a
+        bare 'tbody > tr' claimed found:true. A named row anchor must
+        suppress the collection route here too (same trust order)."""
+        from unittest.mock import patch
+        anchor = '4727985745'
+        aria = '[aria-label="Edit"]'
+        composite = f'tr:has-text("{anchor}") >> {aria}'
+        ctx = LenientFakeContext({
+            aria: FakeLocator(12),
+            composite: FakeLocator(1),
+        })
+        desc = ('Edit action icon in the row containing 4727985745 '
+                'in the customer data table')
+
+        async def _collection_must_not_run(*args, **kwargs):
+            raise AssertionError(
+                'collection handler must not run for a row-anchored request')
+
+        with patch(
+            'browser_service.locators.smart_locator.'
+            '_collection_handler.find_locator',
+            side_effect=_collection_must_not_run,
+        ):
+            result = await _generate_locators_from_element_data(
+                ctx, self.make_element_data(),
+                'elem_4', desc,
+                row_anchor_text=anchor,
+            )
+        assert result is not None and result['found']
+        assert result['best_locator'] == composite
+        assert result['row_anchored'] is True
+
     async def test_ambiguous_anchor_flag_rides_on_fallback_result(self):
         """Anchor matches two rows; the anchored candidate falls through
         but a later unique candidate carries row_anchor_ambiguous so

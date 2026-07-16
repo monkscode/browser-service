@@ -36,6 +36,8 @@ from browser_service.locators.smart_locator import (
     _should_treat_as_collection,
     _upgrade_to_row_anchor,
     _validate_strategy_candidates,
+    candidate_targets_row_anchor,
+    correct_expected_text_for_row_anchor,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -561,3 +563,166 @@ class TestShouldTreatAsCollection:
 
     def test_unrelated_description_not_collection(self):
         assert _should_treat_as_collection(None, 'the Submit button', None) is False
+
+
+class TestCorrectExpectedTextForRowAnchor:
+    """ASTPP gate q02 (2026-07-16, 5 of the 6 recorded elem_4 runs): the
+    vision agent set expected_text to the ROW ANCHOR DATUM ('4727985745')
+    while the indexed element's own DOM text was 'Edit'. TEXT-FIRST then
+    built text="4727985745" — UNIQUE on the page because it is the account
+    CELL — so count==1, the row-anchor rescue never fired, and the cell
+    shipped as the Edit-icon locator in every gate-r2 test.robot.
+
+    The correction: when expected_text IS the anchor datum and the DOM
+    evidence disagrees, trust the DOM — search with the element's own
+    text. That text repeats across rows (>1 matches), which is exactly
+    the condition the existing row-anchor rescue needs to emit the
+    tr:has-text composite."""
+
+    Q02_DATA = {'tagName': 'a', 'textContent': 'Edit'}
+
+    def test_q02_replaces_anchor_datum_with_element_text(self):
+        text, corrected = correct_expected_text_for_row_anchor(
+            '4727985745', '4727985745', self.Q02_DATA)
+        assert (text, corrected) == ('Edit', True)
+
+    def test_without_anchor_unchanged(self):
+        text, corrected = correct_expected_text_for_row_anchor(
+            '4727985745', None, self.Q02_DATA)
+        assert (text, corrected) == ('4727985745', False)
+
+    def test_expected_differs_from_anchor_unchanged(self):
+        # Healthy agent: expected_text already names the control.
+        text, corrected = correct_expected_text_for_row_anchor(
+            'Edit', '4727985745', self.Q02_DATA)
+        assert (text, corrected) == ('Edit', False)
+
+    def test_element_text_equals_anchor_unchanged(self):
+        # Legit "click the 4727985745 link" — the element IS the datum.
+        data = {'tagName': 'a', 'textContent': '4727985745'}
+        text, corrected = correct_expected_text_for_row_anchor(
+            '4727985745', '4727985745', data)
+        assert (text, corrected) == ('4727985745', False)
+
+    def test_no_element_data_unchanged(self):
+        # No DOM evidence of a mismatch — never correct on speculation.
+        text, corrected = correct_expected_text_for_row_anchor(
+            '4727985745', '4727985745', None)
+        assert (text, corrected) == ('4727985745', False)
+
+    def test_empty_element_text_unchanged(self):
+        # Icon-only control: absence of text is not positive evidence.
+        data = {'tagName': 'a', 'textContent': ''}
+        text, corrected = correct_expected_text_for_row_anchor(
+            '4727985745', '4727985745', data)
+        assert (text, corrected) == ('4727985745', False)
+
+    def test_no_expected_text_unchanged(self):
+        text, corrected = correct_expected_text_for_row_anchor(
+            None, '4727985745', self.Q02_DATA)
+        assert (text, corrected) == (None, False)
+
+    def test_whitespace_collapsed_on_all_sides(self):
+        data = {'tagName': 'a', 'textContent': '  Edit\n '}
+        text, corrected = correct_expected_text_for_row_anchor(
+            ' 4727985745 ', '4727985745', data)
+        assert (text, corrected) == ('Edit', True)
+
+    def test_text_key_fallback(self):
+        # element_data producers vary: some emit 'text', not 'textContent'.
+        data = {'tagName': 'a', 'text': 'Edit'}
+        text, corrected = correct_expected_text_for_row_anchor(
+            '4727985745', '4727985745', data)
+        assert (text, corrected) == ('Edit', True)
+
+    def test_idempotent_after_correction(self):
+        # actions.py corrects, then the engine calls again — no-op.
+        text, corrected = correct_expected_text_for_row_anchor(
+            'Edit', '4727985745', self.Q02_DATA)
+        assert (text, corrected) == ('Edit', False)
+
+
+class TestCandidateTargetsRowAnchor:
+    """The candidate-accept guard's predicate: does the agent's candidate
+    locator target the anchor datum itself (the cell), rather than the
+    row's control? Anchor text in a row-SCOPING segment before '>>' is
+    legitimate and must not fire."""
+
+    A = '4727985745'
+
+    def test_bare_text_engine_locator(self):
+        assert candidate_targets_row_anchor(f'text={self.A}', self.A) is True
+
+    def test_quoted_text_engine_locator(self):
+        assert candidate_targets_row_anchor(f'text="{self.A}"', self.A) is True
+
+    def test_attribute_selector(self):
+        assert candidate_targets_row_anchor(f"[title='{self.A}']", self.A) is True
+
+    def test_has_text_terminal(self):
+        assert candidate_targets_row_anchor(
+            f'td:has-text("{self.A}")', self.A) is True
+
+    def test_row_scoped_composite_not_flagged(self):
+        assert candidate_targets_row_anchor(
+            f'tr:has-text("{self.A}") >> a[title="Edit"]', self.A) is False
+
+    def test_control_candidate_not_flagged(self):
+        assert candidate_targets_row_anchor('a[title="Edit"]', self.A) is False
+
+    def test_id_candidate_not_flagged(self):
+        assert candidate_targets_row_anchor('id=username', self.A) is False
+
+    def test_no_anchor_never_fires(self):
+        assert candidate_targets_row_anchor(f'text={self.A}', None) is False
+
+    def test_no_candidate_never_fires(self):
+        assert candidate_targets_row_anchor(None, self.A) is False
+
+
+class TestAnchorCorrectionEngineFlow:
+    """The correction wired into find_unique_locator_at_coordinates must
+    also cover the DERIVED-anchor path (agent omitted row_anchor_text but
+    the description names the row) — actions.py cannot correct there
+    because it never sees the derived anchor."""
+
+    async def test_derived_anchor_corrects_and_row_scopes(self):
+        from unittest.mock import MagicMock
+        from browser_service.locators.smart_locator import (
+            find_unique_locator_at_coordinates,
+        )
+        anchor = '4727985745'
+        text_sel = 'text="Edit"'
+        composite = f'tr:has-text("{anchor}") >> {text_sel}'
+        box = {'x': 480.0, 'y': 670.0, 'width': 30.0, 'height': 20.0}
+        ctx = LenientFakeContext({
+            text_sel: FakeLocator(9),
+            composite: FakeLocator(1, box=box),
+        })
+        result = await find_unique_locator_at_coordinates(
+            page=MagicMock(),
+            x=494, y=682,
+            element_id='elem_4',
+            # Verbatim from the first-gate r1 trace — a phrasing the F2
+            # derivation regex recovers. (Two other real q02 phrasings,
+            # 'row containing customer ID 4727985745' and 'row
+            # corresponding to customer 4727985745', do NOT derive —
+            # known F2 gap, reported separately; the agent passed
+            # row_anchor_text explicitly in all six observed calls.)
+            element_description=(
+                'Edit action icon in the row containing 4727985745 '
+                'in the customer data table'
+            ),
+            expected_text='4727985745',
+            element_data={
+                'tagName': 'a', 'id': '', 'className': '',
+                'textContent': 'Edit',
+                'xpath': 'html/body/main/div[3]/div/div/div[2]/table'
+                         '/tbody/tr[9]/td[2]/div/a[1]',
+            },
+            search_context=ctx,
+        )
+        assert result['found'] is True
+        assert result['best_locator'] == composite
+        assert result['best_locator'] != 'text="4727985745"'  # the q02 bug
+        assert result.get('row_anchored') is True

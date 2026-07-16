@@ -808,6 +808,62 @@ def _derive_row_anchor_text_from_description(description: Optional[str]) -> Opti
     return anchor or None
 
 
+def correct_expected_text_for_row_anchor(
+    expected_text: Optional[str],
+    row_anchor_text: Optional[str],
+    element_data: Optional[dict],
+) -> tuple[Optional[str], bool]:
+    """Repair an expected_text that IS the row anchor datum (ASTPP gate
+    q02, 2026-07-16).
+
+    The vision agent sometimes passes the row-identifying datum
+    ('4727985745') as expected_text for a per-row control whose own text
+    is different ('Edit'). Every accept built from that expected_text —
+    text-first foremost — then targets the anchor CELL, which is unique
+    on the page (count==1), so the row-anchor rescue never fires and the
+    wrong element ships. When element_data carries positive evidence of
+    the mismatch, trust the DOM: return the element's own text, which
+    repeats across rows (count>1) and hands the existing rescue exactly
+    the ambiguity it needs to emit the tr:has-text composite.
+
+    No correction without positive evidence: element_data absent, its
+    text empty (icon-only controls), or its text equal to the anchor
+    (legit "click the 4727985745 link") all return the input unchanged.
+
+    Returns (effective_expected_text, corrected).
+    """
+    anchor = ' '.join(str(row_anchor_text or '').split())
+    expected = ' '.join(str(expected_text or '').split())
+    if not anchor or not expected or expected != anchor:
+        return expected_text, False
+    elem_text = ' '.join(str(
+        (element_data or {}).get('textContent')
+        or (element_data or {}).get('text')
+        or ''
+    ).split())
+    if not elem_text or elem_text == anchor:
+        return expected_text, False
+    return elem_text, True
+
+
+def candidate_targets_row_anchor(
+    candidate_locator: Optional[str],
+    row_anchor_text: Optional[str],
+) -> bool:
+    """Does the agent's candidate locator target the row anchor datum
+    itself (the data cell) instead of the row's control?
+
+    True for shapes like ``text=4727985745``, ``[title='4727985745']``,
+    ``td:has-text("4727985745")``. The anchor appearing only in a
+    row-SCOPING segment (``tr:has-text("4727985745") >> a[title='Edit']``)
+    is the correct composite shape — only the terminal segment counts.
+    """
+    anchor = (row_anchor_text or '').strip()
+    if not anchor or not candidate_locator:
+        return False
+    return anchor in candidate_locator.split('>>')[-1]
+
+
 def _should_treat_as_collection(
     is_collection: Optional[bool],
     element_description: Optional[str],
@@ -3862,6 +3918,20 @@ async def find_unique_locator_at_coordinates(
         row_anchor_text = _derive_row_anchor_text_from_description(element_description)
         if row_anchor_text:
             logger.info(f"   📌 Row anchor derived from description: '{row_anchor_text}'")
+
+    # q02 guard: an expected_text that IS the anchor datum makes every
+    # text-derived accept target the anchor CELL (unique, so the row
+    # rescue never fires). Correct it from the DOM evidence — idempotent
+    # when actions.py already corrected upstream.
+    expected_text, _anchor_corrected = correct_expected_text_for_row_anchor(
+        expected_text, row_anchor_text, element_data
+    )
+    if _anchor_corrected:
+        logger.info(
+            f"   📌 ROW-ANCHOR CORRECTION: expected_text was the anchor datum "
+            f"'{row_anchor_text}'; using element's own text '{expected_text}' "
+            f"(signal: row-anchor-corrects-expected-text)"
+        )
 
     # DELTA 1: Resolve the DOM node at (x, y) once via get_dom_element_at_coordinates.
     # Cache-hit path returns a fully-populated selector_map node (children_nodes is a list).

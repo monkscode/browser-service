@@ -306,6 +306,25 @@ async def find_unique_locator_action(
             return create_error_result('InvalidElementIdError', error_msg)
 
         # ========================================
+        # ROW-ANCHOR EXPECTED-TEXT CORRECTION (ASTPP gate q02)
+        # ========================================
+        # The agent sometimes passes the row anchor datum as expected_text
+        # for a per-row control whose own DOM text disagrees — the candidate
+        # semantic check and the cascade's text-first step would then both
+        # target the anchor CELL. Correct before either runs.
+        from browser_service.locators import correct_expected_text_for_row_anchor
+
+        expected_text, _anchor_corrected = correct_expected_text_for_row_anchor(
+            expected_text, row_anchor_text, element_data
+        )
+        if _anchor_corrected:
+            logger.info(
+                f"   📌 ROW-ANCHOR CORRECTION: expected_text was the anchor datum "
+                f"'{row_anchor_text}'; using element's own text '{expected_text}' "
+                f"(signal: row-anchor-corrects-expected-text)"
+            )
+
+        # ========================================
         # STEP 1: Validate Candidate Locator (if provided)
         # ========================================
 
@@ -359,13 +378,42 @@ async def find_unique_locator_action(
                     logger.info("      - validation_method: playwright")
 
                     if count == 1:
+                        # q02 guard: a unique candidate that targets the row
+                        # anchor datum itself while the indexed element's own
+                        # text disagrees is the anchor CELL, not the row's
+                        # control. Reject into the cascade (which row-scopes
+                        # correctly) — the semantic check can't stand in when
+                        # expected_text is absent.
+                        from browser_service.locators import candidate_targets_row_anchor
+
+                        _anchor_norm = ' '.join(str(row_anchor_text or '').split())
+                        _elem_text_norm = ' '.join(str(
+                            (element_data or {}).get('textContent')
+                            or (element_data or {}).get('text')
+                            or ''
+                        ).split())
+                        _anchor_reject = bool(
+                            _anchor_norm
+                            and _elem_text_norm
+                            and _elem_text_norm != _anchor_norm
+                            and candidate_targets_row_anchor(playwright_locator, row_anchor_text)
+                        )
+                        if _anchor_reject:
+                            logger.info(
+                                f"   ⛔ ROW-ANCHOR CANDIDATE REJECT: '{playwright_locator}' "
+                                f"targets the anchor datum '{row_anchor_text}' but the "
+                                f"element's own text is '{_elem_text_norm}' — continuing "
+                                f"with smart locator finder "
+                                f"(signal: row-anchor-rejects-candidate)"
+                            )
+
                         # Close the "unique but semantically wrong" hole (probe 06).
                         # Validate the RESOLVED element — what playwright_locator actually
                         # resolves to on the page — not the intended element from element_data
                         # (audit Issue 2b). Guard with expected_text so we accept on uniqueness
                         # alone when no semantic hint is available (audit Issue 5).
-                        _semantic_ok = True
-                        if expected_text:
+                        _semantic_ok = not _anchor_reject
+                        if _semantic_ok and expected_text:
                             from browser_service.locators import validate_semantic_match
                             _semantic_ok, _observed = await validate_semantic_match(
                                 None, expected_text, page=search_root, locator=playwright_locator

@@ -409,6 +409,7 @@ async def validate_semantic_match(
     *,
     page=None,
     locator: Optional[str] = None,
+    accept_empty_interactive: bool = False,
 ) -> tuple[bool, str]:
     """
     Semantic validation that the matched element is the one the user meant.
@@ -434,6 +435,15 @@ async def validate_semantic_match(
     relying on a blanket carve-out that would accept any interactive element for
     arbitrary text queries.
 
+    ``accept_empty_interactive`` (opt-in, q05 guard i): mirror the probe-18
+    node-path carve-out on the locator path — when the located element's
+    ENTIRE semantic surface is empty and its tag is interactive, accept on
+    uniqueness. An element with no text surface cannot contradict any
+    expected_text; the q05 veto (label-text expected_text vs an input whose
+    label association is broken) killed a correct unique candidate. Only the
+    agent-candidate check in actions.py passes True — the five other call
+    sites keep the strict veto. Signal: empty-surface-interactive-accept.
+
     Returns (is_match, observed_text).
     """
     haystack = ""
@@ -441,6 +451,7 @@ async def validate_semantic_match(
     _haystack_has_content = False  # True when at least one part is non-empty
     _primary_text_len = 0          # Full text length for container ratio check
     _haystack_parts_list: list = []  # Individual fields for per-field word matching
+    _located_tag = ""              # Locator-path tag for the opt-in carve-out
 
     if node is not None:
         # Primary path — zero CDP round-trips. Read pre-computed attrs.
@@ -502,7 +513,9 @@ async def validate_semantic_match(
                         ariaLabel: el.getAttribute('aria-label') || '',
                         value: el.value || '',
                         labelText: labelText.slice(0, 500),
-                        labelledbyText: labelledbyText.slice(0, 500)
+                        labelledbyText: labelledbyText.slice(0, 500),
+                        tagName: el.tagName || '',
+                        isContentEditable: !!el.isContentEditable
                     };
                 }"""
             )
@@ -532,6 +545,7 @@ async def validate_semantic_match(
             ).strip()
             _primary_text_len = info.get("textContentLength", len(info.get("textContent", "")))
             _haystack_parts_list = [p.lower() for p in parts]
+            _located_tag = (info.get("tagName") or "").lower()
         except Exception as e:
             logger.warning(f"   ⚠️ Semantic validation error: {e}")
             return False, f"[Error: {e}]"
@@ -541,6 +555,24 @@ async def validate_semantic_match(
         # Short-circuit removed. Accept only when haystack is also empty
         # (truly anonymous element — nothing semantic to compare against).
         return (not _haystack_has_content, observed_text)
+
+    # q05 guard (i): locator-path mirror of the probe-18 carve-out, opt-in
+    # only (agent-candidate check). A unique element whose entire semantic
+    # surface is empty cannot contradict expected_text — vetoing it killed
+    # the correct input[name='email'] when the agent attached the LABEL's
+    # text and the label association was broken (no placeholder/aria/value
+    # either). Same interactive-tag set as the node path below.
+    if (
+        accept_empty_interactive
+        and not _haystack_has_content
+        and _located_tag in {"button", "a", "input", "select", "textarea"}
+    ):
+        logger.info(
+            f"   ✅ Semantic check: '{expected_text}' unverifiable — element "
+            f"<{_located_tag}> has an empty semantic surface; accepting on "
+            f"uniqueness (signal: empty-surface-interactive-accept)"
+        )
+        return (True, observed_text)
 
     # Probe 18 carve-out: SVG-only buttons and CDP fallback nodes have no accessible
     # text surface through no fault of the locator strategy. Rejecting them would silently
@@ -1666,6 +1698,13 @@ async def _find_element_via_accessibility_tree(
     
     # Derive role hints from description
     desc_lower = element_description.lower() if element_description else ""
+    # q05 guard (ii): a description that names a field/input must never
+    # resolve to a bare text node — get_by_text matches the LABEL when the
+    # agent passes the label's text as expected_text, and a fill/Get Classes
+    # target that is a <label> fails or lies at runtime.
+    is_field_description = any(
+        kw in desc_lower for kw in ('field', 'input', 'textbox', 'text box')
+    )
     role_hints = []
     if any(kw in desc_lower for kw in ['button', 'submit', 'click']):
         role_hints.append('button')
@@ -1755,16 +1794,42 @@ async def _find_element_via_accessibility_tree(
                 logger.debug(f"   Role {role} search failed: {e}")
                 continue
         
+        async def _text_match_is_form_control(locator_obj) -> bool:
+            """q05 guard (ii): for field/input descriptions, a unique
+            get_by_text match is acceptable only when it IS a form control
+            (getByText matches inputs by value) or a contenteditable
+            editor — never a bare label/text node."""
+            try:
+                info = await locator_obj.first.evaluate(
+                    "el => ({tag: el.tagName, isContentEditable: "
+                    "!!el.isContentEditable, id: el.id || '', "
+                    "name: el.getAttribute('name') || ''})"
+                )
+            except Exception:
+                return False
+            tag = (info.get('tag') or '').lower()
+            if tag in ('input', 'textarea', 'select') or info.get('isContentEditable'):
+                return True
+            logger.info(
+                f"   ⛔ Unique text match is <{tag}>, not a form control — "
+                f"rejected for field description "
+                f"(signal: text-node-rejected-for-field-description)"
+            )
+            return False
+
         # Strategy 2: Try get_by_text (searches visible text content)
         try:
             locator_obj = page.get_by_text(expected_text, exact=True)
             count = await locator_obj.count()
-            
-            if count == 1:
+
+            if count == 1 and (
+                not is_field_description
+                or await _text_match_is_form_control(locator_obj)
+            ):
                 # Get the text locator string
                 locator_str = f'text="{expected_text}"'
                 locator_str = apply_iframe_prefix(locator_str)
-                
+
                 logger.info(f"   ✅ NATIVE TEXT SUCCESS: {locator_str}")
                 return {
                     'locator': locator_str,
@@ -1776,16 +1841,19 @@ async def _find_element_via_accessibility_tree(
                 }
         except Exception:
             pass
-        
+
         # Strategy 3: Try get_by_text with partial match
         try:
             locator_obj = page.get_by_text(expected_text, exact=False)
             count = await locator_obj.count()
-            
-            if count == 1:
+
+            if count == 1 and (
+                not is_field_description
+                or await _text_match_is_form_control(locator_obj)
+            ):
                 locator_str = f'text="{expected_text}"'
                 locator_str = apply_iframe_prefix(locator_str)
-                
+
                 logger.info(f"   ✅ NATIVE TEXT (partial) SUCCESS: {locator_str}")
                 return {
                     'locator': locator_str,
@@ -1798,24 +1866,49 @@ async def _find_element_via_accessibility_tree(
         except Exception:
             pass
         
-        # Strategy 4: Try get_by_label (for form elements)
+        # Strategy 4: Try get_by_label (for form elements).
+        # get_by_label resolves the label ASSOCIATION to the control itself,
+        # but 'label="..."' is NOT a valid locator engine at runtime
+        # (Playwright: Unknown engine "label"; live-verified 2026-07-17,
+        # zero lifetime emissions) — so emit the resolved control's own
+        # attributes instead: id= first, then css tag[name=]. No runtime-
+        # valid resolution -> fall through, never the broken label= string.
         try:
             locator_obj = page.get_by_label(expected_text, exact=False)
             count = await locator_obj.count()
-            
+
             if count == 1:
-                locator_str = f'label="{expected_text}"'
-                locator_str = apply_iframe_prefix(locator_str)
-                
-                logger.info(f"   ✅ NATIVE LABEL SUCCESS: {locator_str}")
-                return {
-                    'locator': locator_str,
-                    'count': 1,
-                    'unique': True,
-                    'accessible_name': expected_text,
-                    'element_type': 'label',
-                    'strategy': 'playwright_get_by_label'
-                }
+                info = await locator_obj.first.evaluate(
+                    "el => ({tag: el.tagName, isContentEditable: "
+                    "!!el.isContentEditable, id: el.id || '', "
+                    "name: el.getAttribute('name') || ''})"
+                )
+                tag = (info.get('tag') or '').lower()
+                candidates = []
+                if info.get('id'):
+                    candidates.append(f"id={info['id']}")
+                if info.get('name') and tag:
+                    safe = str(info['name']).replace('"', '\\"')
+                    candidates.append(f'{tag}[name="{safe}"]')
+                for resolved in candidates:
+                    if await page.locator(resolved).count() == 1:
+                        locator_str = apply_iframe_prefix(resolved)
+                        logger.info(
+                            f"   ✅ NATIVE LABEL SUCCESS: {locator_str} "
+                            f"(signal: label-resolved-to-control)"
+                        )
+                        return {
+                            'locator': locator_str,
+                            'count': 1,
+                            'unique': True,
+                            'accessible_name': expected_text,
+                            'element_type': tag or 'label',
+                            'strategy': 'playwright_get_by_label_resolved'
+                        }
+                logger.info(
+                    f"   ⚠️ get_by_label matched but the control has no "
+                    f"unique id/name — skipping (label= is not runtime-valid)"
+                )
         except Exception:
             pass
         
@@ -2199,7 +2292,17 @@ async def _find_element_via_accessibility(
     role = acc_info['role']
     accessible_name = acc_info.get('accessibleName')
     is_collection = acc_info.get('isCollection', False)
-    
+
+    if accessible_name:
+        # D2 (dialog-clobber): normalize whitespace BEFORE the name enters
+        # any locator string. aria-sourced names can carry newlines (the
+        # announcement-modal name did); a newline truncates the .robot
+        # variable line and the selector dies at runtime, invisible to
+        # dryrun. Playwright's role-engine name matching normalizes
+        # whitespace itself, so the normalized form matches whenever the
+        # raw form does.
+        accessible_name = ' '.join(str(accessible_name).split())
+
     if accessible_name:
         safe_name = accessible_name.replace('"', '\\"')
         locator = f'role={role}[name="{safe_name}"]'
@@ -4360,19 +4463,33 @@ async def find_unique_locator_at_coordinates(
         iframe_context=iframe_context
     )
     
+    # Validate against expected_text if provided. D1 (dialog-clobber): a
+    # DETECTED mismatch rejects the fallback result instead of accepting it
+    # — the clobber run accepted role=dialog[...] for 'Sign In' despite
+    # logging the mismatch. Task 7 precedent: never return-something-over-
+    # fail on a detected contradiction; the coordinate-based approach below
+    # is the next honest step. No expected_text or no accessible_name means
+    # nothing to contradict — accept stands.
+    semantic_match = True
     if accessibility_result and accessibility_result.get('locator'):
-        locator = accessibility_result['locator']
-        logger.info(f"✅ ACCESSIBILITY FALLBACK SUCCESS: {locator}")
-        
-        # Validate against expected_text if provided
-        semantic_match = True
         if expected_text and accessibility_result.get('accessible_name'):
             expected_lower = expected_text.lower()
             accessible_lower = accessibility_result['accessible_name'].lower()
             semantic_match = expected_lower in accessible_lower or accessible_lower in expected_lower
-            if not semantic_match:
-                logger.info(f"   ⚠️ Semantic mismatch: expected '{expected_text}' but found '{accessibility_result['accessible_name']}'")
-        
+        if not semantic_match:
+            logger.info(
+                f"   ⛔ Accessibility fallback found "
+                f"'{accessibility_result['accessible_name']}' but expected "
+                f"'{expected_text}' — rejecting the mismatched result "
+                f"(signal: accessibility-mismatch-rejected); falling back "
+                f"to coordinate-based approach"
+            )
+            accessibility_result = None
+
+    if accessibility_result and accessibility_result.get('locator'):
+        locator = accessibility_result['locator']
+        logger.info(f"✅ ACCESSIBILITY FALLBACK SUCCESS: {locator}")
+
         accessibility_stability = classify_locator(locator)
         return _apply_iframe_prefix_to_result({
             # CRITICAL: workflow.py extraction requires these fields

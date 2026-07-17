@@ -914,6 +914,13 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
         _expected_element_ids: set = set(_element_specs.keys())
         _total_expected: int = len(_expected_element_ids)
         _completed_elements: dict = {}  # element_id → best_locator (mutated by inner function)
+        # D3 (dialog-clobber): element_id → True when the stored result was
+        # fully validated (validated=True and semantic_match not False).
+        # A re-query may only replace a fully-validated result with another
+        # fully-validated one — the clobber run overwrote the correct Sign
+        # In locator with a semantically-mismatched dialog found at the
+        # WRONG page state (announcement modal up, 43s after validation).
+        _completed_quality: dict = {}
         _performed_actions: set = set()  # idempotency guard — per register_custom_actions() call = per workflow
 
         # ========================================
@@ -1459,11 +1466,49 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     validation_method = result.get('validation_method', 'playwright')
 
                     # ========================================
+                    # D3 — RE-REGISTRATION DOWNGRADE GUARD
+                    # ========================================
+                    # Strong = validated and not an explicitly-degraded path
+                    # (degraded paths mark semantic_match=False; strong paths
+                    # set True or omit the key). A strong stored result is
+                    # never replaced by a weak re-query: the first validation
+                    # ran at the step-order-correct page state, the re-query
+                    # did not. The blocked ActionResult carries NO metadata,
+                    # so workflow.py's extraction never sees the weak result.
+                    _new_strong = bool(result.get('validated')) and result.get('semantic_match') is not False
+                    _prev_locator = _completed_elements.get(params.element_id)
+                    if (
+                        _prev_locator is not None
+                        and _completed_quality.get(params.element_id, False)
+                        and not _new_strong
+                    ):
+                        logger.info(
+                            f"   ⛔ Re-query for {params.element_id} returned a "
+                            f"lower-confidence result ({result.get('best_locator')}) "
+                            f"— keeping the validated locator {_prev_locator} "
+                            f"(signal: re-registration-downgrade-blocked)"
+                        )
+                        return ActionResult(
+                            extracted_content=(
+                                f"✅ Element {params.element_id} is already validated.\n"
+                                f"Locator: {_prev_locator}\n"
+                                f"The new lower-confidence result was discarded — "
+                                f"the earlier validated locator stands. "
+                                f"Proceed to the next element."
+                            ),
+                            long_term_memory=(
+                                f"{params.element_id} validated = {_prev_locator}"
+                            ),
+                        )
+
+                    # ========================================
                     # COMPLETION TRACKING
                     # ========================================
                     # Record this element as done. Use the element_id as the dict key so
-                    # repeated calls for the same element overwrite rather than double-count.
+                    # repeated calls for the same element overwrite rather than double-count
+                    # (downgrades excepted — blocked above).
                     _completed_elements[params.element_id] = best_locator
+                    _completed_quality[params.element_id] = _new_strong
 
                     # Determine whether every expected element has been processed.
                     # Guard: _total_expected == 0 means elements=None/[] was passed, so we

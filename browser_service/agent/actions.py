@@ -415,8 +415,15 @@ async def find_unique_locator_action(
                         _semantic_ok = not _anchor_reject
                         if _semantic_ok and expected_text:
                             from browser_service.locators import validate_semantic_match
+                            # accept_empty_interactive (q05 guard i): a unique
+                            # candidate with an EMPTY semantic surface cannot
+                            # contradict expected_text — the agent sometimes
+                            # attaches the label's text to a surface-less input
+                            # (broken <label for=>), and the veto killed the
+                            # correct locator. Opt-in here only.
                             _semantic_ok, _observed = await validate_semantic_match(
-                                None, expected_text, page=search_root, locator=playwright_locator
+                                None, expected_text, page=search_root, locator=playwright_locator,
+                                accept_empty_interactive=True,
                             )
                             if not _semantic_ok:
                                 logger.info(

@@ -962,15 +962,21 @@ async def _upgrade_to_row_anchor(
     to eliminate, and xpath candidates are last-resort priority anyway.
 
     Anchored-on-QA-data is as stable as the QA case itself: callers
-    keep the base candidate's stability score (classify_locator agrees
-    — ``:has-text()`` carries no positional pattern). If the anchor
+    keep the base candidate's stability score. A composite carrying the
+    containment-collapse suffix ``>> visible=true >> nth=0`` (see
+    ``_collapse_containment_chain``) is still base-stable — that nth=0
+    picks the outermost element of ONE control's nesting chain via
+    parent-first document order, not a page position — so payload sites
+    that classify finished strings must classify the base instead
+    (``classify_locator`` cannot see the difference). If the anchor
     data changes rows at RF runtime, the locator follows the data; if
     a second row ever matches, the test fails loudly on strict-mode
     ambiguity instead of silently acting on a wrong row.
 
     Returns:
         ``{'locator': composite}`` on success;
-        ``{'ambiguous': True}`` when the anchor matches several rows
+        ``{'ambiguous': True}`` when the anchor genuinely matches
+        several elements — several rows, or several non-nested controls
         (Option 1: caller falls through to existing behavior and flags
         the payload ``row_anchor_ambiguous`` — demote, never delete);
         ``None`` when the upgrade does not apply.
@@ -1005,12 +1011,25 @@ async def _upgrade_to_row_anchor(
             if visible:
                 composite = visible
             else:
-                logger.info(
-                    f"   ⚠️ ROW ANCHOR AMBIGUOUS: '{anchor}' matches "
-                    f"{count} elements via {container}-scoped chain — "
-                    f"falling through (flagged)"
+                # One control wearing several name tags (ASTPP: the row's
+                # <a title="Edit"> AND its icon <span title="Edit">) is
+                # counted twice by the chain. Collapsing over the VISIBLE
+                # matches keeps every corner safe in one probe: an
+                # all-hidden chain has no visible members (no collapse, no
+                # locator to hidden DOM) and a hidden template row's
+                # duplicate pair is filtered out before the chain check.
+                collapsed = await _collapse_containment_chain(
+                    search_context, f'{composite} >> visible=true'
                 )
-                return {'ambiguous': True}
+                if collapsed:
+                    composite = collapsed
+                else:
+                    logger.info(
+                        f"   ⚠️ ROW ANCHOR AMBIGUOUS: '{anchor}' matches "
+                        f"{count} elements via {container}-scoped chain — "
+                        f"falling through (flagged)"
+                    )
+                    return {'ambiguous': True}
 
         # Exactly one match — when vision coordinates are available,
         # require them to land on it: a unique match in a DIFFERENT row
@@ -1033,6 +1052,55 @@ async def _upgrade_to_row_anchor(
         return {'locator': composite}
 
     return None
+
+
+# Every pair of matches must be on one ancestor line — a strict nesting
+# chain. Node.contains() is per-document, so matches spread across shadow
+# roots never chain (safe fallback to the flagged Option-1 path).
+_CONTAINMENT_CHAIN_JS = (
+    "els => els.length > 1 && els.every(a => els.every(b => "
+    "a === b || a.contains(b) || b.contains(a)))"
+)
+
+
+async def _collapse_containment_chain(search_context, selector: str) -> Optional[str]:
+    """
+    Nested-match collapse for the row-anchor rescue (q02, 2026-07-17).
+
+    ASTPP stamps the same tooltip on a grid action link AND the icon
+    inside it (``<a title="Edit"><span title="Edit">``), so the
+    row-scoped chain counts one control twice and the rescue declared
+    it ambiguous — every ASTPP grid action then shipped as the flagged
+    positional fallback (``[title="Edit"] >> nth=18``, observed
+    drifting from nth=16 overnight as the table grew). When ALL matches
+    sit on one ancestor line (every pair nests) they are a single
+    control: emit ``{selector} >> nth=0``. Document order puts a parent
+    before its descendants, so nth=0 is the outermost element by
+    STRUCTURE, not by page order — the composite still follows the
+    row's datum when the table reorders. Callers therefore keep the
+    base candidate's stability for the collapsed composite.
+
+    Anything short of a full chain — a second control in the row, a
+    second row matching the anchor, matches split across shadow roots,
+    or a probe error — returns None and the caller keeps today's
+    flagged Option-1 fallback.
+    """
+    try:
+        is_chain = await search_context.locator(selector).evaluate_all(
+            _CONTAINMENT_CHAIN_JS
+        )
+    except Exception as e:
+        logger.debug(f"   Containment-chain probe failed for {selector!r}: {e}")
+        return None
+    if not is_chain:
+        return None
+    collapsed = f'{selector} >> nth=0'
+    logger.info(
+        f"   🪆 NESTED-MATCH COLLAPSE: all visible matches for "
+        f"{selector!r} form one containment chain — one control, taking "
+        f"the outermost → '{collapsed}'"
+    )
+    return collapsed
 
 
 async def _singleton_matches_coordinates(page, selector: str, x: float, y: float) -> tuple[bool, str]:
@@ -1290,7 +1358,15 @@ async def _find_element_by_expected_text(
                     )
                     if row and row.get('locator'):
                         logger.info(f"   ✅ TEXT-FIRST SUCCESS (row-anchored): {row['locator']}")
-                        return {'locator': row['locator'], 'row_anchored': True}
+                        # row_anchor_base: the pre-anchor selector, so the
+                        # payload site classifies the BASE — the collapse
+                        # suffix (>> visible=true >> nth=0) is structural,
+                        # not positional.
+                        return {
+                            'locator': row['locator'],
+                            'row_anchored': True,
+                            'row_anchor_base': selector,
+                        }
                     row_ambiguous = bool(row and row.get('ambiguous'))
                 # Try to disambiguate using coordinates if available
                 if x is not None and y is not None:
@@ -1322,14 +1398,18 @@ async def _find_element_by_expected_text(
 
 async def _find_element_by_description(
     page, description: str, row_anchor_text: Optional[str] = None
-) -> Optional[str]:
+) -> Optional[dict]:
     """
     Fallback: Try to find element by its description when coordinates fail.
-    Returns the unique locator string if found, None otherwise.
-    
+    Returns ``{'locator': str}`` if found — with ``row_anchored`` /
+    ``row_anchor_base`` stapled on when the G1 rescue built the locator,
+    so the payload site classifies the base selector's stability instead
+    of the composite (the collapse suffix is structural, not positional).
+    Returns None otherwise.
+
     This is used when document.elementFromPoint() returns BODY/HTML,
     which happens when coordinates land in empty space (common with centered layouts).
-    
+
     Strategy: Use Playwright's semantic locators based on the element description.
     This is more reliable than coordinate-based approach since it matches what
     the AI "sees" (text, role, label) rather than pixel positions.
@@ -1393,7 +1473,7 @@ async def _find_element_by_description(
                 count = await page.locator(selector).count()
                 if count == 1:
                     logger.info(f"   ✅ Found unique element with semantic locator: {selector}")
-                    return selector
+                    return {'locator': selector}
                 elif count > 1:
                     # G1: row-anchored rescue for per-row action controls.
                     # This path has no coordinates, so ambiguity cannot be
@@ -1403,11 +1483,15 @@ async def _find_element_by_description(
                             page, selector, row_anchor_text
                         )
                         if row and row.get('locator'):
-                            return row['locator']
+                            return {
+                                'locator': row['locator'],
+                                'row_anchored': True,
+                                'row_anchor_base': selector,
+                            }
                     # G2: hidden duplicates — unique-among-visible still wins.
                     upgraded = await _upgrade_to_visible_only(page, selector)
                     if upgraded:
-                        return upgraded
+                        return {'locator': upgraded}
                     logger.info(f"   ⚠️ Multiple matches ({count}) for: {selector}")
                 # count == 0: no matches, try next
             except Exception as e:
@@ -4083,9 +4167,15 @@ async def find_unique_locator_at_coordinates(
 
         # An ordinal iframe hop (iframe >> nth=N >>> ...) encodes DOM order:
         # the whole composite is positional even when the inner locator is
-        # stable (B2).
+        # stable (B2). Row-anchored results are exempt from the whole-string
+        # check — their >> nth=0 is the containment collapse (structural,
+        # parent-first document order); for those only the hop itself can
+        # make the composite positional.
         best = result.get('best_locator', '')
-        if best and is_positional_locator(best):
+        positional_scope = (
+            iframe_context if result.get('row_anchored') else best
+        )
+        if best and is_positional_locator(positional_scope):
             result['stability'] = POSITIONAL
             for loc in result.get('all_locators', []):
                 loc['stability'] = POSITIONAL
@@ -4281,7 +4371,13 @@ async def find_unique_locator_at_coordinates(
             # Text-first locators can carry nth= disambiguation (positional)
             # or data-bound text like "Cart (3 items)" (volatile) — classify
             # the finished locator so the payload is honest about it.
-            text_first_stability = classify_locator(text_locator)
+            # Row-anchored results classify their BASE selector instead:
+            # the composite's collapse suffix (>> visible=true >> nth=0)
+            # is structural, and classify_locator can't tell it from a
+            # genuine nth disambiguation (which never sets row_anchored).
+            text_first_stability = classify_locator(
+                text_result.get('row_anchor_base') or text_locator
+            )
 
             # Carry the hidden-input redirect contract (G3) into element_info
             # so the Assembler can click the proxy but read state from the
@@ -4354,11 +4450,12 @@ async def find_unique_locator_at_coordinates(
     if element_description and element_description.strip():
         logger.info(f"🔍 Step 2: Trying SEMANTIC locators from description: '{element_description}'")
         
-        semantic_locator = await _find_element_by_description(
+        semantic_result = await _find_element_by_description(
             search_context, element_description, row_anchor_text=row_anchor_text
         )
-        
-        if semantic_locator:
+
+        if semantic_result:
+            semantic_locator = semantic_result['locator']
             # Add iframe prefix if needed
             if iframe_context:
                 semantic_locator = _make_composite_locator(semantic_locator)
@@ -4392,13 +4489,20 @@ async def find_unique_locator_at_coordinates(
 
             if accept:
                 logger.info(f"✅ Semantic locator found: {semantic_locator}")
-                semantic_stability = classify_locator(semantic_locator)
+                # Row-anchored results classify their BASE selector — the
+                # collapse suffix is structural, not positional (same
+                # contract as the text-first payload site).
+                semantic_stability = classify_locator(
+                    semantic_result.get('row_anchor_base') or semantic_locator
+                )
                 return {
                     'element_id': element_id,
                     'description': element_description,
                     'found': True,
                     'best_locator': semantic_locator,
                     'stability': semantic_stability,
+                    **({'row_anchored': True}
+                       if semantic_result.get('row_anchored') else {}),
                     'all_locators': [{
                         'type': 'semantic',
                         'locator': semantic_locator,

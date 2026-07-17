@@ -225,8 +225,8 @@ class TestDescriptionFallbackUpgrade:
             'text="Save"': FakeLocator(2),
             'text="Save" >> visible=true': FakeLocator(1, 'Save'),
         })
-        locator = await _find_element_by_description(ctx, 'Save button')
-        assert locator == 'text="Save" >> visible=true'
+        result = await _find_element_by_description(ctx, 'Save button')
+        assert result == {'locator': 'text="Save" >> visible=true'}
 
 
 class TestTextFirstNoCoordsUpgrade:

@@ -45,21 +45,29 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 class FakeLocator:
     """Playwright Locator stand-in: count(), bounding_box() for the
-    coordinate identity check, evaluate() for semantic validation, and
-    nth() for the disambiguator fallback."""
+    coordinate identity check, evaluate() for semantic validation,
+    nth() for the disambiguator fallback, and evaluate_all() for the
+    containment-chain probe (nested_chain models whether every match
+    contains or is contained by the others)."""
 
     def __init__(self, count: int, text: str = '', box: dict = None,
-                 nth_boxes: list = None):
+                 nth_boxes: list = None, nested_chain: bool = False):
         self._count = count
         self._text = text
         self._box = box
         self._nth_boxes = nth_boxes or []
+        self._nested_chain = nested_chain
 
     async def count(self) -> int:
         return self._count
 
     async def bounding_box(self):
         return self._box
+
+    async def evaluate_all(self, js: str):
+        # Models the containment-chain probe: one nesting chain needs
+        # >1 matches where every pair is in an ancestor relationship.
+        return self._count > 1 and self._nested_chain
 
     def nth(self, i: int) -> 'FakeLocator':
         box = self._nth_boxes[i] if i < len(self._nth_boxes) else None
@@ -104,6 +112,8 @@ ANCHOR = '64625'
 EDIT = '[title="Edit"]'
 TR_COMPOSITE = f'tr:has-text("{ANCHOR}") >> {EDIT}'
 LI_COMPOSITE = f'li:has-text("{ANCHOR}") >> {EDIT}'
+TR_VISIBLE = f'{TR_COMPOSITE} >> visible=true'
+TR_COLLAPSED = f'{TR_VISIBLE} >> nth=0'
 
 
 class TestUpgradeToRowAnchor:
@@ -185,6 +195,127 @@ class TestUpgradeToRowAnchor:
     async def test_probe_error_returns_none(self):
         ctx = FakeSearchContext({})  # KeyError inside -> swallowed
         assert await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR) is None
+
+
+class TestContainmentCollapse:
+    """One control wearing several name tags (ASTPP q02, live-verified
+    2026-07-17): the site puts title="Edit" on the row's <a> AND on the
+    icon <span> inside it, so the row-scoped chain counts 2 and the
+    rescue declared AMBIGUOUS — every ASTPP grid action then shipped as
+    the warning-flagged positional fallback ([title="Edit"] >> nth=18,
+    which drifted from nth=16 overnight as rows were added). When ALL
+    visible matches nest into one containment chain they are one
+    control: collapse to `>> visible=true >> nth=0` — document order
+    puts the parent first, so nth=0 is the outermost by structure, not
+    by page order. Anything short of a full chain (second control in
+    the row, second matching row) is genuine ambiguity and keeps the
+    Option-1 flagged fallback untouched."""
+
+    async def test_nested_pair_collapses_to_outermost(self):
+        ctx = FakeSearchContext({
+            TR_COMPOSITE: FakeLocator(2),
+            TR_VISIBLE: FakeLocator(2, nested_chain=True),
+        })
+        result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR)
+        assert result == {'locator': TR_COLLAPSED}
+
+    async def test_triple_nesting_is_still_one_control(self):
+        """td[title] > a[title] > span[title]: three name tags, one
+        control — the chain check is pairwise, not pair-only."""
+        ctx = FakeSearchContext({
+            TR_COMPOSITE: FakeLocator(3),
+            TR_VISIBLE: FakeLocator(3, nested_chain=True),
+        })
+        result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR)
+        assert result == {'locator': TR_COLLAPSED}
+
+    async def test_nested_pair_plus_separate_control_stays_ambiguous(self):
+        """A second non-nested Edit control in the same row is genuine
+        ambiguity — the collapse must not paper over it."""
+        ctx = FakeSearchContext({
+            TR_COMPOSITE: FakeLocator(3),
+            TR_VISIBLE: FakeLocator(3, nested_chain=False),
+        })
+        result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR)
+        assert result == {'ambiguous': True}
+
+    async def test_two_rows_of_nested_pairs_stay_ambiguous(self):
+        """Anchor matching two rows stays ambiguous even when each row
+        carries the nested-title pattern (cross-row matches never nest)."""
+        ctx = FakeSearchContext({
+            TR_COMPOSITE: FakeLocator(4),
+            TR_VISIBLE: FakeLocator(4, nested_chain=False),
+        })
+        result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR)
+        assert result == {'ambiguous': True}
+
+    async def test_hidden_template_duplicate_still_collapses(self):
+        """Both ASTPP patterns at once: a hidden template row duplicates
+        the anchor row AND the control is nested (raw count 4). The
+        visible filter reduces to the one row's chain — collapse fires."""
+        ctx = FakeSearchContext({
+            TR_COMPOSITE: FakeLocator(4),
+            TR_VISIBLE: FakeLocator(2, nested_chain=True),
+        })
+        result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR)
+        assert result == {'locator': TR_COLLAPSED}
+
+    async def test_all_matches_hidden_stays_ambiguous(self):
+        """A chain with zero visible members must not be emitted — a
+        locator resolving to hidden DOM fails every RF action."""
+        ctx = FakeSearchContext({
+            TR_COMPOSITE: FakeLocator(2),
+            TR_VISIBLE: FakeLocator(0, nested_chain=True),
+        })
+        result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR)
+        assert result == {'ambiguous': True}
+
+    async def test_collapse_probe_error_stays_ambiguous(self):
+        """DOM probe failure is not evidence of nesting — keep today's
+        flagged fallback."""
+        class ExplodingEvalLocator(FakeLocator):
+            async def evaluate_all(self, js: str):
+                raise RuntimeError('Execution context was destroyed')
+
+        ctx = FakeSearchContext({
+            TR_COMPOSITE: FakeLocator(2),
+            TR_VISIBLE: ExplodingEvalLocator(2),
+        })
+        result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR)
+        assert result == {'ambiguous': True}
+
+    async def test_collapsed_composite_identity_rejects_wrong_element(self):
+        """The A5 identity check still guards the collapsed composite:
+        a chain that is not what vision saw must not be emitted."""
+        far_box = {'x': 900.0, 'y': 900.0, 'width': 20.0, 'height': 20.0}
+        ctx = FakeSearchContext({
+            TR_COMPOSITE: FakeLocator(2),
+            TR_VISIBLE: FakeLocator(2, nested_chain=True),
+            TR_COLLAPSED: FakeLocator(1, box=far_box),
+        })
+        result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR, x=100, y=100)
+        assert result is None
+
+    async def test_collapsed_composite_identity_accepts_right_element(self):
+        box = {'x': 90.0, 'y': 90.0, 'width': 40.0, 'height': 40.0}
+        ctx = FakeSearchContext({
+            TR_COMPOSITE: FakeLocator(2),
+            TR_VISIBLE: FakeLocator(2, nested_chain=True),
+            TR_COLLAPSED: FakeLocator(1, box=box),
+        })
+        result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR, x=100, y=100)
+        assert result == {'locator': TR_COLLAPSED}
+
+    async def test_li_nested_pair_collapses(self):
+        """Card/list layouts get the same collapse via the li container."""
+        li_visible = f'{LI_COMPOSITE} >> visible=true'
+        ctx = FakeSearchContext({
+            TR_COMPOSITE: FakeLocator(0),
+            LI_COMPOSITE: FakeLocator(2),
+            li_visible: FakeLocator(2, nested_chain=True),
+        })
+        result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR)
+        assert result == {'locator': f'{li_visible} >> nth=0'}
 
 
 class TestElementDataRowAnchor:
@@ -280,6 +411,29 @@ class TestElementDataRowAnchor:
         assert result['best_locator'] == composite
         assert result['row_anchored'] is True
 
+    async def test_nested_title_candidate_collapses_and_keeps_stable(self):
+        """q02 shape through STEP 0: the repeated candidate's row chain
+        double-counts one nested control — collapse must rescue it and
+        the payload must keep the BASE candidate's stability (the
+        structural nth=0 is not DOM-order; no cry-wolf warning)."""
+        aria = '[aria-label="Edit"]'
+        composite = f'tr:has-text("{ANCHOR}") >> {aria}'
+        collapsed = f'{composite} >> visible=true >> nth=0'
+        ctx = LenientFakeContext({
+            aria: FakeLocator(12),
+            composite: FakeLocator(2),
+            f'{composite} >> visible=true': FakeLocator(2, nested_chain=True),
+        })
+        result = await _generate_locators_from_element_data(
+            ctx, self.make_element_data(), 'elem_1',
+            'Edit link for customer 64625',
+            row_anchor_text=ANCHOR,
+        )
+        assert result is not None and result['found']
+        assert result['best_locator'] == collapsed
+        assert result['row_anchored'] is True
+        assert result['stability'] == 'stable'
+
     async def test_ambiguous_anchor_flag_rides_on_fallback_result(self):
         """Anchor matches two rows; the anchored candidate falls through
         but a later unique candidate carries row_anchor_ambiguous so
@@ -348,6 +502,30 @@ class TestTextFirstRowAnchor:
         assert 'nth=1' in result['locator']
         assert result['row_anchor_ambiguous'] is True
 
+    async def test_nested_title_collapse_beats_nth_fallback(self):
+        """q02's exact selector shape ([title="Edit"] from the text-first
+        list): the nested pair must collapse instead of decaying to the
+        coordinate nth fallback, and the base selector must ride along
+        for honest stability classification."""
+        title_sel = '[title="Edit"]'
+        composite = f'tr:has-text("{ANCHOR}") >> {title_sel}'
+        collapsed = f'{composite} >> visible=true >> nth=0'
+        box = {'x': 90.0, 'y': 90.0, 'width': 40.0, 'height': 40.0}
+        ctx = LenientFakeContext({
+            title_sel: FakeLocator(12),
+            composite: FakeLocator(2),
+            f'{composite} >> visible=true': FakeLocator(2, nested_chain=True),
+            collapsed: FakeLocator(1, box=box),
+        })
+        result = await _find_element_by_expected_text(
+            ctx, 'Edit', 'Edit icon', x=100, y=100,
+            row_anchor_text=ANCHOR,
+        )
+        assert result is not None
+        assert result['locator'] == collapsed
+        assert result['row_anchored'] is True
+        assert result['row_anchor_base'] == title_sel
+
     async def test_without_anchor_behavior_unchanged(self):
         text_sel = 'text="Edit"'
         boxes = [
@@ -367,7 +545,9 @@ class TestTextFirstRowAnchor:
 
 
 class TestDescriptionRowAnchor:
-    """Description-derived selectors get the same rescue."""
+    """Description-derived selectors get the same rescue. The path
+    returns a dict so the row-anchor provenance (and the base selector
+    for honest stability classification) survives to the payload."""
 
     async def test_link_selector_upgrades(self):
         sel = 'role=link[name="Edit"]'
@@ -376,10 +556,32 @@ class TestDescriptionRowAnchor:
             sel: FakeLocator(12),
             composite: FakeLocator(1),
         })
-        locator = await _find_element_by_description(
+        result = await _find_element_by_description(
             ctx, 'Edit link', row_anchor_text=ANCHOR,
         )
-        assert locator == composite
+        assert result['locator'] == composite
+        assert result['row_anchored'] is True
+        assert result['row_anchor_base'] == sel
+
+    async def test_nested_link_collapse_carries_base(self):
+        """Collapse on the description path: the emitted dict must name
+        the base selector so the payload site can keep its stability."""
+        sel = 'role=link[name="Edit"]'
+        composite = f'tr:has-text("{ANCHOR}") >> {sel}'
+        collapsed = f'{composite} >> visible=true >> nth=0'
+        ctx = LenientFakeContext({
+            sel: FakeLocator(12),
+            composite: FakeLocator(2),
+            f'{composite} >> visible=true': FakeLocator(2, nested_chain=True),
+        })
+        result = await _find_element_by_description(
+            ctx, 'Edit link', row_anchor_text=ANCHOR,
+        )
+        assert result == {
+            'locator': collapsed,
+            'row_anchored': True,
+            'row_anchor_base': sel,
+        }
 
 
 class TestStrategyValidatorRowAnchor:
@@ -403,6 +605,22 @@ class TestStrategyValidatorRowAnchor:
         )
         entry = result[0]
         assert entry['locator'] == TR_COMPOSITE
+        assert entry['unique'] and entry['valid']
+        assert entry['row_anchored'] is True
+
+    async def test_repeated_title_collapses_when_nested(self):
+        """STEP-3 strategies get the collapse too — the nested-title
+        pattern must validate unique instead of recording not-unique."""
+        ctx = FakeSearchContext({
+            EDIT: FakeLocator(12),
+            TR_COMPOSITE: FakeLocator(2),
+            TR_VISIBLE: FakeLocator(2, nested_chain=True),
+        })
+        result = await _validate_strategy_candidates(
+            ctx, self.make_strategies(), row_anchor_text=ANCHOR,
+        )
+        entry = result[0]
+        assert entry['locator'] == TR_COLLAPSED
         assert entry['unique'] and entry['valid']
         assert entry['row_anchored'] is True
 
@@ -726,3 +944,145 @@ class TestAnchorCorrectionEngineFlow:
         assert result['best_locator'] == composite
         assert result['best_locator'] != 'text="4727985745"'  # the q02 bug
         assert result.get('row_anchored') is True
+
+
+class TestCollapsedPayloadStability:
+    """The collapse suffix `>> visible=true >> nth=0` is structural
+    (parent-first document order within one row's chain), NOT
+    DOM-order-dependent — the payload must keep the BASE selector's
+    stability so nlrf's positional WARNING comment doesn't cry wolf on
+    every ASTPP grid action. Genuinely positional results (ambiguous
+    anchor -> nth fallback) keep their honest positional label — that
+    path never sets row_anchored."""
+
+    ELEMENT_DATA = {
+        'tagName': 'a', 'id': '', 'className': '',
+        'textContent': 'Edit',
+        'xpath': 'html/body/main/div[3]/div/div/div[2]/table'
+                 '/tbody/tr[9]/td[2]/div/a[1]',
+    }
+
+    async def test_text_first_collapsed_payload_keeps_base_stability(self):
+        from unittest.mock import MagicMock
+        from browser_service.locators.smart_locator import (
+            find_unique_locator_at_coordinates,
+        )
+        anchor = '55516'
+        title_sel = '[title="Edit"]'
+        composite = f'tr:has-text("{anchor}") >> {title_sel}'
+        collapsed = f'{composite} >> visible=true >> nth=0'
+        box = {'x': 480.0, 'y': 670.0, 'width': 30.0, 'height': 20.0}
+        ctx = LenientFakeContext({
+            title_sel: FakeLocator(12),
+            composite: FakeLocator(2),
+            f'{composite} >> visible=true': FakeLocator(2, nested_chain=True),
+            collapsed: FakeLocator(1, box=box),
+        })
+        result = await find_unique_locator_at_coordinates(
+            page=MagicMock(),
+            x=494, y=682,
+            element_id='elem_4',
+            element_description=(
+                'Edit action icon in the row containing 55516 '
+                'in the customer data table'
+            ),
+            expected_text='Edit',
+            element_data=self.ELEMENT_DATA,
+            search_context=ctx,
+            row_anchor_text=anchor,
+        )
+        assert result['found'] is True
+        assert result['best_locator'] == collapsed
+        assert result.get('row_anchored') is True
+        assert result['stability'] == 'stable'
+        assert result['all_locators'][0]['stability'] == 'stable'
+
+    async def test_semantic_collapsed_payload_keeps_base_stability(self):
+        from unittest.mock import MagicMock
+        from browser_service.locators.smart_locator import (
+            find_unique_locator_at_coordinates,
+        )
+        sel = 'role=link[name="Edit"]'
+        composite = f'tr:has-text("{ANCHOR}") >> {sel}'
+        collapsed = f'{composite} >> visible=true >> nth=0'
+        ctx = LenientFakeContext({
+            sel: FakeLocator(12),
+            composite: FakeLocator(2),
+            f'{composite} >> visible=true': FakeLocator(2, nested_chain=True),
+        })
+        result = await find_unique_locator_at_coordinates(
+            page=MagicMock(),
+            x=100, y=100,
+            element_id='elem_2',
+            element_description='Edit link',
+            search_context=ctx,
+            row_anchor_text=ANCHOR,
+        )
+        assert result['found'] is True
+        assert result['best_locator'] == collapsed
+        assert result.get('row_anchored') is True
+        assert result['stability'] == 'stable'
+
+    async def test_iframe_stable_hop_keeps_base_stability(self):
+        """B2 refinement: the iframe override must not relabel a
+        row-anchored collapse positional when the HOP itself is stable
+        — only an ordinal hop encodes DOM order for these results."""
+        from unittest.mock import MagicMock
+        from browser_service.locators.smart_locator import (
+            find_unique_locator_at_coordinates,
+        )
+        aria = '[aria-label="Edit"]'
+        composite = f'tr:has-text("{ANCHOR}") >> {aria}'
+        collapsed = f'{composite} >> visible=true >> nth=0'
+        box = {'x': 90.0, 'y': 90.0, 'width': 40.0, 'height': 40.0}
+        ctx = LenientFakeContext({
+            aria: FakeLocator(12),
+            composite: FakeLocator(2),
+            f'{composite} >> visible=true': FakeLocator(2, nested_chain=True),
+            collapsed: FakeLocator(1, box=box),
+        })
+        element_data = TestElementDataRowAnchor.make_element_data()
+        result = await find_unique_locator_at_coordinates(
+            page=MagicMock(),
+            x=100, y=100,
+            element_id='elem_1',
+            element_description='Edit link for customer 64625',
+            element_data=element_data,
+            search_context=ctx,
+            iframe_context='iframe[id="app"]',
+            row_anchor_text=ANCHOR,
+        )
+        assert result['found'] is True
+        assert result['best_locator'] == f'iframe[id="app"] >>> {collapsed}'
+        assert result['stability'] == 'stable'
+
+    async def test_iframe_ordinal_hop_still_positional(self):
+        """An ordinal iframe hop DOES encode DOM order — the B2
+        override must keep firing for row-anchored results too."""
+        from unittest.mock import MagicMock
+        from browser_service.locators.smart_locator import (
+            find_unique_locator_at_coordinates,
+        )
+        aria = '[aria-label="Edit"]'
+        composite = f'tr:has-text("{ANCHOR}") >> {aria}'
+        collapsed = f'{composite} >> visible=true >> nth=0'
+        box = {'x': 90.0, 'y': 90.0, 'width': 40.0, 'height': 40.0}
+        ctx = LenientFakeContext({
+            aria: FakeLocator(12),
+            composite: FakeLocator(2),
+            f'{composite} >> visible=true': FakeLocator(2, nested_chain=True),
+            collapsed: FakeLocator(1, box=box),
+        })
+        element_data = TestElementDataRowAnchor.make_element_data()
+        result = await find_unique_locator_at_coordinates(
+            page=MagicMock(),
+            x=100, y=100,
+            element_id='elem_1',
+            element_description='Edit link for customer 64625',
+            element_data=element_data,
+            search_context=ctx,
+            iframe_context='iframe >> nth=1',
+            row_anchor_text=ANCHOR,
+        )
+        assert result['found'] is True
+        assert result['stability'] == 'positional'

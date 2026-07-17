@@ -202,3 +202,53 @@ class TestBuildWorkflowPrompt:
         )
         # Either the raw loop_type is mentioned or the concept is in the prompt
         assert len(prompt) > 100
+
+
+class TestVisionOffContract:
+    """A1-INLINE (Task 28): the workflow prompt contract for vision-off runs.
+
+    With use_vision='auto' the model has NO screenshot on normal steps — the
+    DOM element list is its only grounding, so element_index must be a hard
+    requirement, and the escalation rule must forbid found:false before a
+    find_unique_locator attempt (whose failure attaches a screenshot to the
+    next message).
+
+    Owner commitments pinned here as regression guards:
+    SEQUENTIAL_PROCESSING_RULES and the mandatory expected_text stay untouched.
+    """
+
+    def _prompt(self):
+        return build_workflow_prompt(
+            url="https://example.com",
+            user_query="click submit",
+            elements=[{"id": "elem_1", "description": "submit button", "action": "click"}],
+            include_custom_action=True,
+        )
+
+    def test_element_index_documented_as_required(self):
+        """element_index is a required parameter in the action contract."""
+        assert "element_index (int, required)" in self._prompt()
+
+    def test_element_index_old_accuracy_wording_gone(self):
+        """The old 'REQUIRED FOR ACCURACY' soft wording is replaced."""
+        assert "REQUIRED FOR ACCURACY" not in self._prompt()
+
+    def test_escalation_rule_before_found_false(self):
+        """found:false is only allowed after a failed find_unique_locator attempt,
+        re-examined with the screenshot attached to the next message."""
+        prompt = self._prompt()
+        assert "NEVER record an element as found: false" in prompt
+        assert "re-examine" in prompt.lower()
+        assert "screenshot" in prompt.lower()
+
+    # ── Owner-commitment regression guards (must not change in Task 28) ──
+
+    def test_sequential_processing_rules_untouched(self):
+        from browser_service.prompts.templates import SEQUENTIAL_PROCESSING_RULES
+        assert "Process elements IN THE ORDER THEY ARE LISTED" in SEQUENTIAL_PROCESSING_RULES
+        assert "FALLBACK REQUIRED" in SEQUENTIAL_PROCESSING_RULES
+        assert "Always provide element_index" in SEQUENTIAL_PROCESSING_RULES
+
+    def test_expected_text_mandate_untouched(self):
+        from browser_service.prompts.templates import CUSTOM_ACTION_PARAMETERS_EXTENDED
+        assert "PROVIDE THIS whenever the element has visible text" in CUSTOM_ACTION_PARAMETERS_EXTENDED

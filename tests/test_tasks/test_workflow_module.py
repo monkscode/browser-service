@@ -641,3 +641,71 @@ class TestCleanupOffCriticalPath:
             f"cleanup failure clobbered results: message={status['message']!r}"
         )
         assert "results" in status
+
+
+class TestAgentVisionModeWiring:
+    """A1-INLINE (Task 28): Agent runs vision-off ('auto') by default with the
+    model-facing screenshot action excluded from the schema; AGENT_VISION_MODE=on
+    is the full-vision escape hatch.
+
+    Escalation itself (metadata={'include_screenshot': True} on failure) lives in
+    registration.py and is registry-independent — verified against browser-use
+    0.12.6 message_manager/service.py:444-464 with a live forced-failure replay
+    (2026-07-17): the screenshot attaches to the NEXT call even with the
+    screenshot action excluded.
+    """
+
+    def test_resolve_use_vision_on_maps_to_true(self):
+        from browser_service.tasks.workflow import _resolve_use_vision
+        assert _resolve_use_vision("on", custom_actions_enabled=True) is True
+
+    def test_resolve_use_vision_auto_passthrough(self):
+        from browser_service.tasks.workflow import _resolve_use_vision
+        assert _resolve_use_vision("auto", custom_actions_enabled=True) == "auto"
+
+    def test_resolve_use_vision_auto_without_custom_actions_is_full_vision(self):
+        """Vision-off requires the escalation hook, which lives in the custom
+        action — the legacy JS workflow has no find_unique_locator, so 'auto'
+        there would mean permanently blind. Legacy keeps full vision."""
+        from browser_service.tasks.workflow import _resolve_use_vision
+        assert _resolve_use_vision("auto", custom_actions_enabled=False) is True
+
+    def test_resolve_use_vision_on_without_custom_actions_is_full_vision(self):
+        from browser_service.tasks.workflow import _resolve_use_vision
+        assert _resolve_use_vision("on", custom_actions_enabled=False) is True
+
+    def test_apply_vision_mode_excludes_screenshot_in_auto(self):
+        """'auto' mode drops the screenshot action from the model-facing schema
+        (browser-use only auto-excludes it when use_vision != 'auto')."""
+        from browser_service.tasks.workflow import _apply_vision_mode
+        agent = MagicMock()
+        _apply_vision_mode(agent, "auto")
+        agent.tools.exclude_action.assert_called_once_with("screenshot")
+
+    def test_apply_vision_mode_noop_in_full_vision(self):
+        """use_vision=True: browser-use excludes the action itself — no double work."""
+        from browser_service.tasks.workflow import _apply_vision_mode
+        agent = MagicMock()
+        _apply_vision_mode(agent, True)
+        agent.tools.exclude_action.assert_not_called()
+
+    def test_workflow_wires_vision_mode_from_config(self):
+        """The unified workflow builds use_vision from config.agent_vision_mode
+        + the custom-actions flag, and applies the schema exclusion — no
+        hardcoded use_vision=True kwarg left."""
+        import inspect
+        import browser_service.tasks.workflow as wf
+        src = inspect.getsource(wf.process_workflow_task)
+        assert "_resolve_use_vision(config.agent_vision_mode, enable_custom_actions_flag)" in src
+        assert "_apply_vision_mode(agent, use_vision)" in src
+        assert "use_vision=True" not in src
+
+    def test_registration_failure_fallback_restores_full_vision(self):
+        """When register_custom_actions fails mid-flight the agent falls back to
+        the legacy prompts — the escalation hook is gone, so the fallback must
+        flip the already-constructed agent back to full vision (browser-use's
+        own DeepSeek handling mutates settings.use_vision the same way)."""
+        import inspect
+        import browser_service.tasks.workflow as wf
+        src = inspect.getsource(wf.process_workflow_task)
+        assert "agent.settings.use_vision = True" in src

@@ -59,6 +59,34 @@ def bind_request_context(workflow_id=None, org_id=None, user_id=None) -> None:
     if ctx:
         structlog.contextvars.bind_contextvars(**ctx)
 
+
+def _resolve_use_vision(vision_mode: str, custom_actions_enabled: bool):
+    """Map config.agent_vision_mode to the browser-use Agent use_vision argument.
+
+    'on' → full vision on every step (escape hatch); 'auto' → vision-off with
+    failure-triggered escalation (registration.py attaches the screenshot to
+    the next LLM call via ActionResult metadata when find_unique_locator fails
+    validation). The escalation hook lives in the custom action, so the legacy
+    JS workflow (custom actions disabled) has no failure trigger — 'auto' there
+    would mean permanently blind; legacy always gets full vision."""
+    if not custom_actions_enabled:
+        return True
+    return True if vision_mode == "on" else "auto"
+
+
+def _apply_vision_mode(agent, use_vision) -> None:
+    """In 'auto' mode, drop the model-facing screenshot action from the schema.
+
+    browser-use auto-excludes it only when use_vision is not 'auto'
+    (agent/service.py:314-320), so 'auto' would otherwise pay the action's
+    schema tokens every call. The failure-triggered attachment is
+    registry-independent — message_manager reads ActionResult.metadata only —
+    so escalation keeps working with the action excluded (verified live,
+    forced-failure replay 2026-07-17)."""
+    if use_vision == "auto":
+        agent.tools.exclude_action("screenshot")
+
+
 # Import browser-use components
 from browser_use import Agent
 
@@ -433,17 +461,20 @@ def process_workflow_task(
                 )
                 logger.info(f"🔑 Using Gemini API: model={config.llm.google_model}")
 
+            use_vision = _resolve_use_vision(config.agent_vision_mode, enable_custom_actions_flag)
             agent = Agent(
                 task=unified_objective,
                 browser_session=session,
                 llm=llm_instance,
-                use_vision=True,
+                use_vision=use_vision,
                 override_system_message=build_system_prompt(include_custom_action=enable_custom_actions_flag),
                 use_thinking=False,
                 calculate_cost=True,
                 use_judge=False
             )
-            
+            _apply_vision_mode(agent, use_vision)
+            logger.info(f"👁️ Agent vision mode: {config.agent_vision_mode} (use_vision={use_vision!r})")
+
             session.llm_screenshot_size = (VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
             logger.info(f"LLM screenshot size: {VIEWPORT_WIDTH}x{VIEWPORT_HEIGHT} (matches viewport)")
 
@@ -487,7 +518,12 @@ def process_workflow_task(
                     )
                     agent.task = unified_objective
                     agent.override_system_message = build_system_prompt(include_custom_action=False)
-                    logger.info("✅ Agent prompts updated with legacy workflow instructions")
+                    # The escalation hook died with the failed registration —
+                    # 'auto' would leave the legacy agent permanently blind.
+                    # Mutating settings post-construction is browser-use's own
+                    # pattern (agent/service.py DeepSeek/XAI handling).
+                    agent.settings.use_vision = True
+                    logger.info("✅ Agent prompts updated with legacy workflow instructions (full vision restored)")
             else:
                 logger.info("⏭️ Skipping custom action registration (disabled via config)")
                 logger.info("   Using legacy workflow mode")

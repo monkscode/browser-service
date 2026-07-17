@@ -116,6 +116,55 @@ class TestBrowserServiceConfigDefaults:
         assert cfg.max_concurrent_tasks == 5
 
 
+class TestAgentVisionMode:
+    """AGENT_VISION_MODE (Task 28 A1-INLINE): 'auto' default, 'on' escape hatch.
+
+    'auto' = vision-off with in-run failure-triggered screenshot escalation;
+    'on'   = full vision on every step (escape hatch).
+    Anything else forks bench vs production behavior silently, so construction
+    fails fast — same contract as ROBOT_LIBRARY.
+    """
+
+    def _make_config(self, vision_mode: str | None):
+        env = {"GEMINI_API_KEY": "test-key", "MODEL_PROVIDER": "gemini"}
+        if vision_mode is not None:
+            env["AGENT_VISION_MODE"] = vision_mode
+        with patch.dict(os.environ, env, clear=False):
+            if vision_mode is None:
+                os.environ.pop("AGENT_VISION_MODE", None)
+            with patch(
+                "browser_service.config.BrowserServiceConfig._get_google_model",
+                return_value="gemini-2.5-flash",
+            ):
+                from browser_service.config import BrowserServiceConfig
+                return BrowserServiceConfig()
+
+    def test_default_is_auto(self):
+        """No env var → agent_vision_mode defaults to 'auto' (vision-off + escalation)."""
+        cfg = self._make_config(None)
+        assert cfg.agent_vision_mode == "auto"
+
+    def test_on_escape_hatch(self):
+        """AGENT_VISION_MODE=on → full vision."""
+        cfg = self._make_config("on")
+        assert cfg.agent_vision_mode == "on"
+
+    def test_case_insensitive(self):
+        """Value is normalised to lowercase."""
+        cfg = self._make_config("ON")
+        assert cfg.agent_vision_mode == "on"
+
+    def test_invalid_value_rejected_at_startup(self):
+        """Unknown mode fails construction with a clear message."""
+        with pytest.raises(ValueError, match="AGENT_VISION_MODE"):
+            self._make_config("sometimes")
+
+    def test_off_is_not_a_mode(self):
+        """'off' is not accepted — vision-off IS 'auto' (escalation stays armed)."""
+        with pytest.raises(ValueError, match="AGENT_VISION_MODE"):
+            self._make_config("off")
+
+
 class TestBrowserServiceConfigValidation:
     """Tests for the validate() method."""
 

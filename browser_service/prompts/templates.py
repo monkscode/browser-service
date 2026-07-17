@@ -261,7 +261,8 @@ PARAMETERS:
     ⚠️ For buttons/links: Use the exact button/link text you see
     ⚠️ For inputs: Use the placeholder or label text if visible
     ⚠️ For product names: Use the actual product name text you see
-  • element_index (int, ★★★ REQUIRED FOR ACCURACY ★★★): The element INDEX from the DOM state.
+  • element_index (int, required): The element INDEX from the DOM state — the DOM
+    element list is your PRIMARY grounding for every element.
     ⚠️ ALWAYS PROVIDE THIS for EVERY element - it is the MOST ACCURATE METHOD!
     ⚠️ When you see [49] <td>John</td>, set element_index=49
     ⚠️ When you see [23] <a>Services</a>, set element_index=23
@@ -434,6 +435,10 @@ Process elements IN THE ORDER THEY ARE LISTED. For each element:
 # Edge case handling including checkboxes
 EDGE_CASE_HANDLING = """
 ⚠️ EDGE CASE HANDLING:
+  • NEVER record an element as found: false without having called find_unique_locator
+    for it at least once. When find_unique_locator fails, a screenshot of the current
+    page is attached to your NEXT message (when available) — re-examine the failed
+    element in it, correct element_index/coordinates, and retry before giving up.
   • If an element cannot be found, record it as {{"element_id": "...", "found": false, "error": "Element not visible/not found"}}
   • Continue processing remaining elements (don't stop the entire workflow)
   • If an interactive element fails, still try to process result elements on the current page

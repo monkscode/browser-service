@@ -1049,7 +1049,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
             )
             element_index: Optional[int] = Field(
                 default=None,
-                description="Element index from browser state (e.g., 23 from '[23] Services'). When provided, we get the exact element from browser-use's DOM, ensuring precise locator generation. HIGHLY RECOMMENDED for accuracy."
+                description="REQUIRED — always provide it. Element index from the DOM state (e.g., 23 from '[23] Services'); we extract the exact element and its attributes from browser-use's DOM. Omitting it forces less accurate coordinate-based fallbacks."
             )
             is_collection: Optional[bool] = Field(
                 default=None,
@@ -1610,7 +1610,9 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             f"Fallback strategies failed for '{params.element_id}'. "
                             f"Reason: {fallback_error}. "
                             f"This may be an interactable element that requires element_index. "
-                            f"Please look at the current DOM state, find the element described as "
+                            f"A screenshot of the current page is attached to your next "
+                            f"message (when available) — re-examine it together with the "
+                            f"DOM state, find the element described as "
                             f"'{params.element_description}', identify its index number "
                             f"(e.g., [42] for index 42), and call find_unique_locator again "
                             f"with element_index set to that number. "
@@ -1627,15 +1629,27 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         logger.info(f"   Action: Requesting LLM to retry with element_index")
                         logger.info(f"{'='*80}")
                         logger.info(f"")
+                        # A1-INLINE escalation: metadata={'include_screenshot': True}
+                        # makes browser-use attach the current screenshot to the
+                        # NEXT LLM call (message_manager/service.py:444-464) —
+                        # vision-off runs get sight at the moment of failure,
+                        # same run, same page state.
                         action_result = ActionResult(
                             extracted_content=retry_msg,
-                            error=retry_msg
+                            error=retry_msg,
+                            metadata={"include_screenshot": True},
                         )
                     else:
                         # element_index WAS provided but still failed
                         action_result = ActionResult(
-                            error=f"FAILED: Could not find unique locator for {params.element_id}. Error: {fallback_error}. Try different coordinates or description.",
-                            is_done=False  # Let agent try again with different approach
+                            error=(
+                                f"FAILED: Could not find unique locator for {params.element_id}. "
+                                f"Error: {fallback_error}. A screenshot of the current page is "
+                                f"attached to your next message (when available) — re-examine "
+                                f"the element in it and try different coordinates or description."
+                            ),
+                            is_done=False,  # Let agent try again with different approach
+                            metadata={"include_screenshot": True},
                         )
 
                 return action_result

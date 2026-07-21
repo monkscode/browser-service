@@ -1109,6 +1109,28 @@ async def _collapse_containment_chain(search_context, selector: str) -> Optional
     return collapsed
 
 
+def _classify_result_stability(
+    result: dict, final_locator: str, iframe_context: Optional[str]
+) -> str:
+    """
+    Stability for a text-first/semantic payload (E1/B2).
+
+    Row-anchored results classify their BASE selector — the collapse
+    suffix (``>> visible=true >> nth=0``) is structural, and
+    classify_locator can't tell it from a genuine nth disambiguation
+    (which never sets row_anchored). An ordinal iframe hop still makes
+    the whole composite positional, exactly as
+    ``_apply_iframe_prefix_to_result`` rules for STEP-0 results.
+    Non-anchored results classify the finished locator (iframe prefix
+    included when present, so a positional hop is caught there too).
+    """
+    if result.get('row_anchored'):
+        if iframe_context and is_positional_locator(iframe_context):
+            return POSITIONAL
+        return classify_locator(result.get('row_anchor_base') or final_locator)
+    return classify_locator(final_locator)
+
+
 async def _singleton_matches_coordinates(page, selector: str, x: float, y: float) -> tuple[bool, str]:
     """
     Identity check for a count==1 text match: is it the element the vision
@@ -4383,12 +4405,8 @@ async def find_unique_locator_at_coordinates(
             # Text-first locators can carry nth= disambiguation (positional)
             # or data-bound text like "Cart (3 items)" (volatile) — classify
             # the finished locator so the payload is honest about it.
-            # Row-anchored results classify their BASE selector instead:
-            # the composite's collapse suffix (>> visible=true >> nth=0)
-            # is structural, and classify_locator can't tell it from a
-            # genuine nth disambiguation (which never sets row_anchored).
-            text_first_stability = classify_locator(
-                text_result.get('row_anchor_base') or text_locator
+            text_first_stability = _classify_result_stability(
+                text_result, text_locator, iframe_context
             )
 
             # Carry the hidden-input redirect contract (G3) into element_info
@@ -4501,11 +4519,8 @@ async def find_unique_locator_at_coordinates(
 
             if accept:
                 logger.info(f"✅ Semantic locator found: {semantic_locator}")
-                # Row-anchored results classify their BASE selector — the
-                # collapse suffix is structural, not positional (same
-                # contract as the text-first payload site).
-                semantic_stability = classify_locator(
-                    semantic_result.get('row_anchor_base') or semantic_locator
+                semantic_stability = _classify_result_stability(
+                    semantic_result, semantic_locator, iframe_context
                 )
                 return {
                     'element_id': element_id,

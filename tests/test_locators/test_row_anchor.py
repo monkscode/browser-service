@@ -1066,6 +1066,70 @@ class TestCollapsedPayloadStability:
         assert result['best_locator'] == f'iframe[id="app"] >>> {collapsed}'
         assert result['stability'] == 'stable'
 
+    async def test_text_first_iframe_ordinal_hop_is_positional(self):
+        """Same B2 rule on the TEXT-FIRST payload site: the base-selector
+        exemption covers the collapse suffix only, never an ordinal
+        iframe hop — the whole composite re-resolves the Nth iframe."""
+        from unittest.mock import MagicMock
+        from browser_service.locators.smart_locator import (
+            find_unique_locator_at_coordinates,
+        )
+        anchor = '55516'
+        title_sel = '[title="Edit"]'
+        composite = f'tr:has-text("{anchor}") >> {title_sel}'
+        collapsed = f'{composite} >> visible=true >> nth=0'
+        box = {'x': 480.0, 'y': 670.0, 'width': 30.0, 'height': 20.0}
+        ctx = LenientFakeContext({
+            title_sel: FakeLocator(12),
+            composite: FakeLocator(2),
+            f'{composite} >> visible=true': FakeLocator(2, nested_chain=True),
+            collapsed: FakeLocator(1, box=box),
+        })
+        result = await find_unique_locator_at_coordinates(
+            page=MagicMock(),
+            x=494, y=682,
+            element_id='elem_5',
+            element_description=(
+                'Edit action icon in the row containing 55516 '
+                'in the customer data table'
+            ),
+            expected_text='Edit',
+            element_data=self.ELEMENT_DATA,
+            search_context=ctx,
+            iframe_context='iframe >> nth=1',
+            row_anchor_text=anchor,
+        )
+        assert result['found'] is True
+        assert result['best_locator'] == f'iframe >> nth=1 >>> {collapsed}'
+        assert result['stability'] == 'positional'
+
+    async def test_semantic_iframe_ordinal_hop_is_positional(self):
+        """Same B2 rule on the SEMANTIC (description) payload site."""
+        from unittest.mock import MagicMock
+        from browser_service.locators.smart_locator import (
+            find_unique_locator_at_coordinates,
+        )
+        sel = 'role=link[name="Edit"]'
+        composite = f'tr:has-text("{ANCHOR}") >> {sel}'
+        collapsed = f'{composite} >> visible=true >> nth=0'
+        ctx = LenientFakeContext({
+            sel: FakeLocator(12),
+            composite: FakeLocator(2),
+            f'{composite} >> visible=true': FakeLocator(2, nested_chain=True),
+        })
+        result = await find_unique_locator_at_coordinates(
+            page=MagicMock(),
+            x=100, y=100,
+            element_id='elem_6',
+            element_description='Edit link',
+            search_context=ctx,
+            iframe_context='iframe >> nth=1',
+            row_anchor_text=ANCHOR,
+        )
+        assert result['found'] is True
+        assert result['best_locator'] == f'iframe >> nth=1 >>> {collapsed}'
+        assert result['stability'] == 'positional'
+
     async def test_iframe_ordinal_hop_still_positional(self):
         """An ordinal iframe hop DOES encode DOM order — the B2
         override must keep firing for row-anchored results too."""

@@ -156,6 +156,42 @@ class TestElementDataTestAttribute:
         assert [c for c in candidates if c['priority'] == PRIORITY_TEST_ID] == []
 
 
+class TestParentContextCssStep0:
+    """The Priority-5.5 parent-context CSS fallback must fire for the STEP-0
+    payload. ``_extract_dom_node_attributes`` — the only producer that reaches
+    ``_build_element_data_candidates`` — carries the parent's classes as
+    ``parentClassName`` and emits no ``parentId``/``parentClass``. The block
+    read only ``parentClass``, so it was dead for every STEP-0 element that
+    lacked an id/name of its own.
+    """
+
+    def test_parent_class_css_from_step0_parent_class_name(self):
+        candidates = _build_element_data_candidates({
+            'tagName': 'input', 'type': 'text',
+            'id': '', 'name': '',
+            'parentClassName': 'search-box wrapper',
+        })
+        parent_css = [c for c in candidates if c['type'] == 'parent-class-css']
+        assert len(parent_css) == 1
+        assert parent_css[0]['locator'] == '.search-box input[type="text"]'
+
+    def test_legacy_parent_class_key_still_read(self):
+        """Coordinate-shape payloads carry ``parentClass`` — keep them working."""
+        candidates = _build_element_data_candidates({
+            'tagName': 'input', 'id': '', 'name': '',
+            'parentClass': 'legacy-wrap',
+        })
+        parent_css = [c for c in candidates if c['type'] == 'parent-class-css']
+        assert len(parent_css) == 1
+        assert parent_css[0]['locator'] == '.legacy-wrap input'
+
+    def test_no_parent_context_no_candidate(self):
+        candidates = _build_element_data_candidates({
+            'tagName': 'input', 'id': '', 'name': '',
+        })
+        assert [c for c in candidates if c['type'] == 'parent-class-css'] == []
+
+
 class TestXPathStringLiterals:
     """C4: XPath text values must be real XPath 1.0 string literals.
 

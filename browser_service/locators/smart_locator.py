@@ -2996,7 +2996,11 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
     if not element_data.get('id') and not element_data.get('name'):
         tag_name = element_data.get('tagName', '')
         parent_id = element_data.get('parentId', '')
-        parent_class = element_data.get('parentClass', '')
+        # STEP-0 (_extract_dom_node_attributes) emits the parent's classes as
+        # `parentClassName`; only the coordinate-shape payload uses
+        # `parentClass`. Read the STEP-0 key first, else this fallback is dead
+        # on its only caller's payload.
+        parent_class = element_data.get('parentClassName', '') or element_data.get('parentClass', '')
         input_type = element_data.get('type', '')
         
         # Build CSS selector using parent context

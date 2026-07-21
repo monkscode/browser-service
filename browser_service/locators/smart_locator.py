@@ -836,6 +836,12 @@ def _derive_row_anchor_text_from_description(description: Optional[str]) -> Opti
     match = _ROW_ANCHOR_DESC_PATTERN.search(description)
     if not match:
         return None
+    # "every row containing 'X'" / "each row with 'X'" iterate a filtered
+    # COLLECTION despite the singular head noun — the pattern's plural
+    # rejection can't see the determiner, so check the preceding word.
+    preceding = description[:match.start()].split()
+    if preceding and preceding[-1].lower() in ('every', 'each'):
+        return None
     anchor = (match.group(1) or match.group(2) or '').strip()
     return anchor or None
 

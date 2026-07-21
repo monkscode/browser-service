@@ -722,6 +722,16 @@ class TestDeriveRowAnchorFromDescription:
         desc = "all rows with 'pending' status in the data table"
         assert _derive_row_anchor_text_from_description(desc) is None
 
+    def test_every_determiner_is_not_an_anchor(self):
+        # "every row containing 'X'" iterates a filtered COLLECTION despite
+        # the singular head noun — the plural rejection can't see it.
+        desc = "every row containing 'Chennai' in the results table"
+        assert _derive_row_anchor_text_from_description(desc) is None
+
+    def test_each_determiner_is_not_an_anchor(self):
+        desc = "the checkbox in each row containing 'pending'"
+        assert _derive_row_anchor_text_from_description(desc) is None
+
     def test_single_digit_count_is_not_an_anchor(self):
         # "the row with 3 columns" names a shape, not a row datum.
         desc = "the row with 3 columns"

@@ -3542,6 +3542,12 @@ async def _generate_locators_from_element_data(
                         'tagName': element_data.get('tagName', ''),
                         'id': element_data.get('id', ''),
                         'textContent': element_data.get('textContent', ''),
+                        # Marker evidence for nlrf's Task G state scan — the
+                        # candidate path carries these (d3f6859); the STEP-0
+                        # accept must not starve the same consumer.
+                        'className': element_data.get('className', ''),
+                        'ariaInvalid': element_data.get('ariaInvalid', ''),
+                        'parentClassName': element_data.get('parentClassName', ''),
                         'actual_text': actual_text,
                         'source': 'element_data'
                     },

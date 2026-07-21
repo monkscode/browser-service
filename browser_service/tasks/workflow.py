@@ -40,6 +40,22 @@ def rerank_sort_key(loc: dict) -> tuple:
     )
 
 
+def commit_reranked_winner(result: dict, scored_locators: list) -> None:
+    """Point the top-level result fields at the reranked winner.
+
+    ``best_locator``, ``stability`` and ``all_locators`` describe the SAME
+    chosen locator and must move together. Updating ``best_locator`` while
+    leaving a prior winner's ``stability`` in place mislabels a
+    volatile/positional locator with the old tier (E1) — the emitted payload
+    then disagrees with ``all_locators[0]``. Assigning all three here makes
+    that drift unrepresentable.
+    """
+    winner = scored_locators[0]
+    result['best_locator'] = winner['locator']
+    result['stability'] = winner.get('stability', STABLE)
+    result['all_locators'] = scored_locators
+
+
 def bind_request_context(workflow_id=None, org_id=None, user_id=None) -> None:
     """Bind the FastAPI-supplied correlation id + org/user into structlog so every
     browser_use.log line for this job carries the same id as the FastAPI side.
@@ -1539,8 +1555,7 @@ def process_workflow_task(
                     logger.info(f"      NEW: {new_best} (score: {new_score})")
                     re_ranked_count += 1
 
-                result['best_locator'] = new_best
-                result['all_locators'] = scored_locators
+                commit_reranked_winner(result, scored_locators)
 
             logger.info(f"✅ Re-ranking complete: {re_ranked_count}/{len(results_list)} elements upgraded")
 

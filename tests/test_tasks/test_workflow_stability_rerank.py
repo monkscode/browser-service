@@ -8,7 +8,8 @@ undoing the locator engine's ordering. rerank_sort_key is the shared
 verdict both sides read.
 """
 
-from browser_service.tasks.workflow import rerank_sort_key
+from browser_service.locators.stability import STABLE
+from browser_service.tasks.workflow import commit_reranked_winner, rerank_sort_key
 
 
 def test_stable_name_beats_volatile_id_despite_lower_score():
@@ -51,3 +52,28 @@ def test_within_tier_higher_score_wins():
     a = {"locator": "id=save_button", "quality_score": 100, "stability": "stable"}
     b = {"locator": '[name="save"]', "quality_score": 96, "stability": "stable"}
     assert sorted([b, a], key=rerank_sort_key)[0] is a
+
+
+# ---------------------------------------------------------------------------
+# commit_reranked_winner — best_locator, stability and all_locators describe
+# the SAME chosen locator and must move together. Updating best_locator while
+# leaving a prior winner's stability behind mislabels the emitted locator.
+# ---------------------------------------------------------------------------
+
+def test_commit_syncs_stability_when_winner_downgrades():
+    # The old best was a 'stable' id that got filtered out as non-unique; the
+    # only survivor is a volatile id. Top-level stability must follow the new
+    # winner, not keep the filtered-out locator's tier.
+    result = {"best_locator": "id=login", "stability": "stable", "all_locators": []}
+    scored = [{"locator": "id=ext-gen42", "stability": "volatile", "quality_score": 100}]
+    commit_reranked_winner(result, scored)
+    assert result["best_locator"] == "id=ext-gen42"
+    assert result["stability"] == "volatile"
+    assert result["all_locators"] is scored
+
+
+def test_commit_defaults_missing_stability_to_stable():
+    result = {"best_locator": "id=old", "stability": "volatile"}
+    scored = [{"locator": '[name="x"]', "quality_score": 90}]
+    commit_reranked_winner(result, scored)
+    assert result["stability"] == STABLE

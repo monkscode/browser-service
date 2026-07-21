@@ -64,7 +64,6 @@ async def find_locator(
 
     input_id = ""
     input_name = ""
-    anchor_locator = None
 
     is_direct_input = (
         (element_data.get("tagName") or "").lower() == "input"
@@ -74,15 +73,13 @@ async def find_locator(
         input_id = (element_data.get("id") or "").strip()
         input_name = (element_data.get("name") or "").strip()
 
-    if anchor_xpath:
-        anchor_locator = search_context.locator(f"xpath={anchor_xpath}")
-        if not (input_id or input_name):
-            try:
-                input_id = (await anchor_locator.get_attribute("id")) or ""
-                input_name = (await anchor_locator.get_attribute("name")) or ""
-            except Exception as e:
-                logger.info("file_upload.anchor_attr_read_failed error=%s", e)
-                anchor_locator = None
+    if anchor_xpath and not (input_id or input_name):
+        try:
+            anchor_locator = search_context.locator(f"xpath={anchor_xpath}")
+            input_id = (await anchor_locator.get_attribute("id")) or ""
+            input_name = (await anchor_locator.get_attribute("name")) or ""
+        except Exception as e:
+            logger.info("file_upload.anchor_attr_read_failed error=%s", e)
 
     if not (input_id or input_name or anchor_xpath):
         logger.info("file_upload.no_input_resolved — falling through")

@@ -77,3 +77,17 @@ def test_commit_defaults_missing_stability_to_stable():
     scored = [{"locator": '[name="x"]', "quality_score": 90}]
     commit_reranked_winner(result, scored)
     assert result["stability"] == STABLE
+
+
+def test_commit_syncs_stability_for_forced_id_correction():
+    # The priority-violation guard forces a stable id to the front of
+    # all_locators, displacing a positional best. Top-level stability must
+    # become the id's tier, not keep the displaced locator's.
+    result = {"best_locator": "//div[3]//button", "stability": "positional", "all_locators": []}
+    reordered = [
+        {"locator": "id=login", "stability": "stable", "quality_score": 100},
+        {"locator": "//div[3]//button", "stability": "positional", "quality_score": 60},
+    ]
+    commit_reranked_winner(result, reordered)
+    assert result["best_locator"] == "id=login"
+    assert result["stability"] == "stable"

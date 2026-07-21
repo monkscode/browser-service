@@ -40,7 +40,7 @@ def rerank_sort_key(loc: dict) -> tuple:
     )
 
 
-def commit_reranked_winner(result: dict, scored_locators: list) -> None:
+def commit_reranked_winner(result: dict, scored_locators: list[dict]) -> None:
     """Point the top-level result fields at the reranked winner.
 
     ``best_locator``, ``stability`` and ``all_locators`` describe the SAME
@@ -1642,9 +1642,12 @@ def process_workflow_task(
                             all_locators.pop(id_locator_index)
                             all_locators.insert(0, id_locator)
 
-                            # Update best_locator
-                            result['best_locator'] = id_locator['locator']
-                            result['all_locators'] = all_locators
+                            # Sync best_locator, stability and all_locators to
+                            # the forced ID winner together — leaving the
+                            # displaced non-id best's stability behind would
+                            # mislabel the now-stable ID locator (same drift
+                            # commit_reranked_winner prevents in the re-ranker).
+                            commit_reranked_winner(result, all_locators)
 
                             logger.info(
                                 f"   ✅ Corrected: {elem_id} now uses ID locator")

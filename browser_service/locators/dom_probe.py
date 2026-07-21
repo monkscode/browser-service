@@ -445,8 +445,8 @@ async def probe_specialized_type(
             use the iframe's own page reference if available, otherwise
             the probe runs against the top page.
         suspected_type: One of "dropdown", "checkbox", "radio",
-            "collection". Other values return ``_UNCONFIRMED`` without
-            running any JS.
+            "collection", "file-upload", "date-picker". Other values
+            return ``_UNCONFIRMED`` without running any JS.
         coords: ``(x, y)`` of the click point from browser-use. Used
             via ``elementFromPoint`` (with ±10px jitter on miss).
         candidate_xpath: Optional precise XPath of the candidate element

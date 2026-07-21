@@ -48,7 +48,12 @@ POSITIONAL = "positional"
 # Framework-generated id shapes.  Each pattern is anchored at the start of
 # the value and requires the generated shape (prefix + counter), so
 # hand-authored ids that merely share a prefix ("mat-icon-button",
-# "embermail") are not flagged.
+# "embermail") are not flagged.  Two exceptions are prefix-only on
+# purpose: select2- and radix- generated values embed random or
+# per-instance segments with no counter to key on, so the whole prefix
+# family is flagged.  That over-flags structural classes like
+# "select2-selection" — acceptable, because volatile only demotes
+# ordering, while under-flagging would emit a session-dead id as stable.
 _FRAMEWORK_ID_PATTERNS = (
     re.compile(r"ext-gen\d+"),           # ExtJS generated element
     re.compile(r"ext-comp-\d+"),         # ExtJS component

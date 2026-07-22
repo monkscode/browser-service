@@ -120,7 +120,9 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
 markers = [
-    "integration: marks tests as integration tests requiring live services (Playwright, browser, internet)",
+    "integration: umbrella marker for any test excluded from the default fast lane (-m 'not integration')",
+    "fixture: integration test that drives chromium against local/inline HTML — deterministic, CI-safe",
+    "live: integration test that needs live internet or a full browser-use session — not run in CI",
 ]
 
 [tool.coverage.run]

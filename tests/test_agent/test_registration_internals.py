@@ -175,27 +175,13 @@ class TestGetCdpUrlFromSession:
 
         assert _get_cdp_url_from_session(session) is None
 
-    def test_raising_cdp_url_property_propagates(self):
-        """Documents that the strategy-1 guard sits outside its own try block.
+    def test_raising_cdp_url_property_falls_through(self):
+        """A strategy-1 read that raises must not abort the chain.
 
-        The code reads
-
-            if hasattr(browser_session, "cdp_url"):
-                try:
-                    cdp_url = browser_session.cdp_url
-                except Exception as e:
-                    logger.debug(...)
-
-        hasattr() performs the attribute read itself and only swallows
-        AttributeError, so a property raising anything else escapes before the
-        try is entered. The except can therefore only fire if a second read of
-        the same attribute fails after the first succeeded. A session object
-        whose cdp_url raises does not fall through to strategies 2 and 3 — it
-        propagates to the caller.
-
-        Pinning current behaviour rather than changing it. Moving the hasattr
-        inside the try would make the fall-through work as the comment implies;
-        this test then fails and flags the decision.
+        The attribute read has to happen inside the try, not in a hasattr()
+        guard in front of it: hasattr() performs the read itself and swallows
+        only AttributeError, so any other exception escapes before the try is
+        entered and strategies 2 and 3 never run.
         """
 
         class Session:
@@ -205,21 +191,24 @@ class TestGetCdpUrlFromSession:
 
             other = VALID_CDP
 
-        with pytest.raises(RuntimeError, match="session closed"):
-            _get_cdp_url_from_session(Session())
+        assert _get_cdp_url_from_session(Session()) == VALID_CDP
 
-    def test_raising_cdp_client_property_propagates(self):
-        """Strategy 2 has the same hasattr-outside-try shape as strategy 1."""
+    def test_raising_cdp_client_property_falls_through(self):
+        """Strategy 2 must survive the same way — this is the live hazard.
+
+        browser-use's BrowserSession.cdp_client asserts on
+        _cdp_client_root is not None, so reading it on a session that has been
+        reset raises AssertionError, not AttributeError.
+        """
 
         class Session:
             @property
             def cdp_client(self):
-                raise RuntimeError("client gone")
+                raise AssertionError("CDP client not initialized")
 
             other = VALID_CDP
 
-        with pytest.raises(RuntimeError, match="client gone"):
-            _get_cdp_url_from_session(Session())
+        assert _get_cdp_url_from_session(Session()) == VALID_CDP
 
     def test_missing_attributes_do_fall_through(self):
         """The fall-through that does work: absent attributes, not raising ones."""

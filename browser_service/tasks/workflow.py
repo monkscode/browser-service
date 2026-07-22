@@ -1900,6 +1900,37 @@ def process_workflow_task(
                 logger.info("✅ Validation passed: All elements with ID use ID locators")
             # ========================================
 
+            # Backfill the elements that produced no entry at all: one the agent
+            # never called find_unique_locator for, and one it reported as
+            # found=False (the extractors above only record found payloads).
+            # Without this they are indistinguishable from elements that were
+            # never requested, and `failed` below can only ever be 0.
+            reported_ids = {r.get("element_id") for r in results_list}
+            for elem in elements:
+                elem_id = elem.get("id")
+                if elem_id in reported_ids:
+                    continue
+                logger.warning(f"   ❌ {elem_id}: no result reported by the agent")
+                results_list.append(
+                    {
+                        "element_id": elem_id,
+                        "description": elem.get("description"),
+                        "found": False,
+                        "error": "No locator reported by the agent",
+                        "validated": False,
+                        "count": 0,
+                        "unique": False,
+                        "valid": False,
+                        "validation_method": "playwright",
+                        "metrics": {
+                            "execution_time": 0,
+                            "estimated_llm_calls": 0,
+                            "estimated_cost": 0,
+                            "custom_action_used": custom_actions_enabled,
+                        },
+                    }
+                )
+
             # Calculate metrics
             successful = sum(1 for r in results_list if r.get("found", False))
             failed = len(results_list) - successful
@@ -2043,8 +2074,11 @@ def process_workflow_task(
             # ========================================
 
             # CRITICAL: Only consider workflow successful if ALL elements have unique locators
-            # This ensures we don't proceed with placeholder locators or non-unique locators
-            all_found = successful == len(results_list) and len(results_list) > 0
+            # This ensures we don't proceed with placeholder locators or non-unique locators.
+            # Measured per requested element id, not by count: an entry for an id
+            # nobody asked for must not stand in for a requested one that is missing.
+            found_ids = {r.get("element_id") for r in results_list if r.get("found", False)}
+            all_found = bool(elements) and all(e.get("id") in found_ids for e in elements)
 
             # ========================================
             # COLLECT ELEMENT APPROACH METRICS

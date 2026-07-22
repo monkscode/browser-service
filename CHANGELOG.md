@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Workflow `success` is now false when a requested element has no locator.
+  It was measured against the elements the agent reported rather than the
+  elements that were requested, so a run that found 1 of 2 reported success.
+- Elements the agent never reported, or reported as not found, are now
+  returned as `found: false` results and counted in `summary.failed`.
+- CDP URL lookup no longer aborts when a session property raises: the reads
+  were guarded by `hasattr()`, which only swallows `AttributeError`, so a
+  reset session's `cdp_client` skipped the remaining fallback strategies.
+
 ### Planned
 - Additional locator strategies
 - Enhanced error recovery

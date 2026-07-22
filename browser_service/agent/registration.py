@@ -312,31 +312,33 @@ def _get_cdp_url_from_session(browser_session) -> Optional[str]:
     if not browser_session:
         return None
 
-    # Strategy 1: Direct cdp_url attribute (most common)
-    if hasattr(browser_session, "cdp_url"):
-        try:
-            cdp_url = browser_session.cdp_url
-            if cdp_url and _CDP_URL_PATTERN.match(cdp_url):
-                logger.info(
-                    f"✅ CDP URL from browser_session.cdp_url: {_extract_cdp_host_port(cdp_url)}"
-                )
-                return cdp_url
-        except Exception as e:
-            logger.debug(f"Strategy 1 (cdp_url): {e}")
+    # Strategy 1: Direct cdp_url attribute (most common).
+    # The read sits inside the try, not behind a hasattr() guard: hasattr()
+    # performs the read itself and swallows only AttributeError, so a property
+    # raising anything else would escape before the try was entered and skip
+    # the remaining strategies.
+    try:
+        cdp_url = getattr(browser_session, "cdp_url", None)
+        if cdp_url and _CDP_URL_PATTERN.match(cdp_url):
+            logger.info(
+                f"✅ CDP URL from browser_session.cdp_url: {_extract_cdp_host_port(cdp_url)}"
+            )
+            return cdp_url
+    except Exception as e:
+        logger.debug(f"Strategy 1 (cdp_url): {e}")
 
-    # Strategy 2: cdp_client.url attribute
-    if hasattr(browser_session, "cdp_client"):
-        try:
-            cdp_client = browser_session.cdp_client
-            if hasattr(cdp_client, "url"):
-                cdp_url = cdp_client.url
-                if cdp_url and _CDP_URL_PATTERN.match(cdp_url):
-                    logger.info(
-                        f"✅ CDP URL from cdp_client.url: {_extract_cdp_host_port(cdp_url)}"
-                    )
-                    return cdp_url
-        except Exception as e:
-            logger.debug(f"Strategy 2 (cdp_client.url): {e}")
+    # Strategy 2: cdp_client.url attribute. Same shape as strategy 1 — and the
+    # one that matters: browser-use's BrowserSession.cdp_client asserts the CDP
+    # client is initialised, so reading it on a session that has been reset
+    # raises AssertionError rather than AttributeError.
+    try:
+        cdp_client = getattr(browser_session, "cdp_client", None)
+        cdp_url = getattr(cdp_client, "url", None)
+        if cdp_url and _CDP_URL_PATTERN.match(cdp_url):
+            logger.info(f"✅ CDP URL from cdp_client.url: {_extract_cdp_host_port(cdp_url)}")
+            return cdp_url
+    except Exception as e:
+        logger.debug(f"Strategy 2 (cdp_client.url): {e}")
 
     # Strategy 3: Search all public attributes for WebSocket DevTools URL
     logger.debug("🔍 Searching all attributes for CDP URL...")

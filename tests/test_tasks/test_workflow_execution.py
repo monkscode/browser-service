@@ -22,8 +22,9 @@ Tests:
   - Task status transitions to running then completed, with the result attached
   - A missing task_processor is rejected before any browser work starts
   - Locator results are extracted from custom-action metadata
-  - An element the agent never reports still yields success True (documented gap)
-  - A found=False payload is dropped rather than counted as a failure
+  - An element the agent never reports is backfilled as failed, success False
+  - A found=False payload is counted as a failure rather than dropped
+  - A locator for an unrequested id does not stand in for a missing one
   - Re-ranking promotes the stable id locator over a volatile xpath
   - max_steps scales with element count
   - Vision mode: 'auto' excludes the screenshot action, 'on' does not
@@ -354,24 +355,41 @@ class TestResultExtraction:
         assert results["success"] is True
         assert results["results"][0]["element_id"] == "elem_1"
 
-    def test_silently_dropped_element_still_reports_success(self, workflow_harness):
-        """Documents a real gap: an element the agent never reported is not counted as missing.
+    def test_all_requested_elements_found_reports_success(self, workflow_harness):
+        """The success flag still means what it says when nothing is missing."""
+        arm(
+            workflow_harness,
+            [
+                FakeStep(
+                    [
+                        FakeActionResult(locator_metadata("elem_1", "id=search")),
+                        FakeActionResult(locator_metadata("elem_2", "id=submit")),
+                    ]
+                )
+            ],
+        )
 
-        workflow.py:2047 computes
-            all_found = successful == len(results_list) and len(results_list) > 0
-        against len(results_list) — the elements the agent actually emitted
-        metadata for — while the comment on the line below states the intent as
-        "require ALL elements found". When the agent never calls
-        find_unique_locator for elem_2, that element produces no entry at all,
-        so results_list has length 1, successful is 1, and the workflow reports
-        success even though half the requested locators are missing. The summary
-        does carry the truth (total_elements 2, successful 1), so a caller
-        reading the summary sees the shortfall while a caller branching on
-        `success` does not.
+        run_workflow(
+            workflow_harness,
+            elements=[
+                {"id": "elem_1", "description": "search box"},
+                {"id": "elem_2", "description": "submit button"},
+            ],
+        )
 
-        Pinning current behaviour deliberately rather than changing product code
-        here. If the comparison is ever changed to len(elements), this test
-        fails and points at the decision.
+        results = workflow_harness.updates[-1][1]["results"]
+        assert results["success"] is True
+        assert results["summary"]["successful"] == 2
+        assert results["summary"]["failed"] == 0
+
+    def test_silently_dropped_element_reports_failure(self, workflow_harness):
+        """An element the agent never reported is a missing locator, not a success.
+
+        When the agent never calls find_unique_locator for elem_2 it emits no
+        metadata for it, so extraction produces no entry. The element is backfilled
+        as found=False and `success` is measured against the requested element ids,
+        so half the locators missing reports success False — matching the summary,
+        which already carried the truth (total_elements 2, successful 1).
         """
         arm(
             workflow_harness,
@@ -390,17 +408,18 @@ class TestResultExtraction:
         assert results["summary"]["total_elements"] == 2
         assert results["summary"]["successful"] == 1
         assert results["summary"]["success_rate"] == 0.5
-        assert results["success"] is True
+        assert results["summary"]["failed"] == 1
+        assert results["success"] is False
+        dropped = [r for r in results["results"] if r["element_id"] == "elem_2"]
+        assert dropped and dropped[0]["found"] is False
 
-    def test_found_false_payload_is_dropped_not_counted(self, workflow_harness):
-        """Extends the gap above: a not-found report does not become a failed result.
+    def test_found_false_payload_is_counted_as_failed(self, workflow_harness):
+        """An explicit not-found report becomes a failed result, not a dropped one.
 
         The extractor only records metadata with found truthy, so an element the
-        agent explicitly reports as not found leaves results_list untouched —
-        exactly as if it had never been attempted. Combined with all_found being
-        measured against len(results_list), that means no metadata payload can
-        make `success` False: the only routes to a failed workflow are an
-        exception or zero results overall.
+        agent explicitly reports as not found leaves results_list untouched. The
+        backfill puts it back as found=False, so it is counted as failed and the
+        workflow reports success False.
         """
         arm(
             workflow_harness,
@@ -423,8 +442,39 @@ class TestResultExtraction:
         )
 
         results = workflow_harness.updates[-1][1]["results"]
-        assert [r["element_id"] for r in results["results"]] == ["elem_1"]
-        assert results["success"] is True
+        assert [r["element_id"] for r in results["results"]] == ["elem_1", "elem_2"]
+        assert results["summary"]["failed"] == 1
+        assert results["success"] is False
+
+    def test_unrequested_element_does_not_cover_a_missing_one(self, workflow_harness):
+        """success is measured per requested id, not by counting found entries.
+
+        An agent that reports a locator for an id nobody asked for must not let
+        that entry stand in for a requested element it never found — a count
+        comparison would call this run a success.
+        """
+        arm(
+            workflow_harness,
+            [
+                FakeStep(
+                    [
+                        FakeActionResult(locator_metadata("elem_1", "id=search")),
+                        FakeActionResult(locator_metadata("elem_99", "id=stray")),
+                    ]
+                )
+            ],
+        )
+
+        run_workflow(
+            workflow_harness,
+            elements=[
+                {"id": "elem_1", "description": "search box"},
+                {"id": "elem_2", "description": "submit button"},
+            ],
+        )
+
+        results = workflow_harness.updates[-1][1]["results"]
+        assert results["success"] is False
 
     def test_no_results_at_all_is_a_failure(self, workflow_harness):
         """Zero extracted results is the one metadata-driven route to success False."""

@@ -86,14 +86,20 @@ jobs:
       - name: Run tests (excluding live integration)
         run: python3 -m pytest -m "not integration" -q
 
-  build-and-publish-pypi:
+  # Building and publishing are separate jobs on purpose. `permissions` is a
+  # job-level key — GitHub has no step-level scoping — so every step of a job
+  # declaring `id-token: write` can mint the PyPI OIDC token. Any `pip install`
+  # in such a job therefore runs third-party code that can publish as us.
+  # PyPI's trusted-publisher security model spells out the fix: "your publishing
+  # job should (ideally) have only two steps: 1. Retrieve the publishable
+  # distribution files from a separate build job; 2. Publish the distributions."
+  # That is exactly the shape below — `publish-pypi` has no checkout, no pip and
+  # no shell, only two pinned actions.
+  build:
     needs: [extract-tag, test]
     runs-on: ubuntu-latest
-    environment: 
-      name: pypi
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,8 +108,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install build tooling
-        run: python3 -m pip install --upgrade build twine
+      - name: Install build backend (hash-locked)
+        # The build backend produces the exact bytes we ship to PyPI, so it is
+        # pinned by content, not by name: see requirements/build.txt for the
+        # reasoning and the bump procedure. --only-binary is load-bearing —
+        # without it a hash mismatch silently falls back to compiling the sdist.
+        # Quoted: an unquoted `:all: -r` is a colon-space, which YAML parses as
+        # a nested mapping and rejects.
+        run: 'python3 -m pip install --require-hashes --only-binary=:all: -r requirements/build.txt'
       - name: Update version in pyproject.toml
         # Same rule as extract-tag: through env, not through ${{ }} expansion
         # into the sed script. extract-tag has already validated the value
@@ -112,9 +124,43 @@ jobs:
           NEW_VERSION: ${{ needs.extract-tag.outputs.version }}
         run: sed -i "s/^version = \"[^\"]*\"/version = \"${NEW_VERSION}\"/" pyproject.toml
       - name: Build sdist + wheel
-        run: python3 -m build
+        # --no-isolation is required, not cosmetic. The default spins a fresh
+        # venv and resolves `[build-system] requires` (setuptools, wheel) from
+        # PyPI at build time — floating exactly the backend that emits the wheel
+        # bytes. This builds against the hash-verified environment installed
+        # above, where setuptools and wheel are pinned by content.
+        run: python3 -m build --no-isolation
+      - name: Install twine
+        # Installed AFTER the build, never before: twine drags in 23 packages
+        # (requests, urllib3, keyring, rich, nh3, readme_renderer, ...) and none
+        # of them has any business being importable while the artifact is being
+        # produced. Version-pinned rather than hash-locked — this is a read-only
+        # metadata lint in an unprivileged job that never touches the published
+        # bytes, so the 23-package lockfile it would cost is not worth carrying.
+        run: python3 -m pip install twine==6.2.0
       - name: Check distribution metadata
         run: python3 -m twine check dist/*
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist/
       - name: Publish distribution 📦 to PyPI
         # SHA-pinned: `release/v1` is a moving branch, so an upstream compromise
         # would run in the job that holds id-token: write. Bump SHA + comment together.

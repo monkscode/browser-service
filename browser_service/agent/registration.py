@@ -413,7 +413,11 @@ async def _dispatch_browser_use_event(
     Returns (note, status) on success or not_applicable.
     Returns (None, None) as the universal fall-through signal — Playwright path retries.
     performed_actions.add() is called ONLY on confirmed success, never on fall-through."""
-    from browser_use.browser.events import TypeTextEvent, ClickElementEvent, SelectDropdownOptionEvent
+    from browser_use.browser.events import (
+        ClickElementEvent,
+        SelectDropdownOptionEvent,
+        TypeTextEvent,
+    )
     try:
         if action in ("input", "type"):
             if not value:
@@ -888,10 +892,11 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
         logger.info("🔧 Registering custom actions with browser-use agent...")
 
         # Import required classes for custom action registration
-        from browser_use.tools.service import Tools
-        from browser_use.agent.views import ActionResult
-        from pydantic import BaseModel, Field
         from typing import Literal
+
+        from browser_use.agent.views import ActionResult
+        from browser_use.tools.service import Tools
+        from pydantic import BaseModel, Field
 
         # Import the action implementation
         from browser_service.agent.actions import find_unique_locator_action
@@ -1158,7 +1163,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                 logger.info(f"   Coordinates: ({params.x}, {params.y})")
                 if params.expected_text:
                     logger.info(f"   Expected text: \"{params.expected_text}\"")
-                
+
                 # ALWAYS log element_index to debug what LLM is passing
                 logger.info(f"   Element index: {params.element_index} (None means LLM did not provide it)")
 
@@ -1170,15 +1175,15 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                 # 1. Accurate element attributes (id, class, text, aria-label, etc.)
                 # 2. Confirmed bounding box coordinates (actual position, not LLM guess)
                 # 3. Much higher accuracy for locator generation
-                
+
                 element_data_from_index = None
                 confirmed_coords = None
                 selector_map = None  # Will be populated either from element_index lookup or CDP fallback
-                
+
                 if params.element_index is not None and browser_session:
                     try:
                         logger.info(f"📋 Getting element [{params.element_index}] from browser-use DOM...")
-                        
+
                         # ========================================
                         # Get selector_map from browser-use DOM watchdog
                         # ========================================
@@ -1189,12 +1194,12 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             if hasattr(watchdog, 'selector_map') and watchdog.selector_map:
                                 selector_map = watchdog.selector_map
                                 logger.info(f"   📊 Using selector_map: {len(selector_map)} elements")
-                        
+
                         # Fallback to get_selector_map() if watchdog not available
                         if not selector_map:
                             selector_map = await browser_session.get_selector_map()
                             logger.info(f"   📊 Fallback to get_selector_map(): {len(selector_map) if selector_map else 0} elements")
-                        
+
                         # Log diagnostics
                         if selector_map:
                             available_indices = sorted(selector_map.keys())
@@ -1206,22 +1211,22 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                 tag = selector_map[idx].node_name.upper() if hasattr(selector_map[idx], 'node_name') else '?'
                                 sample_types[tag] = sample_types.get(tag, 0) + 1
                             logger.info(f"   📊 Element types in sample: {dict(sorted(sample_types.items(), key=lambda x: -x[1]))}")
-                        
+
                         # Look up element from selector_map
                         dom_node = selector_map.get(params.element_index) if selector_map else None
-                        
+
                         if dom_node:
                             logger.info(f"   ✅ Found element [{params.element_index}] in DOM")
-                            
+
                             # Extract element attributes for locator generation
                             element_data_from_index = _extract_dom_node_attributes(dom_node)
-                            
+
                             # Get text content from the element
                             if hasattr(dom_node, 'get_meaningful_text_for_llm'):
                                 element_data_from_index['textContent'] = dom_node.get_meaningful_text_for_llm()
                             elif hasattr(dom_node, 'get_all_children_text'):
                                 element_data_from_index['textContent'] = dom_node.get_all_children_text()
-                            
+
                             # Get confirmed coordinates from bounding box
                             if hasattr(dom_node, 'absolute_position') and dom_node.absolute_position:
                                 pos = dom_node.absolute_position
@@ -1230,7 +1235,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                     int(pos.y + pos.height / 2)
                                 )
                                 logger.info(f"   📍 Confirmed coordinates: {confirmed_coords} (from DOM bounding box)")
-                            
+
                             logger.info(f"   📝 Element tag: <{element_data_from_index['tagName']}>")
                             if element_data_from_index.get('id'):
                                 logger.info(f"   📝 Element id: {element_data_from_index['id']}")
@@ -1267,13 +1272,13 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                 # Scaling formula: pixel_coord = (normalized_coord / 1000) * viewport_size
                 GEMINI_COORD_SPACE = 1000
                 DEFAULT_VIEWPORT = (1920, 1080)
-                
+
                 viewport_size = getattr(browser_session, '_original_viewport_size', None) or DEFAULT_VIEWPORT
                 viewport_w, viewport_h = viewport_size
-                
+
                 scaled_x = int((params.x / GEMINI_COORD_SPACE) * viewport_w)
                 scaled_y = int((params.y / GEMINI_COORD_SPACE) * viewport_h)
-                
+
                 logger.info(f"Coordinate scaling: ({params.x}, {params.y}) → ({scaled_x}, {scaled_y}) [0-1000 to {viewport_w}x{viewport_h}]")
 
 
@@ -1289,7 +1294,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     try:
                         logger.info(f"🔍 STEP A: Finding element at ({scaled_x}, {scaled_y}) from selector_map...")
                         selector_map = await browser_session.get_selector_map()
-                        
+
                         if selector_map:
                             # Log element types to verify what's indexed
                             sample_types = {}
@@ -1298,7 +1303,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                 sample_types[tag] = sample_types.get(tag, 0) + 1
                             logger.info(f"📊 Selector map has {len(selector_map)} elements")
                             logger.info(f"📊 Types: {dict(sorted(sample_types.items(), key=lambda x: -x[1]))}")
-                            
+
                             viewport_area = viewport_w * viewport_h
                             idx, dom_node = _find_smallest_containing_element(
                                 selector_map,
@@ -1310,16 +1315,16 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                 logger.info(f"   ✅ Found element [{idx}] at coordinates!")
                                 elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
                                 logger.info(f"   📝 Element tag: <{elem_tag}>")
-                                
+
                                 # Extract element attributes
                                 element_data_from_index = _extract_dom_node_attributes(dom_node)
-                                
+
                                 # Get text content
                                 if hasattr(dom_node, 'get_meaningful_text_for_llm'):
                                     element_data_from_index['textContent'] = dom_node.get_meaningful_text_for_llm()
                                 elif hasattr(dom_node, 'get_all_children_text'):
                                     element_data_from_index['textContent'] = dom_node.get_all_children_text()
-                                
+
                                 # Get confirmed coordinates from bounding box
                                 if hasattr(dom_node, 'absolute_position') and dom_node.absolute_position:
                                     pos = dom_node.absolute_position
@@ -1328,13 +1333,13 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                         int(pos.y + pos.height / 2)
                                     )
                                     logger.info(f"   📍 Confirmed coordinates: {confirmed_coords}")
-                                
+
                                 if element_data_from_index.get('id'):
                                     logger.info(f"   📝 Element id: {element_data_from_index['id']}")
                             else:
                                 logger.warning(f"   ⚠️ No element found at ({scaled_x}, {scaled_y})")
                         else:
-                            logger.warning(f"   ⚠️ selector_map is empty or None")
+                            logger.warning("   ⚠️ selector_map is empty or None")
                     except Exception as e:
                         logger.warning(f"   ⚠️ Could not find element by coordinates: {e}")
                         logger.debug("   Full error:", exc_info=True)
@@ -1345,13 +1350,13 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                 # IMPORTANT: Check params.element_index (what LLM provided), not element_data_from_index
                 # (which may have been populated by coordinate lookup above)
                 element_index_was_none = (params.element_index is None)
-                
+
                 if element_index_was_none and element_data_from_index is None:
                     # Coordinate lookup also failed - will rely on smart_locator.py fallbacks
-                    logger.info(f"⚠️ element_index not provided AND coordinate lookup failed")
-                    logger.info(f"   Will try TEXT-FIRST/SEMANTIC/COORDINATE strategies in smart_locator.py")
-                    logger.info(f"   If all fail, will request LLM retry with element_index")
-                    
+                    logger.info("⚠️ element_index not provided AND coordinate lookup failed")
+                    logger.info("   Will try TEXT-FIRST/SEMANTIC/COORDINATE strategies in smart_locator.py")
+                    logger.info("   If all fail, will request LLM retry with element_index")
+
                     # Fetch selector_map for iframe detection
                     try:
                         if hasattr(browser_session, '_cached_selector_map') and browser_session._cached_selector_map:
@@ -1372,8 +1377,8 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     logger.info(f"Using DOM-confirmed coordinates: ({final_x}, {final_y})")
                 else:
                     logger.info(f"Using scaled coordinates: ({final_x}, {final_y})")
-                    
-                    
+
+
                 # ========================================
                 # IFRAME DETECTION: Check if element is inside an iframe
                 # ========================================
@@ -1384,7 +1389,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     )
                     if iframe_context:
                         logger.info(f"   Element will be searched inside iframe: {iframe_context}")
-                            
+
                         # ========================================
                         # IFRAME ELEMENT HANDLING (Optional Refinement)
                         # ========================================
@@ -1399,10 +1404,10 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         # GRACEFUL FALLBACK: If bbox matching fails, find_unique_locator_action
                         # handles iframe_context properly with coordinate translation.
                         # This override is an OPTIMIZATION, not required for correctness.
-                            
-                        logger.info(f"🖼️ Iframe detected - attempting element lookup from selector_map")
+
+                        logger.info("🖼️ Iframe detected - attempting element lookup from selector_map")
                         logger.info(f"   📊 Selector map has {len(selector_map)} elements")
-                            
+
                         try:
                             # Find element by coordinates in selector_map — skip the iframe
                             # itself (we want the contained element) and page wrappers
@@ -1420,24 +1425,24 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                     logger.info(f"   ✅ Found element [{idx}] inside iframe!")
                                     elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
                                     logger.info(f"   📝 Element tag: <{elem_tag}>")
-                                        
+
                                     # Update element_data_from_index with the correct element
                                     element_data_from_index = _extract_dom_node_attributes(dom_node)
                                     if hasattr(dom_node, 'get_meaningful_text_for_llm'):
                                         element_data_from_index['textContent'] = dom_node.get_meaningful_text_for_llm()
                                     elif hasattr(dom_node, 'get_all_children_text'):
                                         element_data_from_index['textContent'] = dom_node.get_all_children_text()
-                                        
+
                                     logger.info(f"   📝 Element id: {element_data_from_index.get('id', 'N/A')}")
                                 else:
-                                    logger.info(f"   ℹ️ No bbox match found - will use find_unique_locator_action fallback")
-                                    logger.debug(f"   (This is normal for cross-origin iframes or coord system mismatch)")
+                                    logger.info("   ℹ️ No bbox match found - will use find_unique_locator_action fallback")
+                                    logger.debug("   (This is normal for cross-origin iframes or coord system mismatch)")
                             else:
-                                logger.info(f"   ℹ️ No selector_map available - will use find_unique_locator_action fallback")
+                                logger.info("   ℹ️ No selector_map available - will use find_unique_locator_action fallback")
                         except Exception as e:
                             logger.warning(f"   ⚠️ Element lookup failed: {e}")
                             logger.debug("   Full error:", exc_info=True)
-                    
+
                 result = await find_unique_locator_action(
                     x=final_x,  # Use confirmed or scaled coordinates
                     y=final_y,  # Use confirmed or scaled coordinates
@@ -1461,8 +1466,6 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     best_locator = result.get('best_locator')
 
                     # Get validation data from result (not validation_summary)
-                    validated = result.get('validated', False)
-                    count = result.get('count', 0)
                     validation_method = result.get('validation_method', 'playwright')
 
                     # ========================================
@@ -1622,15 +1625,15 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
 
                     # Log if this was a fallback success (no element_index provided)
                     if element_index_was_none:
-                        logger.info(f"")
+                        logger.info("")
                         logger.info(f"{'='*80}")
-                        logger.info(f"✅ FALLBACK SUCCESS: Locator found WITHOUT element_index")
+                        logger.info("✅ FALLBACK SUCCESS: Locator found WITHOUT element_index")
                         logger.info(f"{'='*80}")
                         logger.info(f"   Element: {params.element_id}")
                         logger.info(f"   Locator: {best_locator}")
                         logger.info(f"   Method: {validation_method} (no LLM retry needed)")
                         logger.info(f"{'='*80}")
-                        logger.info(f"")
+                        logger.info("")
 
                     action_result = ActionResult(
                         extracted_content=success_msg,
@@ -1643,7 +1646,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     # Error message for agent - CLEAR about failure
                     fallback_error = result.get('error', 'Could not find unique locator')
                     logger.error(f"❌ Custom action failed: {fallback_error}")
-                    
+
                     # ========================================
                     # RETRY WITH element_index (only if it was originally None)
                     # ========================================
@@ -1664,16 +1667,16 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             f"Example: if you see '[2181] <input role=\"combobox\">',"
                             f" use element_index=2181"
                         )
-                        logger.info(f"")
+                        logger.info("")
                         logger.info(f"{'='*80}")
-                        logger.info(f"🔄 RETRY TRIGGERED: element_index was None and fallback failed")
+                        logger.info("🔄 RETRY TRIGGERED: element_index was None and fallback failed")
                         logger.info(f"{'='*80}")
                         logger.info(f"   Element: {params.element_id}")
                         logger.info(f"   Description: {params.element_description}")
                         logger.info(f"   Fallback failure reason: {fallback_error}")
-                        logger.info(f"   Action: Requesting LLM to retry with element_index")
+                        logger.info("   Action: Requesting LLM to retry with element_index")
                         logger.info(f"{'='*80}")
-                        logger.info(f"")
+                        logger.info("")
                         # A1-INLINE escalation: metadata={'include_screenshot': True}
                         # makes browser-use attach the current screenshot to the
                         # NEXT LLM call (message_manager/service.py:444-464) —

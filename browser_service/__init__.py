@@ -125,8 +125,8 @@ _otlp_endpoint = os.environ.get("OTLP_ENDPOINT", "").strip()
 
 if _obs_backend != "none" and _otlp_endpoint:
     try:
-        from traceloop.sdk import Traceloop
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from traceloop.sdk import Traceloop
 
         os.environ.setdefault("TRACELOOP_TRACE_CONTENT", "true")
         Traceloop.init(
@@ -144,15 +144,24 @@ if _obs_backend != "none" and _otlp_endpoint:
             "[OBSERVABILITY] Init failed (non-fatal): %s", e
         )
 
-__version__ = "1.0.0"
+# Single source of truth for the version: the installed package metadata
+# (pyproject [project].version). Falls back when running from an uninstalled
+# source checkout.
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
+try:
+    __version__ = _pkg_version("browser-service")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
 
 # Import key components for convenient access
 from browser_service.config import (
-    config,
-    BrowserServiceConfig,
     BatchConfig,
+    BrowserServiceConfig,
+    LLMConfig,
     LocatorConfig,
-    LLMConfig
+    config,
 )
 
 __all__ = [

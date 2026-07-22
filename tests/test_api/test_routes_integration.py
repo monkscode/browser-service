@@ -231,6 +231,7 @@ class TestHealthProviderFields:
         mock_cfg = MagicMock()
         mock_cfg.llm = llm_cfg
         mock_cfg.max_concurrent_tasks = 10
+        mock_cfg.headless = True
 
         with patch("browser_service.api.routes.config", mock_cfg), \
              patch("browser_service.api.routes._nl_settings", None), \
@@ -327,3 +328,46 @@ class TestHealthCapacityFields:
         resp = client.get("/health")
         data = resp.get_json()
         assert data["tasks_submitted"] == 3
+
+
+class TestHealthHeadlessField:
+    """
+    /health reports the effective headless flag (Task 4 rider).
+
+    The nlrf bench preflight pins BROWSER_HEADLESS=true for guardrail runs;
+    without this field it can only warn "not reported" instead of verifying.
+    """
+
+    @contextmanager
+    def _make_app_with_headless(self, headless):
+        app = Flask(__name__)
+        app.config["TESTING"] = True
+
+        mock_processor = MagicMock()
+        mock_processor.get_tasks_dict.return_value = {}
+        mock_processor.count_active_tasks.return_value = 0
+        mock_processor.tasks_submitted_count.return_value = 0
+
+        mock_cfg = MagicMock()
+        mock_cfg.max_concurrent_tasks = 10
+        mock_cfg.headless = headless
+        mock_cfg.llm.model_provider = "vertex"
+        mock_cfg.llm.vertexai_credentials = object()
+
+        with patch("browser_service.api.routes.config", mock_cfg), \
+             patch("browser_service.api.routes._nl_settings", None), \
+             patch("browser_service.api.routes.process_workflow_task"):
+            from browser_service.api.routes import register_routes
+            register_routes(app, mock_processor)
+            with app.test_client() as client:
+                yield client
+
+    def test_health_reports_headless_true(self):
+        with self._make_app_with_headless(True) as client:
+            resp = client.get("/health")
+        assert resp.get_json()["headless"] is True
+
+    def test_health_reports_headless_false(self):
+        with self._make_app_with_headless(False) as client:
+            resp = client.get("/health")
+        assert resp.get_json()["headless"] is False

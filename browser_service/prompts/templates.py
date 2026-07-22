@@ -261,7 +261,8 @@ PARAMETERS:
     ⚠️ For buttons/links: Use the exact button/link text you see
     ⚠️ For inputs: Use the placeholder or label text if visible
     ⚠️ For product names: Use the actual product name text you see
-  • element_index (int, ★★★ REQUIRED FOR ACCURACY ★★★): The element INDEX from the DOM state.
+  • element_index (int, required): The element INDEX from the DOM state — the DOM
+    element list is your PRIMARY grounding for every element.
     ⚠️ ALWAYS PROVIDE THIS for EVERY element - it is the MOST ACCURATE METHOD!
     ⚠️ When you see [49] <td>John</td>, set element_index=49
     ⚠️ When you see [23] <a>Services</a>, set element_index=23
@@ -274,6 +275,21 @@ PARAMETERS:
     ⚠️ When you see "loop: FOR" in ELEMENTS TO FIND, you MUST set is_collection=true
     ⚠️ This ensures we return a multi-element locator (e.g., .rt-tr-group) not single-element
     ⚠️ Examples: table rows, list items, all cells in a column
+    ⚠️ A single control inside ONE row (an Edit/Delete/Download icon, a row checkbox) is
+    NOT a collection even though it sits in a table - leave is_collection unset and pass
+    row_anchor_text instead (see below)
+  • row_anchor_text (str, ★ REQUIRED FOR ROW-SPECIFIC ACTIONS ★): The row-identifying data
+    when the target is a PER-ROW control inside a table or repeated list.
+    ⚠️ Tables repeat the same Edit/Delete/Download icons on EVERY row - only the row's
+    DATA distinguishes them. Without this, the locator may act on the WRONG row later!
+    ⚠️ Use the row-identifying datum FROM THE TASK (account number, customer name, invoice
+    id) exactly as it appears in the row's text.
+    ⚠️ Example: task says "Edit customer 64625", the Edit icon is in the row showing 64625
+    → find_unique_locator(..., row_anchor_text="64625")
+    ⚠️ Also for row checkboxes and row links: "Select the row for John Smith"
+    → row_anchor_text="John Smith"
+    ⚠️ Leave blank for elements that appear ONCE on the page (toolbar buttons, form fields,
+    menu links) - this parameter is ONLY for controls repeated across rows/items.
 """
 
 # Example workflow demonstrating the complete flow
@@ -419,6 +435,10 @@ Process elements IN THE ORDER THEY ARE LISTED. For each element:
 # Edge case handling including checkboxes
 EDGE_CASE_HANDLING = """
 ⚠️ EDGE CASE HANDLING:
+  • NEVER record an element as found: false without having called find_unique_locator
+    for it at least once. When find_unique_locator fails, a screenshot of the current
+    page is attached to your NEXT message (when available) — re-examine the failed
+    element in it, correct element_index/coordinates, and retry before giving up.
   • If an element cannot be found, record it as {{"element_id": "...", "found": false, "error": "Element not visible/not found"}}
   • Continue processing remaining elements (don't stop the entire workflow)
   • If an interactive element fails, still try to process result elements on the current page

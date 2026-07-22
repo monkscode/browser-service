@@ -48,7 +48,6 @@ def build_workflow_prompt(
     user_query: str,
     url: str,
     elements: List[Dict[str, Any]],
-    library_type: str = "browser",
     include_custom_action: bool = True,
     client_hints: Optional[List[str]] = None
 ) -> str:
@@ -65,8 +64,6 @@ def build_workflow_prompt(
         user_query: User's goal for the workflow
         url: Target URL to navigate to
         elements: List of elements to find, each with 'id', 'description', and optional 'action'
-        library_type: Robot Framework library type - "browser" (Browser Library/Playwright)
-                     or "selenium" (SeleniumLibrary)
         include_custom_action: If True, include custom action instructions;
                               if False, use legacy JavaScript validation
         client_hints: Optional list of application-specific hints/context to include
@@ -88,7 +85,6 @@ def build_workflow_prompt(
         ...     user_query="Find search elements",
         ...     url="https://example.com",
         ...     elements=elements,
-        ...     library_type="browser",
         ...     include_custom_action=True
         ... )
     """

@@ -62,6 +62,11 @@ class LocatorConfig:
     # Try N different offsets
     coordinate_offset_attempts: int = 7
 
+    # Budget (seconds) for one find_unique_locator call — the whole strategy
+    # cascade shares it. On expiry the finder returns a structured
+    # found=False result instead of hanging the agent step.
+    custom_action_timeout: int = 5
+
     # Coordinate offsets to try (pixels)
     coordinate_offsets: List[Dict[str, Any]] = field(default_factory=lambda: [
         {"x": 100, "y": 0, "reason": "escape sidebar/left panel"},
@@ -118,7 +123,8 @@ class BrowserServiceConfig:
             content_based_retries=self._int_env("CONTENT_BASED_RETRIES", 7),
             coordinate_based_retries=self._int_env("COORDINATE_BASED_RETRIES", 7),
             element_type_retries=self._int_env("ELEMENT_TYPE_RETRIES", 5),
-            coordinate_offset_attempts=self._int_env("COORDINATE_OFFSET_ATTEMPTS", 7)
+            coordinate_offset_attempts=self._int_env("COORDINATE_OFFSET_ATTEMPTS", 7),
+            custom_action_timeout=self._int_env("CUSTOM_ACTION_TIMEOUT", 5)
         )
 
         # LLM configuration
@@ -180,13 +186,40 @@ class BrowserServiceConfig:
                 # in startup output before validate() is called.
                 logger.error(f"❌ Failed to load Vertex AI credentials: {e}")
 
-        # Robot Framework library type
+        # Robot Framework library type. Browser Library (Playwright) is the only
+        # supported target: the locator engine emits Playwright-only syntax
+        # (role=, text=, >>> iframe piercing), so any other value would produce
+        # valid-looking tests that fail on every step. Fail fast at construction —
+        # validate() is not called on the production startup path.
         self.robot_library = os.getenv("ROBOT_LIBRARY", "browser")
+        if self.robot_library == "selenium":
+            raise ValueError(
+                "ROBOT_LIBRARY=selenium is no longer supported; this service "
+                "generates Browser Library (Playwright) locators only. Remove "
+                "the setting or set ROBOT_LIBRARY=browser."
+            )
+        if self.robot_library != "browser":
+            raise ValueError(
+                f"ROBOT_LIBRARY must be 'browser', got '{self.robot_library}'"
+            )
 
         # Browser headless mode
         # When true: Browser runs without UI (faster, for CI/CD)
         # When false: Browser UI visible (for debugging/development)
         self.headless = os.getenv("BROWSER_HEADLESS", "true").lower() == "true"
+
+        # Agent vision mode (Task 28 A1-INLINE):
+        #   auto — vision-off; the screenshot attaches to the next LLM call only
+        #          when find_unique_locator fails validation (in-run escalation)
+        #   on   — full vision on every step (escape hatch)
+        # Any other value would silently fork bench vs production behavior, so
+        # construction fails fast — same contract as ROBOT_LIBRARY above.
+        self.agent_vision_mode = os.getenv("AGENT_VISION_MODE", "auto").lower()
+        if self.agent_vision_mode not in ("auto", "on"):
+            raise ValueError(
+                f"AGENT_VISION_MODE must be 'auto' or 'on', "
+                f"got '{self.agent_vision_mode}'"
+            )
 
         # Feature flags
         self.enable_custom_actions = os.getenv("ENABLE_CUSTOM_ACTIONS", "true").lower() == "true"
@@ -299,17 +332,13 @@ class BrowserServiceConfig:
         if self.locator.coordinate_offset_attempts < 0:
             errors.append(f"COORDINATE_OFFSET_ATTEMPTS must be >= 0, got {self.locator.coordinate_offset_attempts}")
 
+        if self.locator.custom_action_timeout < 1:
+            errors.append(f"CUSTOM_ACTION_TIMEOUT must be >= 1, got {self.locator.custom_action_timeout}")
+
         # Validate concurrency configuration
         if self.max_concurrent_tasks < 1:
             errors.append(
                 f"MAX_CONCURRENT_TASKS must be >= 1, got {self.max_concurrent_tasks}"
-            )
-
-        # Validate robot library type
-        valid_libraries = ["browser", "selenium"]
-        if self.robot_library not in valid_libraries:
-            errors.append(
-                f"ROBOT_LIBRARY must be one of {valid_libraries}, got '{self.robot_library}'"
             )
 
         return errors

@@ -26,13 +26,20 @@ from .validation import (
     is_already_playwright_selector,
     PLAYWRIGHT_NATIVE_ENGINES
 )
-from .smart_locator import find_unique_locator_at_coordinates, validate_semantic_match
+from .smart_locator import (
+    candidate_targets_row_anchor,
+    correct_expected_text_for_row_anchor,
+    find_unique_locator_at_coordinates,
+    validate_semantic_match,
+)
 
 __all__ = [
     'validate_locator_playwright',
     'convert_to_playwright_locator',
     'is_already_playwright_selector',
     'PLAYWRIGHT_NATIVE_ENGINES',
+    'candidate_targets_row_anchor',
+    'correct_expected_text_for_row_anchor',
     'find_unique_locator_at_coordinates',
     'validate_semantic_match',
 ]

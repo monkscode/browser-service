@@ -8,7 +8,7 @@ Purpose: Verify that configuration defaults, env-var overrides, model name
 Each test targets a distinct code path in config.py:
   - Default values (no env vars)
   - Env-var override for headless mode
-  - Env-var override for robot_library
+  - ROBOT_LIBRARY: only 'browser' accepted; 'selenium' rejected at construction
   - LLM model name normalisation (_get_google_model strips "gemini/")
   - Batch config defaults
   - Locator config defaults + custom offsets
@@ -95,10 +95,15 @@ class TestBrowserServiceConfigDefaults:
         cfg = self._make_config({"BROWSER_HEADLESS": "false"})
         assert cfg.headless is False
 
-    def test_robot_library_env_override(self):
-        """ROBOT_LIBRARY=selenium is accepted."""
-        cfg = self._make_config({"ROBOT_LIBRARY": "selenium"})
-        assert cfg.robot_library == "selenium"
+    def test_robot_library_selenium_rejected_at_startup(self):
+        """ROBOT_LIBRARY=selenium fails construction with a migration message."""
+        with pytest.raises(ValueError, match="no longer supported"):
+            self._make_config({"ROBOT_LIBRARY": "selenium"})
+
+    def test_robot_library_unknown_rejected_at_startup(self):
+        """Any non-'browser' ROBOT_LIBRARY value fails construction."""
+        with pytest.raises(ValueError, match="ROBOT_LIBRARY"):
+            self._make_config({"ROBOT_LIBRARY": "puppeteer"})
 
     def test_default_max_concurrent_tasks(self):
         """Default MAX_CONCURRENT_TASKS is 10."""
@@ -109,6 +114,55 @@ class TestBrowserServiceConfigDefaults:
         """MAX_CONCURRENT_TASKS env var is read and stored as int."""
         cfg = self._make_config({"MAX_CONCURRENT_TASKS": "5"})
         assert cfg.max_concurrent_tasks == 5
+
+
+class TestAgentVisionMode:
+    """AGENT_VISION_MODE (Task 28 A1-INLINE): 'auto' default, 'on' escape hatch.
+
+    'auto' = vision-off with in-run failure-triggered screenshot escalation;
+    'on'   = full vision on every step (escape hatch).
+    Anything else forks bench vs production behavior silently, so construction
+    fails fast — same contract as ROBOT_LIBRARY.
+    """
+
+    def _make_config(self, vision_mode: str | None):
+        env = {"GEMINI_API_KEY": "test-key", "MODEL_PROVIDER": "gemini"}
+        if vision_mode is not None:
+            env["AGENT_VISION_MODE"] = vision_mode
+        with patch.dict(os.environ, env, clear=False):
+            if vision_mode is None:
+                os.environ.pop("AGENT_VISION_MODE", None)
+            with patch(
+                "browser_service.config.BrowserServiceConfig._get_google_model",
+                return_value="gemini-2.5-flash",
+            ):
+                from browser_service.config import BrowserServiceConfig
+                return BrowserServiceConfig()
+
+    def test_default_is_auto(self):
+        """No env var → agent_vision_mode defaults to 'auto' (vision-off + escalation)."""
+        cfg = self._make_config(None)
+        assert cfg.agent_vision_mode == "auto"
+
+    def test_on_escape_hatch(self):
+        """AGENT_VISION_MODE=on → full vision."""
+        cfg = self._make_config("on")
+        assert cfg.agent_vision_mode == "on"
+
+    def test_case_insensitive(self):
+        """Value is normalised to lowercase."""
+        cfg = self._make_config("ON")
+        assert cfg.agent_vision_mode == "on"
+
+    def test_invalid_value_rejected_at_startup(self):
+        """Unknown mode fails construction with a clear message."""
+        with pytest.raises(ValueError, match="AGENT_VISION_MODE"):
+            self._make_config("sometimes")
+
+    def test_off_is_not_a_mode(self):
+        """'off' is not accepted — vision-off IS 'auto' (escalation stays armed)."""
+        with pytest.raises(ValueError, match="AGENT_VISION_MODE"):
+            self._make_config("off")
 
 
 class TestBrowserServiceConfigValidation:
@@ -128,7 +182,6 @@ class TestBrowserServiceConfigValidation:
         """A properly configured instance has no validation errors."""
         cfg = self._make_config_raw()
         cfg.llm.google_api_key = "valid-key"
-        cfg.robot_library = "browser"
         errors = cfg.validate()
         assert errors == []
 
@@ -138,14 +191,6 @@ class TestBrowserServiceConfigValidation:
         cfg.llm.google_api_key = ""
         errors = cfg.validate()
         assert any("GEMINI_API_KEY" in e for e in errors)
-
-    def test_validate_invalid_robot_library(self):
-        """Invalid ROBOT_LIBRARY value is reported."""
-        cfg = self._make_config_raw()
-        cfg.llm.google_api_key = "key"
-        cfg.robot_library = "puppeteer"
-        errors = cfg.validate()
-        assert any("ROBOT_LIBRARY" in e for e in errors)
 
     def test_validate_invalid_batch_values(self):
         """Negative/zero batch values are all reported."""
@@ -387,7 +432,6 @@ class TestVertexAIValidation:
         from browser_service.config import BatchConfig, LocatorConfig
         cfg.batch = BatchConfig()
         cfg.locator = LocatorConfig()
-        cfg.robot_library = "browser"
         cfg.headless = True
         cfg.enable_custom_actions = True
         cfg.max_concurrent_tasks = 10
@@ -449,3 +493,47 @@ class TestVertexAIValidation:
         cfg.llm.model_provider = "openai"
         errors = cfg.validate()
         assert any("openai" in e for e in errors)
+
+
+class TestCustomActionTimeoutConfig:
+    """
+    CUSTOM_ACTION_TIMEOUT is a browser-service env var (Task 4 / D5).
+
+    Before this knob existed, the locator-finder budget was resolved by
+    importing nlrf settings with a silent fallback to a hard-coded 5 —
+    setting the env var in browser-service changed nothing.
+    """
+
+    def _make_config(self, monkeypatch, value=None):
+        if value is None:
+            monkeypatch.delenv("CUSTOM_ACTION_TIMEOUT", raising=False)
+        else:
+            monkeypatch.setenv("CUSTOM_ACTION_TIMEOUT", value)
+        with patch(
+            "browser_service.config.BrowserServiceConfig._get_google_model",
+            return_value="gemini-2.5-flash",
+        ):
+            from browser_service.config import BrowserServiceConfig
+            return BrowserServiceConfig()
+
+    def test_default_is_5_when_unset(self, monkeypatch):
+        """No env var → 5 seconds (the historical hard-coded value)."""
+        cfg = self._make_config(monkeypatch)
+        assert cfg.locator.custom_action_timeout == 5
+
+    def test_env_var_overrides_default(self, monkeypatch):
+        """CUSTOM_ACTION_TIMEOUT=30 → 30. The knob must actually work."""
+        cfg = self._make_config(monkeypatch, "30")
+        assert cfg.locator.custom_action_timeout == 30
+
+    def test_non_numeric_falls_back_and_records_error(self, monkeypatch):
+        """Garbage input keeps the default and surfaces a parse error via validate()."""
+        cfg = self._make_config(monkeypatch, "abc")
+        assert cfg.locator.custom_action_timeout == 5
+        assert any("CUSTOM_ACTION_TIMEOUT" in e for e in cfg._parse_errors)
+
+    def test_non_positive_rejected_by_validate(self, monkeypatch):
+        """0 or negative budgets are configuration errors, matching ELEMENT_TIMEOUT."""
+        cfg = self._make_config(monkeypatch, "0")
+        errors = cfg.validate()
+        assert any("CUSTOM_ACTION_TIMEOUT" in e for e in errors)

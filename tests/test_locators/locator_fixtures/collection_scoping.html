@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Collection scoping fixture (Task 9 / A4)</title>
+</head>
+<body>
+  <!-- Section A — the analysis doc's Bootstrap example: every product sits
+       in <div class="row product-line">, but header, filter bar and footer
+       are also class="row" (Bootstrap's grid class). A page-global .row
+       would count 6; only the 3 product rows are the collection. -->
+  <div class="row"><h1>Our Store</h1></div>
+  <div class="row"><input placeholder="Filter products"></div>
+  <div class="products">
+    <div class="row product-line"><span>Product A</span><span>$10</span></div>
+    <div class="row product-line"><span>Product B</span><span>$20</span></div>
+    <div class="row product-line"><span>Product C</span><span>$30</span></div>
+  </div>
+  <div class="row"><footer>Copyright</footer></div>
+
+  <!-- Section B — the production .flex-grow-1 case: "grow" contains "row"
+       as a substring, and the two same-tag siblings made it a "collection".
+       Nothing here is a data collection. -->
+  <div class="panel">
+    <div class="flex-grow-1"><span>Test summary</span></div>
+    <div class="flex-grow-1"><span>Other summary</span></div>
+  </div>
+  <div class="flex-grow-1">sidebar</div>
+  <div class="flex-grow-1">widget</div>
+
+  <!-- Section C — the books.toscrape shape from the current log: product
+       cards are <li class="col-xs-6 ..."> inside an <ol class="row">; all
+       classes are grid utilities. A decoy col-xs-6 OUTSIDE the list proves
+       a page-global .col-xs-6 overcounts (5) where the structural
+       ol > li scope gives 4. -->
+  <ol class="row">
+    <li class="col-xs-6 col-sm-4"><a>A Light in the Attic</a></li>
+    <li class="col-xs-6 col-sm-4"><a>Tipping the Velvet</a></li>
+    <li class="col-xs-6 col-sm-4"><a>Soumission</a></li>
+    <li class="col-xs-6 col-sm-4"><a>Sharp Objects</a></li>
+  </ol>
+  <div class="col-xs-6">sidebar promo</div>
+
+  <!-- Section D — plain table rows: the structural case that must keep
+       working (scoped to tbody). -->
+  <table><tbody>
+    <tr><td>Alice Smith</td><td>alice@example.com</td></tr>
+    <tr><td>Bob Jones</td><td>bob@example.com</td></tr>
+  </tbody></table>
+
+  <!-- Section E — class-set similarity: three same-tag siblings, but only
+       one carries alert-row; a lone styled banner is not a collection. -->
+  <div class="dashboard">
+    <div class="alert-row"><span>Warning banner XYZ</span></div>
+    <div class="settings-box">Settings panel</div>
+    <div class="stats-box">Stats panel</div>
+  </div>
+</body>
+</html>

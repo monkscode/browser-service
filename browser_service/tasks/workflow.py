@@ -18,6 +18,43 @@ import time
 logger = logging.getLogger(__name__)
 from typing import Dict, Any, List, Optional
 
+from browser_service.locators.stability import (
+    STABLE,
+    score_stability,
+    stability_rank,
+)
+
+
+def rerank_sort_key(loc: dict) -> tuple:
+    """
+    PHASE-2 re-rank order (E1): stability tier first, quality score second.
+
+    A volatile id scores 100 on TYPE alone, so score-only sorting would
+    re-promote it above the stable name= the locator engine deliberately
+    chose — the re-ranker must read the same stability verdict as the
+    engine's candidate ordering or one silently undoes the other.
+    """
+    return (
+        stability_rank(loc.get('stability', STABLE)),
+        -loc.get('quality_score', 0),
+    )
+
+
+def commit_reranked_winner(result: dict, scored_locators: list[dict]) -> None:
+    """Point the top-level result fields at the reranked winner.
+
+    ``best_locator``, ``stability`` and ``all_locators`` describe the SAME
+    chosen locator and must move together. Updating ``best_locator`` while
+    leaving a prior winner's ``stability`` in place mislabels a
+    volatile/positional locator with the old tier (E1) — the emitted payload
+    then disagrees with ``all_locators[0]``. Assigning all three here makes
+    that drift unrepresentable.
+    """
+    winner = scored_locators[0]
+    result['best_locator'] = winner['locator']
+    result['stability'] = winner.get('stability', STABLE)
+    result['all_locators'] = scored_locators
+
 
 def bind_request_context(workflow_id=None, org_id=None, user_id=None) -> None:
     """Bind the FastAPI-supplied correlation id + org/user into structlog so every
@@ -37,6 +74,34 @@ def bind_request_context(workflow_id=None, org_id=None, user_id=None) -> None:
         ctx["user_id"] = user_id
     if ctx:
         structlog.contextvars.bind_contextvars(**ctx)
+
+
+def _resolve_use_vision(vision_mode: str, custom_actions_enabled: bool):
+    """Map config.agent_vision_mode to the browser-use Agent use_vision argument.
+
+    'on' → full vision on every step (escape hatch); 'auto' → vision-off with
+    failure-triggered escalation (registration.py attaches the screenshot to
+    the next LLM call via ActionResult metadata when find_unique_locator fails
+    validation). The escalation hook lives in the custom action, so the legacy
+    JS workflow (custom actions disabled) has no failure trigger — 'auto' there
+    would mean permanently blind; legacy always gets full vision."""
+    if not custom_actions_enabled:
+        return True
+    return True if vision_mode == "on" else "auto"
+
+
+def _apply_vision_mode(agent, use_vision) -> None:
+    """In 'auto' mode, drop the model-facing screenshot action from the schema.
+
+    browser-use auto-excludes it only when use_vision is not 'auto'
+    (agent/service.py:314-320), so 'auto' would otherwise pay the action's
+    schema tokens every call. The failure-triggered attachment is
+    registry-independent — message_manager reads ActionResult.metadata only —
+    so escalation keeps working with the action excluded (verified live,
+    forced-failure replay 2026-07-17)."""
+    if use_vision == "auto":
+        agent.tools.exclude_action("screenshot")
+
 
 # Import browser-use components
 from browser_use import Agent
@@ -251,6 +316,13 @@ def process_workflow_task(
         enable_custom_actions_flag = enable_custom_actions
         logger.info(f"🔧 Using ENABLE_CUSTOM_ACTIONS from API parameter: {enable_custom_actions_flag}")
 
+    # Browser handles for post-completion cleanup (Task 19 / TIER-0 0.2).
+    # run_unified_workflow() deposits whatever resources it created here; the
+    # sync wrapper below runs cleanup_browser_resources() with them AFTER the
+    # task is marked completed, so the polling client never waits through
+    # cleanup (median 11.7s/generation on the 2026-07-06 bench baseline).
+    cleanup_handles: Dict[str, Any] = {}
+
     async def run_unified_workflow():
         """Execute the entire workflow in ONE Agent session."""
         from browser_use.browser.session import BrowserSession
@@ -345,8 +417,7 @@ def process_workflow_task(
             # we use a simplified prompt where the agent only finds elements and returns coordinates.
             # Then Python uses Playwright's built-in methods for locator extraction and F12-style validation.
 
-            library_type = config.robot_library
-            logger.info(f"🔧 Using {library_type} library with Playwright validation")
+            logger.info("🔧 Using Browser Library with Playwright validation")
 
             # ========================================
             # FEATURE FLAG: ENABLE_CUSTOM_ACTIONS
@@ -361,7 +432,6 @@ def process_workflow_task(
                 user_query=user_query,
                 url=url,
                 elements=elements,
-                library_type=library_type,
                 include_custom_action=enable_custom_actions_flag,
                 client_hints=client_config.system_prompt_additions
             )
@@ -407,17 +477,20 @@ def process_workflow_task(
                 )
                 logger.info(f"🔑 Using Gemini API: model={config.llm.google_model}")
 
+            use_vision = _resolve_use_vision(config.agent_vision_mode, enable_custom_actions_flag)
             agent = Agent(
                 task=unified_objective,
                 browser_session=session,
                 llm=llm_instance,
-                use_vision=True,
+                use_vision=use_vision,
                 override_system_message=build_system_prompt(include_custom_action=enable_custom_actions_flag),
                 use_thinking=False,
                 calculate_cost=True,
                 use_judge=False
             )
-            
+            _apply_vision_mode(agent, use_vision)
+            logger.info(f"👁️ Agent vision mode: {config.agent_vision_mode} (use_vision={use_vision!r})")
+
             session.llm_screenshot_size = (VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
             logger.info(f"LLM screenshot size: {VIEWPORT_WIDTH}x{VIEWPORT_HEIGHT} (matches viewport)")
 
@@ -439,7 +512,7 @@ def process_workflow_task(
                 # Pass elements so the action handler can set is_done=True automatically when all
                 # expected element IDs have been processed, terminating the agent loop without
                 # relying on the LLM to call done() with the correct JSON format.
-                custom_actions_enabled = register_custom_actions(agent, page=None, elements=elements, workflow_id=task_id)
+                custom_actions_enabled = register_custom_actions(agent, page=None, elements=elements)
 
 
                 if custom_actions_enabled:
@@ -456,13 +529,17 @@ def process_workflow_task(
                         user_query=user_query,
                         url=url,
                         elements=elements,
-                        library_type=library_type,
                         include_custom_action=False,  # Fallback to legacy mode
                         client_hints=client_config.system_prompt_additions
                     )
                     agent.task = unified_objective
                     agent.override_system_message = build_system_prompt(include_custom_action=False)
-                    logger.info("✅ Agent prompts updated with legacy workflow instructions")
+                    # The escalation hook died with the failed registration —
+                    # 'auto' would leave the legacy agent permanently blind.
+                    # Mutating settings post-construction is browser-use's own
+                    # pattern (agent/service.py DeepSeek/XAI handling).
+                    agent.settings.use_vision = True
+                    logger.info("✅ Agent prompts updated with legacy workflow instructions (full vision restored)")
             else:
                 logger.info("⏭️ Skipping custom action registration (disabled via config)")
                 logger.info("   Using legacy workflow mode")
@@ -1066,8 +1143,7 @@ def process_workflow_task(
                                                     x=coords['x'],
                                                     y=coords['y'],
                                                     element_id=elem_id,
-                                                    element_description=elem_desc,
-                                                    library_type=library_type  # Pass library type from outer scope
+                                                    element_description=elem_desc
                                                 )
 
                                                 if smart_result.get('found') and smart_result.get('best_locator'):
@@ -1442,8 +1518,10 @@ def process_workflow_task(
                     logger.warning(f"⚠️ {element_id}: No locators available after filtering!")
                     continue
 
-                # Sort by score (highest first)
-                scored_locators.sort(key=lambda x: x.get('quality_score', 0), reverse=True)
+                # Stability tier first, quality score second (E1) — see
+                # rerank_sort_key for why score-only sorting would undo the
+                # locator engine's demotion.
+                scored_locators.sort(key=rerank_sort_key)
 
                 # Log top 3 locators with their scores for debugging
                 locator_type_label = "COLLECTION" if is_collection else "UNIQUE"
@@ -1477,8 +1555,7 @@ def process_workflow_task(
                     logger.info(f"      NEW: {new_best} (score: {new_score})")
                     re_ranked_count += 1
 
-                result['best_locator'] = new_best
-                result['all_locators'] = scored_locators
+                commit_reranked_winner(result, scored_locators)
 
             logger.info(f"✅ Re-ranking complete: {re_ranked_count}/{len(results_list)} elements upgraded")
 
@@ -1523,6 +1600,16 @@ def process_workflow_task(
 
                 # Check if element has ID attribute but best_locator is not ID type
                 if element_id_attr and element_id_attr != '':
+                    # A volatile id (ext-gen1042, tomselect-3, ...) was
+                    # deliberately demoted by the stability scorer (E1) —
+                    # forcing it back here would undo the demotion.
+                    if score_stability('id', element_id_attr) != STABLE:
+                        logger.info(
+                            f"   ⏭️ {elem_id}: id '{element_id_attr}' is volatile — "
+                            f"keeping stability-demoted best_locator {best_locator}"
+                        )
+                        continue
+
                     # Determine if best_locator is an ID locator.
                     # Accepts both Playwright explicit format (id=value) and
                     # CSS hash format (#value) — both target the ID attribute.
@@ -1555,9 +1642,12 @@ def process_workflow_task(
                             all_locators.pop(id_locator_index)
                             all_locators.insert(0, id_locator)
 
-                            # Update best_locator
-                            result['best_locator'] = id_locator['locator']
-                            result['all_locators'] = all_locators
+                            # Sync best_locator, stability and all_locators to
+                            # the forced ID winner together — leaving the
+                            # displaced non-id best's stability behind would
+                            # mislabel the now-stable ID locator (same drift
+                            # commit_reranked_winner prevents in the re-ranker).
+                            commit_reranked_winner(result, all_locators)
 
                             logger.info(
                                 f"   ✅ Corrected: {elem_id} now uses ID locator")
@@ -1763,13 +1853,14 @@ def process_workflow_task(
             # Playwright cache cleanup removed — no module-level cache exists.
             # Each custom action creates and destroys its own Playwright instance.
 
-            # Use comprehensive cleanup utility
-            await cleanup_browser_resources(
-                session=session,
-                connected_browser=connected_browser,
-                playwright_instance=playwright_instance,
-                browser_pid=browser_pid
-            )
+            # Task 19: do NOT clean up here. Deposit the handles for the sync
+            # wrapper, which runs cleanup AFTER publishing the completed status.
+            # This finally runs on success and on exception, so a session whose
+            # start() failed is still captured for cleanup.
+            cleanup_handles["session"] = session
+            cleanup_handles["connected_browser"] = connected_browser
+            cleanup_handles["playwright_instance"] = playwright_instance
+            cleanup_handles["browser_pid"] = browser_pid
 
     # Run the async workflow
     loop = asyncio.new_event_loop()
@@ -1827,6 +1918,26 @@ def process_workflow_task(
             }
         })
     finally:
+        # Task 19 (TIER-0 0.2): browser cleanup runs HERE, after the task was
+        # marked completed above — the polling client already has its results
+        # and stops waiting. The worker thread (and thus the concurrency slot's
+        # real capacity — executor max_workers == max_concurrent_tasks) is
+        # still held until Chrome is confirmed dead, so cleanup cannot leak:
+        # same guarantees as before, minus the user-visible wait.
+        try:
+            loop.run_until_complete(cleanup_browser_resources(
+                session=cleanup_handles.get("session"),
+                connected_browser=cleanup_handles.get("connected_browser"),
+                playwright_instance=cleanup_handles.get("playwright_instance"),
+                browser_pid=cleanup_handles.get("browser_pid"),
+            ))
+        except Exception as cleanup_error:
+            # Results are already published; a cleanup failure must never
+            # clobber them. The orphan-detection logging inside
+            # cleanup_browser_resources() and the PID-scoped cleanup_worker
+            # remain the safety net for leaked Chrome processes.
+            logger.error(f"⚠️ Post-completion browser cleanup failed: {cleanup_error}", exc_info=True)
+
         # Unset the thread-local loop BEFORE closing it.
         # ThreadPoolExecutor reuses worker threads; without this, the next task
         # on the same thread would inherit the closed loop from set_event_loop()

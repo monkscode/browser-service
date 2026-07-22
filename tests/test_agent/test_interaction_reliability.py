@@ -531,3 +531,122 @@ class TestTomSelectActionRemap:
         assert status == "auto_ok"
         assert action == "select"
         assert "elem_1" in performed_actions
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Task D (G4) — flatpickr Tier 0 in the input chain
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestFlatpickrInputTier:
+    """datepicker_framework='flatpickr' routes input actions through the
+    widget's setDate API BEFORE any fill/type tier. Readonly flatpickr
+    inputs never become editable, so fill() waits its full timeout and
+    triple_click leaves the calendar overlay open — the JS tier is the
+    only deterministic path (verified live on ASTPP 2026-07-08)."""
+
+    async def test_setdate_js_runs_before_fill(self, performed_actions):
+        _, _do_interaction_playwright = _import_helpers()
+
+        mock_page = MagicMock()
+        mock_loc = MagicMock()
+        mock_page.locator.return_value = mock_loc
+        mock_loc.evaluate = AsyncMock(return_value="ok")
+        mock_loc.fill = AsyncMock()
+
+        note, status = await _do_interaction_playwright(
+            active_page=mock_page,
+            locator_str="id=customer_cdr_from_date",
+            action="input",
+            value="2026-07-01",
+            element_id="elem_1",
+            performed_actions=performed_actions,
+            datepicker_framework="flatpickr",
+        )
+
+        assert status == "auto_ok", f"Expected auto_ok, got {status!r}: {note}"
+        assert "flatpickr" in note.lower()
+        mock_loc.evaluate.assert_awaited_once()
+        mock_loc.fill.assert_not_awaited()
+        assert "elem_1" in performed_actions
+
+    async def test_setdate_diag_failure_falls_through_to_fill(self, performed_actions):
+        """Fail-open contract: a 'no_fp' diag (element lost its instance)
+        must fall through to the generic input tiers, same as Tom Select."""
+        _, _do_interaction_playwright = _import_helpers()
+
+        mock_page = MagicMock()
+        mock_loc = MagicMock()
+        mock_page.locator.return_value = mock_loc
+        mock_loc.evaluate = AsyncMock(return_value="no_fp")
+        mock_loc.fill = AsyncMock()
+        mock_loc.input_value = AsyncMock(return_value="2026-07-01")
+
+        note, status = await _do_interaction_playwright(
+            active_page=mock_page,
+            locator_str="id=customer_cdr_from_date",
+            action="input",
+            value="2026-07-01",
+            element_id="elem_1",
+            performed_actions=performed_actions,
+            datepicker_framework="flatpickr",
+        )
+
+        assert status == "auto_ok"
+        mock_loc.fill.assert_awaited_once()
+        assert "elem_1" in performed_actions
+
+    async def test_no_datepicker_framework_skips_js_tier(self, performed_actions):
+        """Plain inputs must be untouched — no widget JS ever runs."""
+        _, _do_interaction_playwright = _import_helpers()
+
+        mock_page = MagicMock()
+        mock_loc = MagicMock()
+        mock_page.locator.return_value = mock_loc
+        mock_loc.evaluate = AsyncMock()
+        mock_loc.fill = AsyncMock()
+        mock_loc.input_value = AsyncMock(return_value="hello")
+
+        note, status = await _do_interaction_playwright(
+            active_page=mock_page,
+            locator_str="#search_box",
+            action="input",
+            value="hello",
+            element_id="elem_1",
+            performed_actions=performed_actions,
+        )
+
+        assert status == "auto_ok"
+        mock_loc.evaluate.assert_not_awaited()
+        mock_loc.fill.assert_awaited_once()
+
+    async def test_event_path_skipped_for_flatpickr(self, performed_actions):
+        """browser-use's TypeTextEvent 'succeeds' uselessly on a readonly
+        input — _do_interaction must skip the event path entirely (same
+        contract as Tom Select) so the JS tier runs."""
+        _do_interaction, _ = _import_helpers()
+
+        mock_bs = AsyncMock()
+
+        mock_page = MagicMock()
+        mock_page.wait_for_load_state = AsyncMock()
+        mock_loc = MagicMock()
+        mock_page.locator.return_value = mock_loc
+        mock_loc.evaluate = AsyncMock(return_value="ok")
+
+        element_specs = {"elem_1": {"action": "input", "value": "2026-07-01"}}
+
+        note, status, action, value = await _do_interaction(
+            browser_session=mock_bs,
+            active_page=mock_page,
+            locator_str="id=customer_cdr_from_date",
+            element_id="elem_1",
+            element_index=7,
+            element_specs=element_specs,
+            performed_actions=performed_actions,
+            datepicker_framework="flatpickr",
+        )
+
+        assert status == "auto_ok"
+        mock_bs.get_element_by_index.assert_not_awaited()
+        mock_loc.evaluate.assert_awaited_once()
+        assert "elem_1" in performed_actions

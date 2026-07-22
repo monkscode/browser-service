@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head><title>Semantic surface carve-out fixture (q05 shape)</title></head>
+<body>
+  <!-- ASTPP customer_add shape, live-verified 2026-07-17: the label's for=
+       points at an id the input does not have, so el.labels is EMPTY and
+       the input's entire semantic surface (placeholder/aria/value/label)
+       is blank. -->
+  <div class="form-group">
+    <label for="Email">Email<span> *</span></label>
+    <input type="text" name="email" class="text field medium form-control">
+  </div>
+
+  <!-- Control case: a placeholder-bearing input whose surface genuinely
+       disagrees with "Email *" — the carve-out must NOT rescue this. -->
+  <div class="form-group">
+    <label for="Username">Username<span> *</span></label>
+    <input type="text" name="username" placeholder="Enter Username" class="text field">
+  </div>
+
+  <!-- Non-interactive surface-less node: never carved out. -->
+  <div id="empty-div" class="decor"></div>
+</body>
+</html>

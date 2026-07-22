@@ -36,8 +36,18 @@ import logging
 import re
 from typing import Optional
 
+from browser_service.locators.stability import (
+    STABLE,
+    is_dynamic_text,
+    score_stability,
+)
+
 # Get logger
 logger = logging.getLogger(__name__)
+
+# Class tokens usable as a bare `.class` selector — anything with CSS meta
+# characters (Tailwind `w-1/2`, `md:flex`) is skipped rather than escaped.
+_CSS_IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_-]*$')
 
 
 class _PlaywrightConnectionError(RuntimeError):
@@ -77,17 +87,35 @@ def _extract_dom_node_attributes(dom_node) -> dict:
         Dictionary with standard element attributes
     """
     attrs = dom_node.attributes if hasattr(dom_node, 'attributes') else {}
+    # Carry WHICH test attribute produced the value — an element with only
+    # data-test must not be looked up as [data-testid=...] (0 matches, hook lost).
+    data_test_attr = (
+        'data-test'
+        if (not attrs.get('data-testid') and attrs.get('data-test'))
+        else 'data-testid'
+    )
+    # Task G parent scan: Bootstrap-3-style conventions mark invalid fields
+    # on the PARENT div (form-group has-error) while the field's own class
+    # list stays clean — carry the immediate parent's classes as evidence.
+    parent = getattr(dom_node, 'parent_node', None)
+    parent_attrs = getattr(parent, 'attributes', None) if parent is not None else None
+    parent_class = parent_attrs.get('class', '') if isinstance(parent_attrs, dict) else ''
     return {
         'tagName': dom_node.node_name.lower() if hasattr(dom_node, 'node_name') else '',
         'id': attrs.get('id', ''),
         'name': attrs.get('name', ''),
         'className': attrs.get('class', ''),
         'ariaLabel': attrs.get('aria-label', ''),
+        # Task G (nlrf G7): ARIA invalid-state signal — nlrf's state-verification
+        # assembler emits a Get Attribute assertion when the field carries it.
+        'ariaInvalid': attrs.get('aria-invalid', ''),
+        'parentClassName': parent_class,
         'placeholder': attrs.get('placeholder', ''),
         'title': attrs.get('title', ''),
         'href': attrs.get('href', ''),
         'role': attrs.get('role', ''),
         'dataTestId': attrs.get('data-testid', '') or attrs.get('data-test', ''),
+        'dataTestAttr': data_test_attr,
         'type': attrs.get('type', ''),  # For input elements
         'value': attrs.get('value', ''),  # Current value of input
         'xpath': dom_node.xpath if hasattr(dom_node, 'xpath') else '',
@@ -112,39 +140,81 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
     """
     if not selector_map or not coords:
         return None, None
-    
+
     x, y = coords
-    iframe_ordinal = 0
-    
-    for _idx, elem in selector_map.items():
-        if hasattr(elem, 'node_name') and elem.node_name.lower() == 'iframe':
-            if hasattr(elem, 'absolute_position') and elem.absolute_position:
-                pos = elem.absolute_position
-                # Check if coordinates are within iframe bounds
-                if (pos.x <= x <= pos.x + pos.width and
-                    pos.y <= y <= pos.y + pos.height):
-                    # Get iframe identifier
-                    attrs = elem.attributes if hasattr(elem, 'attributes') else {}
-                    iframe_id = attrs.get('id', '')
-                    iframe_name = attrs.get('name', '')
-                    
-                    # Generate locator for the iframe using attribute selectors
-                    # Escape special characters to prevent selector injection
-                    if iframe_id:
-                        # Escape \ and " for CSS attribute selector
-                        iframe_id_escaped = iframe_id.replace('\\', '\\\\').replace('"', '\\"')
-                        iframe_locator = f'iframe[id="{iframe_id_escaped}"]'
-                    elif iframe_name:
-                        iframe_name_escaped = iframe_name.replace('\\', '\\\\').replace('"', '\\"')
-                        iframe_locator = f'iframe[name="{iframe_name_escaped}"]'
-                    else:
-                        # Fallback: use ordinal-based selector (0-indexed count of iframes)
-                        iframe_locator = f"iframe >> nth={iframe_ordinal}"
-                    
-                    logger.info(f"🖼️ IFRAME DETECTED: Element at ({x}, {y}) is inside {iframe_locator}")
-                    return iframe_locator, iframe_id or iframe_name or str(iframe_ordinal)
-            iframe_ordinal += 1
-    
+
+    def _esc(value: str) -> str:
+        """Escape \\ and " for a CSS attribute selector."""
+        return value.replace('\\', '\\\\').replace('"', '\\"')
+
+    def _attrs_of(node) -> dict:
+        return node.attributes if hasattr(node, 'attributes') else {}
+
+    # Collect iframes first (selector_map order = ordinal parity with the
+    # pre-G6 behavior) so title/class uniqueness can be checked against
+    # the other iframes browser-use indexed.
+    iframes = [
+        elem for elem in selector_map.values()
+        if hasattr(elem, 'node_name') and elem.node_name.lower() == 'iframe'
+    ]
+
+    for iframe_ordinal, elem in enumerate(iframes):
+        if not (hasattr(elem, 'absolute_position') and elem.absolute_position):
+            continue
+        pos = elem.absolute_position
+        # Check if coordinates are within iframe bounds
+        if not (pos.x <= x <= pos.x + pos.width and
+                pos.y <= y <= pos.y + pos.height):
+            continue
+
+        attrs = _attrs_of(elem)
+        iframe_id = attrs.get('id', '')
+        iframe_name = attrs.get('name', '')
+        iframe_title = (attrs.get('title', '') or '').strip()
+        iframe_classes = (attrs.get('class', '') or '').split()
+        others = [o for o in iframes if o is not elem]
+
+        # Generate locator for the iframe using attribute selectors.
+        # Cascade (G6): id → name → title → unique stable class → ordinal.
+        # The ordinal is last because async third-party iframes (ASTPP:
+        # #jsd-widget) shift iframe order between discovery and RF
+        # runtime — `iframe >> nth=N` then points at a DIFFERENT frame.
+        iframe_locator = None
+        if iframe_id:
+            iframe_locator = f'iframe[id="{_esc(iframe_id)}"]'
+        elif iframe_name:
+            iframe_locator = f'iframe[name="{_esc(iframe_name)}"]'
+        else:
+            title_taken_by_other = any(
+                (_attrs_of(o).get('title', '') or '').strip() == iframe_title
+                for o in others
+            )
+            if (iframe_title and not is_dynamic_text(iframe_title)
+                    and not title_taken_by_other):
+                # CKEditor 4 body: title="Rich Text Editor, {field}" —
+                # deterministic per editor instance, no id/name.
+                iframe_locator = f'iframe[title="{_esc(iframe_title)}"]'
+            else:
+                for cls in iframe_classes:
+                    if not _CSS_IDENTIFIER_RE.match(cls):
+                        continue  # CSS meta chars — not a bare .class token
+                    if score_stability('class', cls) != STABLE:
+                        continue  # init-order counters (cke_1) die next session
+                    if any(cls in (_attrs_of(o).get('class', '') or '').split()
+                           for o in others):
+                        continue  # shared with another iframe — ambiguous
+                    iframe_locator = f'iframe.{cls}'
+                    break
+            if iframe_locator is None:
+                # Last resort: ordinal (0-indexed count of iframes).
+                # Downstream marks the whole composite positional (B2).
+                iframe_locator = f"iframe >> nth={iframe_ordinal}"
+
+        logger.info(f"🖼️ IFRAME DETECTED: Element at ({x}, {y}) is inside {iframe_locator}")
+        identifier = (iframe_id or iframe_name or iframe_title
+                      or str(iframe_ordinal))
+        return iframe_locator, identifier
+
     return None, None
 
 
@@ -397,6 +467,7 @@ async def _dispatch_browser_use_event(
 async def _do_interaction_playwright(
     active_page, locator_str: str, action: str, value: str, element_id: str, performed_actions: set,
     dropdown_framework: str = "", select_id: str | None = None,
+    datepicker_framework: str = "",
 ):
     """Playwright fallback with layered retry chains.
 
@@ -407,6 +478,37 @@ async def _do_interaction_playwright(
         if action in ("input", "type"):
             if not value:
                 return "", "not_applicable"
+
+            # Tier 0 (flatpickr): the widget's own API is the only
+            # deterministic path — the input is readonly, so fill() below
+            # would wait its full timeout and triple_click would open the
+            # calendar overlay and leave it over the page. setDate parses
+            # the value with the instance's own date format (lenient with
+            # date-only values — verified live on ASTPP 2026-07-08).
+            if datepicker_framework == "flatpickr":
+                try:
+                    diag = await loc.evaluate(
+                        """(el, v) => {
+                            try {
+                                const fp = el._flatpickr;
+                                if (!fp) return 'no_fp';
+                                fp.setDate(v, true);
+                                if (!fp.selectedDates || fp.selectedDates.length === 0) return 'no_date';
+                                return 'ok';
+                            } catch(e) {
+                                return 'error:' + e.message;
+                            }
+                        }""",
+                        value,
+                    )
+                    if diag == "ok":
+                        performed_actions.add(element_id)
+                        return f"\n✅ AUTO-ACTION COMPLETE: Set date '{value}' (flatpickr setDate JS)", "auto_ok"
+                    logger.info(f"   ⚠️ flatpickr.tier0_js_failed: reason={diag} locator={locator_str!r} value={value!r}")
+                except Exception as e:
+                    logger.warning(f"   ⚠️ flatpickr.tier0_exception: locator={locator_str!r} error={e}")
+                # Fall through to the generic input tiers — fail-open,
+                # same contract as the Tom Select JS tiers.
 
             # Tier 1: fill() — fires input/change events
             try:
@@ -684,6 +786,7 @@ async def _do_interaction(
     performed_actions: set,
     dropdown_framework: str = "",
     select_id: str | None = None,
+    datepicker_framework: str = "",
 ):
     """Orchestrate the interaction for one element — event path first, Playwright fallback second.
 
@@ -724,7 +827,12 @@ async def _do_interaction(
     # Calling get_element_by_index() (a real CDP round-trip) only to get (None, None) from
     # _dispatch_browser_use_event is wasteful. Playwright's loc.check() / loc.uncheck() are
     # state-aware; go there directly without any event-path overhead.
-    if action not in ("check", "uncheck") and dropdown_framework != "tom-select":
+    # flatpickr skips it for the same reason: TypeTextEvent "succeeds" against the
+    # readonly input without changing widget state — only the Playwright path's
+    # setDate JS tier actually sets the date.
+    if (action not in ("check", "uncheck")
+            and dropdown_framework != "tom-select"
+            and datepicker_framework != "flatpickr"):
         if element_index is not None and browser_session is not None:
             try:
                 node = await asyncio.wait_for(
@@ -746,13 +854,14 @@ async def _do_interaction(
     note, status = await _do_interaction_playwright(
         active_page, locator_str, action, value, element_id, performed_actions,
         dropdown_framework=dropdown_framework, select_id=select_id,
+        datepicker_framework=datepicker_framework,
     )
     if action in ("click", "submit", "select") and status == "auto_ok":
         await _wait_for_page_stability(active_page)
     return note, status, action, value
 
 
-def register_custom_actions(agent, page=None, elements=None, workflow_id: str = "") -> bool:
+def register_custom_actions(agent, page=None, elements=None) -> bool:
     """
     Register custom actions with browser-use agent.
 
@@ -787,18 +896,6 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
         # Import the action implementation
         from browser_service.agent.actions import find_unique_locator_action
 
-        # Import settings (with fallback for standalone mode)
-        try:
-            from src.backend.core.config import settings as _nl_settings
-        except ImportError:
-            _nl_settings = None
-
-        # Resolve timeout (default matches NL repo config)
-        if _nl_settings is not None and hasattr(_nl_settings, 'CUSTOM_ACTION_TIMEOUT'):
-            custom_action_timeout = _nl_settings.CUSTOM_ACTION_TIMEOUT
-        else:
-            custom_action_timeout = 5
-
         # ========================================
         # COMPLETION TRACKING (closure variables)
         # ========================================
@@ -817,6 +914,13 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
         _expected_element_ids: set = set(_element_specs.keys())
         _total_expected: int = len(_expected_element_ids)
         _completed_elements: dict = {}  # element_id → best_locator (mutated by inner function)
+        # D3 (dialog-clobber): element_id → True when the stored result was
+        # fully validated (validated=True and semantic_match not False).
+        # A re-query may only replace a fully-validated result with another
+        # fully-validated one — the clobber run overwrote the correct Sign
+        # In locator with a semantically-mismatched dialog found at the
+        # WRONG page state (announcement modal up, 43s after validation).
+        _completed_quality: dict = {}
         _performed_actions: set = set()  # idempotency guard — per register_custom_actions() call = per workflow
 
         # ========================================
@@ -952,11 +1056,25 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
             )
             element_index: Optional[int] = Field(
                 default=None,
-                description="Element index from browser state (e.g., 23 from '[23] Services'). When provided, we get the exact element from browser-use's DOM, ensuring precise locator generation. HIGHLY RECOMMENDED for accuracy."
+                description="REQUIRED — always provide it. Element index from the DOM state (e.g., 23 from '[23] Services'); we extract the exact element and its attributes from browser-use's DOM. Omitting it forces less accurate coordinate-based fallbacks."
             )
             is_collection: Optional[bool] = Field(
                 default=None,
                 description="Set to true if this element represents a COLLECTION (e.g., table rows, list items). When true, returns multi-element locator instead of single-element locator."
+            )
+            row_anchor_text: Optional[str] = Field(
+                default=None,
+                description=(
+                    "When the target is a PER-ROW action inside a table or "
+                    "repeated list (Edit/Delete/Download icon, row checkbox, "
+                    "row link) and the task identifies WHICH row by its data, "
+                    "pass that row-identifying text EXACTLY as visible in the "
+                    "row. Example: task 'Edit customer 64625' -> "
+                    "row_anchor_text='64625'. The engine anchors the locator "
+                    "to the row containing this text instead of a brittle "
+                    "positional index. Leave blank for elements that appear "
+                    "once on the page (toolbar buttons, form fields)."
+                )
             )
             # Vision-derived classification piggybacked on the per-step LLM
             # call. The locator pipeline corroborates this against a live
@@ -965,7 +1083,8 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
             # never unilateral. See docs/ELEMENT_TYPE_CLASSIFIER_ARCHITECTURE.md.
             element_type: Optional[Literal[
                 "dropdown", "checkbox", "radio", "input", "button",
-                "link", "image", "label", "text-area", "table", "other",
+                "link", "image", "label", "text-area", "table",
+                "file-upload", "date-picker", "other",
             ]] = Field(
                 default=None,
                 description=(
@@ -981,6 +1100,8 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                 # Dropdown frameworks
                 "tom-select", "select2", "kendo", "react-select",
                 "vue-select", "ant-design", "material-ui",
+                # Date-picker frameworks
+                "flatpickr",
                 # Table / grid frameworks
                 "datatables", "ag-grid", "material-table", "react-table",
                 # Generic — visible widget looks like a plain HTML control
@@ -1186,16 +1307,6 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                             )
 
                             if dom_node is not None:
-                                try:
-                                    stable_hash = dom_node.compute_stable_hash()
-                                except Exception as e:
-                                    logger.debug(f"   ⚠️ compute_stable_hash failed: {e}")
-                                else:
-                                    logger.info(
-                                        f"📊 LOCATOR_PROBE workflow_id={workflow_id or 'unknown'} "
-                                        f"stable_hash={stable_hash} "
-                                        f"element_id={params.element_id}"
-                                    )
                                 logger.info(f"   ✅ Found element [{idx}] at coordinates!")
                                 elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
                                 logger.info(f"   📝 Element tag: <{elem_tag}>")
@@ -1255,120 +1366,94 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                 # Lazy connect: one Playwright connection per agent.run(), reused across all calls.
                 active_page = await _ensure_playwright(browser_session)
 
-                try:
-                    final_x, final_y = scaled_x, scaled_y
-                    if confirmed_coords:
-                        final_x, final_y = confirmed_coords
-                        logger.info(f"Using DOM-confirmed coordinates: ({final_x}, {final_y})")
-                    else:
-                        logger.info(f"Using scaled coordinates: ({final_x}, {final_y})")
+                final_x, final_y = scaled_x, scaled_y
+                if confirmed_coords:
+                    final_x, final_y = confirmed_coords
+                    logger.info(f"Using DOM-confirmed coordinates: ({final_x}, {final_y})")
+                else:
+                    logger.info(f"Using scaled coordinates: ({final_x}, {final_y})")
                     
                     
-                    # ========================================
-                    # IFRAME DETECTION: Check if element is inside an iframe
-                    # ========================================
-                    iframe_context = None
-                    if selector_map:
-                        iframe_context, _ = _detect_iframe_context(
-                            selector_map, (final_x, final_y)
-                        )
-                        if iframe_context:
-                            logger.info(f"   Element will be searched inside iframe: {iframe_context}")
+                # ========================================
+                # IFRAME DETECTION: Check if element is inside an iframe
+                # ========================================
+                iframe_context = None
+                if selector_map:
+                    iframe_context, _ = _detect_iframe_context(
+                        selector_map, (final_x, final_y)
+                    )
+                    if iframe_context:
+                        logger.info(f"   Element will be searched inside iframe: {iframe_context}")
                             
-                            # ========================================
-                            # IFRAME ELEMENT HANDLING (Optional Refinement)
-                            # ========================================
-                            # COORDINATE ASSUMPTION: Browser-use provides page-absolute coordinates
-                            # via `absolute_position` which includes accumulated `total_frame_offset`
-                            # from parent iframes (see browser_use/dom/service.py lines 530-535).
-                            #
-                            # EDGE CASES where this may fail silently:
-                            # - Cross-origin iframes (may have iframe-relative coords)
-                            # - Dynamically loaded content (not yet indexed)
-                            #
-                            # GRACEFUL FALLBACK: If bbox matching fails, find_unique_locator_action
-                            # handles iframe_context properly with coordinate translation.
-                            # This override is an OPTIMIZATION, not required for correctness.
+                        # ========================================
+                        # IFRAME ELEMENT HANDLING (Optional Refinement)
+                        # ========================================
+                        # COORDINATE ASSUMPTION: Browser-use provides page-absolute coordinates
+                        # via `absolute_position` which includes accumulated `total_frame_offset`
+                        # from parent iframes (see browser_use/dom/service.py lines 530-535).
+                        #
+                        # EDGE CASES where this may fail silently:
+                        # - Cross-origin iframes (may have iframe-relative coords)
+                        # - Dynamically loaded content (not yet indexed)
+                        #
+                        # GRACEFUL FALLBACK: If bbox matching fails, find_unique_locator_action
+                        # handles iframe_context properly with coordinate translation.
+                        # This override is an OPTIMIZATION, not required for correctness.
                             
-                            logger.info(f"🖼️ Iframe detected - attempting element lookup from selector_map")
-                            logger.info(f"   📊 Selector map has {len(selector_map)} elements")
+                        logger.info(f"🖼️ Iframe detected - attempting element lookup from selector_map")
+                        logger.info(f"   📊 Selector map has {len(selector_map)} elements")
                             
-                            try:
-                                # Find element by coordinates in selector_map — skip the iframe
-                                # itself (we want the contained element) and page wrappers
-                                # (see _find_smallest_containing_element for wrapper rationale).
-                                if selector_map:
-                                    viewport_area = viewport_w * viewport_h
-                                    idx, dom_node = _find_smallest_containing_element(
-                                        selector_map,
-                                        (final_x, final_y),
-                                        viewport_area,
-                                        skip_tag='IFRAME',
-                                    )
+                        try:
+                            # Find element by coordinates in selector_map — skip the iframe
+                            # itself (we want the contained element) and page wrappers
+                            # (see _find_smallest_containing_element for wrapper rationale).
+                            if selector_map:
+                                viewport_area = viewport_w * viewport_h
+                                idx, dom_node = _find_smallest_containing_element(
+                                    selector_map,
+                                    (final_x, final_y),
+                                    viewport_area,
+                                    skip_tag='IFRAME',
+                                )
 
-                                    if dom_node is not None:
-                                        logger.info(f"   ✅ Found element [{idx}] inside iframe!")
-                                        elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
-                                        logger.info(f"   📝 Element tag: <{elem_tag}>")
+                                if dom_node is not None:
+                                    logger.info(f"   ✅ Found element [{idx}] inside iframe!")
+                                    elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
+                                    logger.info(f"   📝 Element tag: <{elem_tag}>")
                                         
-                                        # Update element_data_from_index with the correct element
-                                        element_data_from_index = _extract_dom_node_attributes(dom_node)
-                                        if hasattr(dom_node, 'get_meaningful_text_for_llm'):
-                                            element_data_from_index['textContent'] = dom_node.get_meaningful_text_for_llm()
-                                        elif hasattr(dom_node, 'get_all_children_text'):
-                                            element_data_from_index['textContent'] = dom_node.get_all_children_text()
+                                    # Update element_data_from_index with the correct element
+                                    element_data_from_index = _extract_dom_node_attributes(dom_node)
+                                    if hasattr(dom_node, 'get_meaningful_text_for_llm'):
+                                        element_data_from_index['textContent'] = dom_node.get_meaningful_text_for_llm()
+                                    elif hasattr(dom_node, 'get_all_children_text'):
+                                        element_data_from_index['textContent'] = dom_node.get_all_children_text()
                                         
-                                        logger.info(f"   📝 Element id: {element_data_from_index.get('id', 'N/A')}")
-                                    else:
-                                        logger.info(f"   ℹ️ No bbox match found - will use find_unique_locator_action fallback")
-                                        logger.debug(f"   (This is normal for cross-origin iframes or coord system mismatch)")
+                                    logger.info(f"   📝 Element id: {element_data_from_index.get('id', 'N/A')}")
                                 else:
-                                    logger.info(f"   ℹ️ No selector_map available - will use find_unique_locator_action fallback")
-                            except Exception as e:
-                                logger.warning(f"   ⚠️ Element lookup failed: {e}")
-                                logger.debug("   Full error:", exc_info=True)
+                                    logger.info(f"   ℹ️ No bbox match found - will use find_unique_locator_action fallback")
+                                    logger.debug(f"   (This is normal for cross-origin iframes or coord system mismatch)")
+                            else:
+                                logger.info(f"   ℹ️ No selector_map available - will use find_unique_locator_action fallback")
+                        except Exception as e:
+                            logger.warning(f"   ⚠️ Element lookup failed: {e}")
+                            logger.debug("   Full error:", exc_info=True)
                     
-                    result = await asyncio.wait_for(
-                        find_unique_locator_action(
-                            x=final_x,  # Use confirmed or scaled coordinates
-                            y=final_y,  # Use confirmed or scaled coordinates
-                            element_id=params.element_id,
-                            element_description=params.element_description,
-                            expected_text=params.expected_text,  # Pass expected_text for semantic validation
-                            candidate_locator=params.candidate_locator,
-                            element_data=element_data_from_index,  # Pass element attributes from DOM
-                            page=active_page,
-                            iframe_context=iframe_context,  # Pass iframe context if detected
-                            is_collection=params.is_collection,  # Pass collection flag for multi-element detection
-                            browser_session=browser_session,  # For resolved_node lookup (DELTA 1)
-                            vision_type_hint=params.element_type,  # LLM's visual type classification (1 of 2 sources)
-                            vision_framework_hint=params.framework_hint,  # LLM's framework guess (any specialized type)
-                        ),
-                        timeout=custom_action_timeout
-                    )
-                except asyncio.TimeoutError:
-                    # Handle timeout gracefully
-                    timeout_msg = (
-                        f"Custom action timed out after {custom_action_timeout} seconds "
-                        f"for element {params.element_id}"
-                    )
-                    logger.error(f"⏱️ {timeout_msg}")
-                    logger.error(f"   Element: {params.element_id} - {params.element_description}")
-                    logger.error(f"   Coordinates: ({params.x}, {params.y})")
-
-                    # Return error result
-                    result = {
-                        'element_id': params.element_id,
-                        'description': params.element_description,
-                        'found': False,
-                        'error': timeout_msg,
-                        'coordinates': {'x': params.x, 'y': params.y},
-                        'validated': False,
-                        'count': 0,
-                        'unique': False,
-                        'valid': False,
-                        'validation_method': 'playwright'
-                    }
+                result = await find_unique_locator_action(
+                    x=final_x,  # Use confirmed or scaled coordinates
+                    y=final_y,  # Use confirmed or scaled coordinates
+                    element_id=params.element_id,
+                    element_description=params.element_description,
+                    expected_text=params.expected_text,  # Pass expected_text for semantic validation
+                    candidate_locator=params.candidate_locator,
+                    element_data=element_data_from_index,  # Pass element attributes from DOM
+                    page=active_page,
+                    iframe_context=iframe_context,  # Pass iframe context if detected
+                    is_collection=params.is_collection,  # Pass collection flag for multi-element detection
+                    browser_session=browser_session,  # For resolved_node lookup (DELTA 1)
+                    vision_type_hint=params.element_type,  # LLM's visual type classification (1 of 2 sources)
+                    vision_framework_hint=params.framework_hint,  # LLM's framework guess (any specialized type)
+                    row_anchor_text=params.row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
+                )
 
                 # Convert result to ActionResult format
                 action_result = None
@@ -1381,11 +1466,49 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                     validation_method = result.get('validation_method', 'playwright')
 
                     # ========================================
+                    # D3 — RE-REGISTRATION DOWNGRADE GUARD
+                    # ========================================
+                    # Strong = validated and not an explicitly-degraded path
+                    # (degraded paths mark semantic_match=False; strong paths
+                    # set True or omit the key). A strong stored result is
+                    # never replaced by a weak re-query: the first validation
+                    # ran at the step-order-correct page state, the re-query
+                    # did not. The blocked ActionResult carries NO metadata,
+                    # so workflow.py's extraction never sees the weak result.
+                    _new_strong = bool(result.get('validated')) and result.get('semantic_match') is not False
+                    _prev_locator = _completed_elements.get(params.element_id)
+                    if (
+                        _prev_locator is not None
+                        and _completed_quality.get(params.element_id, False)
+                        and not _new_strong
+                    ):
+                        logger.info(
+                            f"   ⛔ Re-query for {params.element_id} returned a "
+                            f"lower-confidence result ({result.get('best_locator')}) "
+                            f"— keeping the validated locator {_prev_locator} "
+                            f"(signal: re-registration-downgrade-blocked)"
+                        )
+                        return ActionResult(
+                            extracted_content=(
+                                f"✅ Element {params.element_id} is already validated.\n"
+                                f"Locator: {_prev_locator}\n"
+                                f"The new lower-confidence result was discarded — "
+                                f"the earlier validated locator stands. "
+                                f"Proceed to the next element."
+                            ),
+                            long_term_memory=(
+                                f"{params.element_id} validated = {_prev_locator}"
+                            ),
+                        )
+
+                    # ========================================
                     # COMPLETION TRACKING
                     # ========================================
                     # Record this element as done. Use the element_id as the dict key so
-                    # repeated calls for the same element overwrite rather than double-count.
+                    # repeated calls for the same element overwrite rather than double-count
+                    # (downgrades excepted — blocked above).
                     _completed_elements[params.element_id] = best_locator
+                    _completed_quality[params.element_id] = _new_strong
 
                     # Determine whether every expected element has been processed.
                     # Guard: _total_expected == 0 means elements=None/[] was passed, so we
@@ -1403,6 +1526,7 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                         _element_specs, _performed_actions,
                         dropdown_framework=result.get("dropdown_framework") or "",
                         select_id=result.get("select_id") or None,
+                        datepicker_framework=result.get("datepicker_framework") or "",
                     )
                     result["interaction_status"] = interaction_status
                     _idx = params.element_index
@@ -1531,7 +1655,9 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                             f"Fallback strategies failed for '{params.element_id}'. "
                             f"Reason: {fallback_error}. "
                             f"This may be an interactable element that requires element_index. "
-                            f"Please look at the current DOM state, find the element described as "
+                            f"A screenshot of the current page is attached to your next "
+                            f"message (when available) — re-examine it together with the "
+                            f"DOM state, find the element described as "
                             f"'{params.element_description}', identify its index number "
                             f"(e.g., [42] for index 42), and call find_unique_locator again "
                             f"with element_index set to that number. "
@@ -1548,15 +1674,27 @@ def register_custom_actions(agent, page=None, elements=None, workflow_id: str = 
                         logger.info(f"   Action: Requesting LLM to retry with element_index")
                         logger.info(f"{'='*80}")
                         logger.info(f"")
+                        # A1-INLINE escalation: metadata={'include_screenshot': True}
+                        # makes browser-use attach the current screenshot to the
+                        # NEXT LLM call (message_manager/service.py:444-464) —
+                        # vision-off runs get sight at the moment of failure,
+                        # same run, same page state.
                         action_result = ActionResult(
                             extracted_content=retry_msg,
-                            error=retry_msg
+                            error=retry_msg,
+                            metadata={"include_screenshot": True},
                         )
                     else:
                         # element_index WAS provided but still failed
                         action_result = ActionResult(
-                            error=f"FAILED: Could not find unique locator for {params.element_id}. Error: {fallback_error}. Try different coordinates or description.",
-                            is_done=False  # Let agent try again with different approach
+                            error=(
+                                f"FAILED: Could not find unique locator for {params.element_id}. "
+                                f"Error: {fallback_error}. A screenshot of the current page is "
+                                f"attached to your next message (when available) — re-examine "
+                                f"the element in it and try different coordinates or description."
+                            ),
+                            is_done=False,  # Let agent try again with different approach
+                            metadata={"include_screenshot": True},
                         )
 
                 return action_result

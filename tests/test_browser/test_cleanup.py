@@ -244,6 +244,58 @@ class TestAtomicCleanupOwnership:
         cleanup._tracked_browser_pid = None
 
 
+class TestCaptureSessionPid:
+    """
+    Tests for capture_session_pid — Task 20 (non-blocking PID lookup).
+
+    browser-use launches Chrome itself and stores the PID on
+    session._local_browser_watchdog.browser_pid (verified in 0.12.0 and
+    0.12.6).  Reading it is instant; the netstat/lsof scan blocks the
+    task's event loop for up to 5s and must only run as a fallback.
+    """
+
+    def test_watchdog_pid_used_without_subprocess(self):
+        """When the watchdog exposes a PID, netstat is never invoked."""
+        from browser_service.browser.cleanup import capture_session_pid
+
+        session = MagicMock()
+        session._local_browser_watchdog.browser_pid = 4242
+
+        with patch("browser_service.browser.cleanup._get_pid_from_port") as mock_netstat:
+            pid = capture_session_pid(session)
+
+        assert pid == 4242
+        mock_netstat.assert_not_called()
+
+    def test_missing_watchdog_falls_back_to_port_lookup(self):
+        """No watchdog on the session → CDP-port/netstat fallback still works."""
+        from browser_service.browser.cleanup import capture_session_pid
+
+        session = MagicMock(spec=["cdp_url"])  # no _local_browser_watchdog attr
+        session.cdp_url = "ws://127.0.0.1:9222/devtools/browser/abc"
+
+        with patch("browser_service.browser.cleanup._get_pid_from_port", return_value=555) as mock_netstat:
+            pid = capture_session_pid(session)
+
+        assert pid == 555
+        mock_netstat.assert_called_once_with("9222")
+
+    def test_non_int_watchdog_pid_falls_back(self):
+        """A watchdog attribute that isn't a real PID (None, mock object)
+        must not be returned — fall back to the port lookup instead."""
+        from browser_service.browser.cleanup import capture_session_pid
+
+        session = MagicMock()
+        session._local_browser_watchdog.browser_pid = None
+        session.cdp_url = "ws://127.0.0.1:9333/devtools/browser/def"
+
+        with patch("browser_service.browser.cleanup._get_pid_from_port", return_value=777) as mock_netstat:
+            pid = capture_session_pid(session)
+
+        assert pid == 777
+        mock_netstat.assert_called_once_with("9333")
+
+
 class TestCountChromeProcesses:
     """Tests for count_chrome_processes with mocked subprocess."""
 

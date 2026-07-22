@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Description-derived locator fixture (Task 8 / A6)</title>
+</head>
+<body style="margin:0">
+  <!-- Description "Search field" (no expected_text) derives search_text
+       "Search"; nothing on the page has exact text or aria-label "Search",
+       so the substring matcher [title*="Search"] wins — uniquely matching
+       this settings gear, not the real (unlabeled) search input. -->
+  <a href="#" title="Search settings" style="position:absolute;left:1100px;top:20px">&#9881;</a>
+  <input type="text" id="q" style="position:absolute;left:300px;top:500px;width:300px">
+</body>
+</html>

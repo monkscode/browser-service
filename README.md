@@ -60,7 +60,7 @@ That's it! The AI automatically finds the right elements on the page.
 ### 🧠 AI-Powered Element Detection
 - **Natural Language**: Describe elements in plain English ("Login button", "Search box")
 - **Smart Locators**: Automatically generates reliable XPath, CSS, and Playwright selectors
-- **Self-Healing**: Adapts when websites change their structure
+- **Built for Stability**: Candidate locators are stability-scored and validated for uniqueness against the live page, so they keep working across sessions
 
 ### 🔧 Easy Configuration
 ```python

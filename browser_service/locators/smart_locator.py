@@ -7,8 +7,20 @@ Given coordinates, systematically tries different approaches to find unique loca
 """
 
 import logging
+import math
 import re
 from typing import Any, Optional
+
+from browser_service.locators.stability import (
+    POSITIONAL,
+    STABLE,
+    VOLATILE,
+    classify_locator,
+    is_dynamic_text,
+    is_positional_locator,
+    score_stability,
+    stability_rank,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +31,6 @@ logger = logging.getLogger(__name__)
 MIN_TEXT_LENGTH = 2  # Minimum text length to use for text-based locators
 MAX_TEXT_DISPLAY_LENGTH = 50  # Maximum text length to display in logs (for actual text)
 MAX_TEXT_CONTENT_LENGTH = 100  # Maximum text content to extract from elements
-
-# Checkbox label matching
-MAX_CHECKBOX_LABEL_LENGTH = 30  # Maximum label length for checkbox/radio detection heuristic
 
 # Locator priorities (lower = better)
 PRIORITY_ID = 1  # Native ID attribute
@@ -53,6 +62,11 @@ DROPDOWN_CSS_PATTERNS = [
 ]
 
 DROPDOWN_KEYWORDS = ['dropdown', 'select', 'combobox', 'multiselect', 'picker', 'chooser']
+
+# Max distance (px) between browser-use coordinates and an element's center
+# for the element to count as "the one the vision model saw". Shared by
+# multi-match disambiguation and the text-singleton identity check (A5).
+COORD_DISTANCE_THRESHOLD = 100
 
 
 def _escape_css_selector(value: str) -> str:
@@ -252,7 +266,8 @@ def _generate_attribute_css(element_data: dict) -> list[dict]:
             'locator': locator,
             'type': 'role-css',
             'priority': 12,  # New priority slot
-            'strategy': f'Role-based CSS ({role})'
+            'strategy': f'Role-based CSS ({role})',
+            'stability': STABLE
         })
         logger.debug(f"   📋 Generated role-based CSS: {locator}")
     
@@ -263,7 +278,8 @@ def _generate_attribute_css(element_data: dict) -> list[dict]:
             'locator': locator,
             'type': 'type-css',
             'priority': 13,
-            'strategy': f'Input type CSS ({input_type})'
+            'strategy': f'Input type CSS ({input_type})',
+            'stability': STABLE
         })
         logger.debug(f"   📋 Generated type-based CSS: {locator}")
     
@@ -280,7 +296,8 @@ def _generate_attribute_css(element_data: dict) -> list[dict]:
                     'locator': locator,
                     'type': 'class-css',
                     'priority': 14,
-                    'strategy': f'Semantic class CSS (.{cls})'
+                    'strategy': f'Semantic class CSS (.{cls})',
+                    'stability': score_stability('class', cls)
                 })
                 logger.debug(f"   📋 Generated semantic class CSS: {locator}")
                 break  # Use only the first semantic class
@@ -392,6 +409,7 @@ async def validate_semantic_match(
     *,
     page=None,
     locator: Optional[str] = None,
+    accept_empty_interactive: bool = False,
 ) -> tuple[bool, str]:
     """
     Semantic validation that the matched element is the one the user meant.
@@ -404,6 +422,10 @@ async def validate_semantic_match(
     Fallback path (page + locator): count check then evaluate() on the located element.
     Returns (False, ...) immediately when count != 1; otherwise one evaluate() call (~2ms,
     probe 05 pattern). Works with both Playwright Page and FrameLocator callers.
+    The haystack includes associated label text (``<label for=>``, wrapping ``<label>``,
+    ``aria-labelledby``) so a correctly labeled form control passes without needing a
+    placeholder (A2). The node path needs no equivalent: ax_name already carries the
+    accessibility-computed name, which resolves labels.
 
     Anonymous-element behaviour: when expected_text is absent, accept only if the
     haystack is also empty (truly anonymous element — nothing semantic to compare).
@@ -413,6 +435,15 @@ async def validate_semantic_match(
     relying on a blanket carve-out that would accept any interactive element for
     arbitrary text queries.
 
+    ``accept_empty_interactive`` (opt-in, q05 guard i): mirror the probe-18
+    node-path carve-out on the locator path — when the located element's
+    ENTIRE semantic surface is empty and its tag is interactive, accept on
+    uniqueness. An element with no text surface cannot contradict any
+    expected_text; the q05 veto (label-text expected_text vs an input whose
+    label association is broken) killed a correct unique candidate. Only the
+    agent-candidate check in actions.py passes True — the five other call
+    sites keep the strict veto. Signal: empty-surface-interactive-accept.
+
     Returns (is_match, observed_text).
     """
     haystack = ""
@@ -420,6 +451,7 @@ async def validate_semantic_match(
     _haystack_has_content = False  # True when at least one part is non-empty
     _primary_text_len = 0          # Full text length for container ratio check
     _haystack_parts_list: list = []  # Individual fields for per-field word matching
+    _located_tag = ""              # Locator-path tag for the opt-in carve-out
 
     if node is not None:
         # Primary path — zero CDP round-trips. Read pre-computed attrs.
@@ -459,13 +491,31 @@ async def validate_semantic_match(
             info = await el.evaluate(
                 """el => {
                     const tc = (el.textContent || '').trim();
+                    const doc = el.ownerDocument;
+                    const labelText = el.labels
+                        ? Array.from(el.labels)
+                            .map(l => (l.textContent || '').trim())
+                            .join(' ')
+                        : '';
+                    const labelledbyText = (el.getAttribute('aria-labelledby') || '')
+                        .split(/\\s+/)
+                        .filter(Boolean)
+                        .map(id => {
+                            const n = doc.getElementById(id);
+                            return n ? (n.textContent || '').trim() : '';
+                        })
+                        .join(' ');
                     return {
                         textContent: tc.slice(0, 500),
                         textContentLength: tc.length,
                         innerText: (el.innerText || '').trim().slice(0, 500),
                         placeholder: el.getAttribute('placeholder') || '',
                         ariaLabel: el.getAttribute('aria-label') || '',
-                        value: el.value || ''
+                        value: el.value || '',
+                        labelText: labelText.slice(0, 500),
+                        labelledbyText: labelledbyText.slice(0, 500),
+                        tagName: el.tagName || '',
+                        isContentEditable: !!el.isContentEditable
                     };
                 }"""
             )
@@ -475,17 +525,27 @@ async def validate_semantic_match(
                 info.get("placeholder", ""),
                 info.get("ariaLabel", ""),
                 info.get("value", ""),
+                info.get("labelText", ""),
+                info.get("labelledbyText", ""),
             ]
             _haystack_has_content = any(p.strip() for p in parts)
             haystack = " | ".join(parts).lower()
+            # Fallback chain covers every semantic surface so the mismatch
+            # log's "got '…'" reflects what the element actually says —
+            # empty observed_text now reliably means a surface-less element.
             observed_text = (
                 info.get("innerText")
                 or info.get("textContent")
                 or info.get("ariaLabel")
+                or info.get("labelText")
+                or info.get("labelledbyText")
+                or info.get("placeholder")
+                or info.get("value")
                 or ""
             ).strip()
             _primary_text_len = info.get("textContentLength", len(info.get("textContent", "")))
             _haystack_parts_list = [p.lower() for p in parts]
+            _located_tag = (info.get("tagName") or "").lower()
         except Exception as e:
             logger.warning(f"   ⚠️ Semantic validation error: {e}")
             return False, f"[Error: {e}]"
@@ -495,6 +555,24 @@ async def validate_semantic_match(
         # Short-circuit removed. Accept only when haystack is also empty
         # (truly anonymous element — nothing semantic to compare against).
         return (not _haystack_has_content, observed_text)
+
+    # q05 guard (i): locator-path mirror of the probe-18 carve-out, opt-in
+    # only (agent-candidate check). A unique element whose entire semantic
+    # surface is empty cannot contradict expected_text — vetoing it killed
+    # the correct input[name='email'] when the agent attached the LABEL's
+    # text and the label association was broken (no placeholder/aria/value
+    # either). Same interactive-tag set as the node path below.
+    if (
+        accept_empty_interactive
+        and not _haystack_has_content
+        and _located_tag in {"button", "a", "input", "select", "textarea"}
+    ):
+        logger.info(
+            f"   ✅ Semantic check: '{expected_text}' unverifiable — element "
+            f"<{_located_tag}> has an empty semantic surface; accepting on "
+            f"uniqueness (signal: empty-surface-interactive-accept)"
+        )
+        return (True, observed_text)
 
     # Probe 18 carve-out: SVG-only buttons and CDP fallback nodes have no accessible
     # text surface through no fault of the locator strategy. Rejecting them would silently
@@ -556,10 +634,14 @@ async def validate_semantic_match(
 from .classifier import classify_element_type
 from .handlers import checkbox as _checkbox_handler
 from .handlers import collection as _collection_handler
+from .handlers import date_picker as _date_picker_handler
 from .handlers import dropdown as _dropdown_handler
+from .handlers import file_upload as _file_upload_handler
 from .handlers.checkbox import (
     find_checkbox_or_radio_by_label as _find_checkbox_or_radio_by_label,
+    resolve_hidden_input_proxy as _resolve_hidden_input_proxy,
 )
+from .handlers.dropdown import _xpath_string_literal
 from .handlers.collection import (
     _is_collection_element,
     _extract_collection_class,
@@ -585,8 +667,6 @@ async def _disambiguate_by_coordinates(page, selector: str, x: float, y: float) 
     Returns:
         Dict with 'locator' and 'disambiguated': True if found, None otherwise
     """
-    import math
-    
     try:
         locator = page.locator(selector)
         count = await locator.count()
@@ -648,8 +728,7 @@ async def _disambiguate_by_coordinates(page, selector: str, x: float, y: float) 
         # ========================================
         min_distance = float('inf')
         closest_idx = -1
-        DISTANCE_THRESHOLD = 100
-        
+
         for i in range(count):
             try:
                 element = locator.nth(i)
@@ -667,12 +746,12 @@ async def _disambiguate_by_coordinates(page, selector: str, x: float, y: float) 
             except Exception as e:
                 logger.info(f"   Distance check failed for element {i}: {e}")
         
-        if closest_idx >= 0 and min_distance < DISTANCE_THRESHOLD:
+        if closest_idx >= 0 and min_distance < COORD_DISTANCE_THRESHOLD:
             indexed_selector = f"{base_selector_for_nth} >> nth={closest_idx}"
             logger.info(f"   ✅ DISAMBIGUATED (closest distance): Element {closest_idx} is {min_distance:.1f}px away")
             return {'locator': indexed_selector, 'disambiguated': True, 'strategy': 'closest_distance', 'distance': min_distance}
-        
-        logger.info(f"   ⚠️ DISAMBIGUATION FAILED: No element within {DISTANCE_THRESHOLD}px (closest: {min_distance:.1f}px)")
+
+        logger.info(f"   ⚠️ DISAMBIGUATION FAILED: No element within {COORD_DISTANCE_THRESHOLD}px (closest: {min_distance:.1f}px)")
         return None
         
     except Exception as e:
@@ -680,20 +759,484 @@ async def _disambiguate_by_coordinates(page, selector: str, x: float, y: float) 
         return None
 
 
-async def _find_element_by_expected_text(page, expected_text: str, element_description: str, x: float = None, y: float = None) -> Optional[dict]:
+async def _upgrade_to_visible_only(search_context, locator: str) -> Optional[str]:
+    """
+    Visibility-aware uniqueness rescue (G2 / Task A).
+
+    Sites routinely keep hidden template DOM in the page permanently —
+    closed Bootstrap modals with duplicated ids, mobile/desktop dual
+    navs, inactive tab panels. A candidate that is unique among VISIBLE
+    elements then fails the raw count()==1 check against its hidden
+    twins and the cascade decays toward parent-CSS/positional locators
+    (ASTPP audit: up to 19 duplicated ids per page).
+
+    When the candidate matches >1 elements but exactly one is visible,
+    return the composite ``{locator} >> visible=true`` instead of
+    discarding it. Generic by construction: the ``>>`` chain works for
+    every selector engine (css/#id, [attr=...], text=, xpath=), so all
+    candidate families take the same path on any site. The visibility
+    filter re-evaluates at RF runtime and selects whichever copy is
+    visible then — the QA intent ("the Save you can see"). If several
+    copies are visible at runtime the test fails loudly on strict-mode
+    ambiguity rather than silently clicking a wrong element.
+
+    Stability is a property of the base candidate: ``visible=true``
+    encodes no DOM order, so callers keep the base stability score
+    (classify_locator agrees — no positional pattern matches).
+
+    Returns the composite locator string, or None when the upgrade does
+    not apply (0 or 2+ visible matches, or the probe errored).
+    """
+    composite = f"{locator} >> visible=true"
+    try:
+        visible_count = await search_context.locator(composite).count()
+    except Exception as e:
+        logger.debug(f"   Visible-only upgrade check failed for {locator!r}: {e}")
+        return None
+
+    if visible_count == 1:
+        logger.info(
+            f"   👁️ VISIBILITY UPGRADE: '{locator}' matches multiple elements "
+            f"but exactly one is visible → '{composite}'"
+        )
+        return composite
+    return None
+
+
+# Singular head nouns only: "all rowS with X" is a filtered collection,
+# not one row's action, and must not derive an anchor (the \s+ right after
+# the noun rejects the plural). Anchor forms: a quoted phrase, or an
+# unquoted digit-leading token of >=2 chars (grid ids — account numbers,
+# invoice ids — are the canonical row datum and go unquoted in natural
+# phrasing; a lone digit like "3 columns" names a shape, not a datum, and
+# bare words are too loose to trust).
+_ROW_ANCHOR_DESC_PATTERN = re.compile(
+    r"""\b(?:row|item|record|entry)\s+
+        (?:that\s+|which\s+)?
+        (?:contain(?:s|ing)?|ha(?:s|ving)|with|for|showing|shows|named|labell?ed)\s+
+        (?:the\s+)?(?:[A-Za-z]\w*\s+)?
+        (?:['"]([^'"]+)['"]|(\d[\w.\-]+))""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _derive_row_anchor_text_from_description(description: Optional[str]) -> Optional[str]:
+    """Recover a row-identifying datum from phrasing like "...the row
+    containing 'Smith'...", "...the row that contains 'Smith'...", or
+    "...the row for customer 4727985745..." when the caller left
+    row_anchor_text blank.
+
+    Per-row action descriptions already name the anchor (planner echoes the
+    QA step's own wording) — deriving it here means the row-anchor rescue
+    (_upgrade_to_row_anchor) fires even when the vision agent's
+    find_unique_locator call never set row_anchor_text itself.
+    """
+    if not description:
+        return None
+    match = _ROW_ANCHOR_DESC_PATTERN.search(description)
+    if not match:
+        return None
+    # "every row containing 'X'" / "each row with 'X'" iterate a filtered
+    # COLLECTION despite the singular head noun — the pattern's plural
+    # rejection can't see the determiner, so check the preceding word.
+    preceding = description[:match.start()].split()
+    if preceding and preceding[-1].lower() in ('every', 'each'):
+        return None
+    anchor = (match.group(1) or match.group(2) or '').strip()
+    return anchor or None
+
+
+def correct_expected_text_for_row_anchor(
+    expected_text: Optional[str],
+    row_anchor_text: Optional[str],
+    element_data: Optional[dict],
+) -> tuple[Optional[str], bool]:
+    """Repair an expected_text that IS the row anchor datum (ASTPP gate
+    q02, 2026-07-16).
+
+    The vision agent sometimes passes the row-identifying datum
+    ('4727985745') as expected_text for a per-row control whose own text
+    is different ('Edit'). Every accept built from that expected_text —
+    text-first foremost — then targets the anchor CELL, which is unique
+    on the page (count==1), so the row-anchor rescue never fires and the
+    wrong element ships. When element_data carries positive evidence of
+    the mismatch, trust the DOM: return the element's own text, which
+    repeats across rows (count>1) and hands the existing rescue exactly
+    the ambiguity it needs to emit the tr:has-text composite.
+
+    No correction without positive evidence: element_data absent, its
+    text empty (icon-only controls), or its text equal to the anchor
+    (legit "click the 4727985745 link") all return the input unchanged.
+
+    Returns (effective_expected_text, corrected).
+    """
+    anchor = ' '.join(str(row_anchor_text or '').split())
+    expected = ' '.join(str(expected_text or '').split())
+    if not anchor or not expected or expected != anchor:
+        return expected_text, False
+    elem_text = ' '.join(str(
+        (element_data or {}).get('textContent')
+        or (element_data or {}).get('text')
+        or ''
+    ).split())
+    if not elem_text or elem_text == anchor:
+        return expected_text, False
+    return elem_text, True
+
+
+def candidate_targets_row_anchor(
+    candidate_locator: Optional[str],
+    row_anchor_text: Optional[str],
+) -> bool:
+    """Does the agent's candidate locator target the row anchor datum
+    itself (the data cell) instead of the row's control?
+
+    True for shapes like ``text=4727985745``, ``[title='4727985745']``,
+    ``td:has-text("4727985745")``. The anchor appearing only in a
+    row-SCOPING segment (``tr:has-text("4727985745") >> a[title='Edit']``)
+    is the correct composite shape — only the terminal segment counts.
+    """
+    anchor = (row_anchor_text or '').strip()
+    if not anchor or not candidate_locator:
+        return False
+    return anchor in candidate_locator.split('>>')[-1]
+
+
+def _should_treat_as_collection(
+    is_collection: Optional[bool],
+    element_description: Optional[str],
+    row_anchor_text: Optional[str],
+) -> bool:
+    """STEP 0.5 gate: does this request want the WHOLE collection, or one
+    row's item?
+
+    Trust order (revised 2026-07-16, owner-approved): a row_anchor_text —
+    explicit or description-derived — names ONE specific row and wins over
+    everything, including an explicit is_collection=True. The vision agent
+    hallucinates the collection flag on per-row action steps (bench q04 r3:
+    is_collection=true + no anchor on "the 'edit' link in the row containing
+    'Smith'" sent the request down the collection path, which returned a
+    bare 'tbody > tr' claimed found:true — the assembler then improvised an
+    unusable locator; 8/12 real improvisations in the 507-run trace scan are
+    this exact chain). Genuine collections ("get all book titles", "all rows
+    with X") never derive a singular row anchor, so they keep this path.
+
+    Below the anchor check, is_collection=True wins over the fuzzy
+    description fallback (_is_collection_element — "data table", "table
+    rows", ...), which false-positives on per-row action descriptions like
+    "the 'edit' link ... in the first data table" (the table reference there
+    scopes WHICH row to click, not "give me every row").
+    """
+    if row_anchor_text:
+        return False
+    if is_collection is True:
+        return True
+    return bool(element_description) and _is_collection_element({}, element_description)
+
+
+async def _upgrade_to_row_anchor(
+    search_context,
+    locator: str,
+    row_anchor_text: Optional[str],
+    x: Optional[float] = None,
+    y: Optional[float] = None,
+) -> Optional[dict]:
+    """
+    Row-anchored uniqueness rescue (G1/G8 / Task B).
+
+    Data grids repeat identical action controls on every row (ASTPP:
+    ``a[title="Edit"]`` x12). The only thing that distinguishes "Edit
+    customer 64625" from the other Edit links is the ROW'S DATA, and
+    only the QA step knows which datum identifies the row — so the
+    anchor comes from the vision agent (``row_anchor_text``), never
+    from guessing a cell value that may be data-bound (balance,
+    timestamps).
+
+    When the candidate matches >1 elements, try the row-scoped chain
+    ``tr:has-text("{anchor}") >> {candidate}`` (then ``li:`` for
+    repeated card/list layouts). Emit it only when exactly one element
+    matches — rescued by the visible-only filter when a hidden template
+    row duplicates the anchor — and, when coordinates are available,
+    only when that element is the one the vision model actually saw.
+
+    XPath-shaped candidates are skipped: whether a chained
+    ``xpath=//...`` resolves relative to the row or from the document
+    root depends on the selector-engine version (verified relative in
+    our pinned Python Playwright, but the generated test runs under RF
+    Browser's own bundled engine). A locator whose meaning can differ
+    between discovery and runtime is exactly what this feature exists
+    to eliminate, and xpath candidates are last-resort priority anyway.
+
+    Anchored-on-QA-data is as stable as the QA case itself: callers
+    keep the base candidate's stability score. A composite carrying the
+    containment-collapse suffix ``>> visible=true >> nth=0`` (see
+    ``_collapse_containment_chain``) is still base-stable — that nth=0
+    picks the outermost element of ONE control's nesting chain via
+    parent-first document order, not a page position — so payload sites
+    that classify finished strings must classify the base instead
+    (``classify_locator`` cannot see the difference). If the anchor
+    data changes rows at RF runtime, the locator follows the data; if
+    a second row ever matches, the test fails loudly on strict-mode
+    ambiguity instead of silently acting on a wrong row.
+
+    Returns:
+        ``{'locator': composite}`` on success;
+        ``{'ambiguous': True}`` when the anchor genuinely matches
+        several elements — several rows, or several non-nested controls
+        (Option 1: caller falls through to existing behavior and flags
+        the payload ``row_anchor_ambiguous`` — demote, never delete);
+        ``None`` when the upgrade does not apply.
+    """
+    anchor = (row_anchor_text or '').strip()
+    if not anchor:
+        return None
+    if locator.startswith(('xpath=', '//', '(//')):
+        logger.debug(
+            f"   Row-anchor upgrade skipped for xpath candidate {locator!r} "
+            f"(chained-xpath scoping is engine-version-dependent)"
+        )
+        return None
+
+    escaped = anchor.replace('\\', '\\\\').replace('"', '\\"')
+
+    for container in ('tr', 'li'):
+        composite = f'{container}:has-text("{escaped}") >> {locator}'
+        try:
+            count = await search_context.locator(composite).count()
+        except Exception as e:
+            logger.debug(f"   Row-anchor probe failed for {composite!r}: {e}")
+            return None
+
+        if count == 0:
+            continue
+
+        if count > 1:
+            # A hidden template row (modal grid copy) may duplicate the
+            # anchor — unique-among-visible still wins (same rescue as G2).
+            visible = await _upgrade_to_visible_only(search_context, composite)
+            if visible:
+                composite = visible
+            else:
+                # One control wearing several name tags (ASTPP: the row's
+                # <a title="Edit"> AND its icon <span title="Edit">) is
+                # counted twice by the chain. Collapsing over the VISIBLE
+                # matches keeps every corner safe in one probe: an
+                # all-hidden chain has no visible members (no collapse, no
+                # locator to hidden DOM) and a hidden template row's
+                # duplicate pair is filtered out before the chain check.
+                collapsed = await _collapse_containment_chain(
+                    search_context, f'{composite} >> visible=true'
+                )
+                if collapsed:
+                    composite = collapsed
+                else:
+                    logger.info(
+                        f"   ⚠️ ROW ANCHOR AMBIGUOUS: '{anchor}' matches "
+                        f"{count} elements via {container}-scoped chain — "
+                        f"falling through (flagged)"
+                    )
+                    return {'ambiguous': True}
+
+        # Exactly one match — when vision coordinates are available,
+        # require them to land on it: a unique match in a DIFFERENT row
+        # (anchor text elsewhere) must not be emitted.
+        if x is not None and y is not None:
+            is_match, reason = await _singleton_matches_coordinates(
+                search_context, composite, x, y
+            )
+            if not is_match:
+                logger.info(
+                    f"   ⚠️ Row-anchored match is not the element vision "
+                    f"saw ({reason}) — skipping row anchor"
+                )
+                return None
+
+        logger.info(
+            f"   📌 ROW ANCHOR UPGRADE: '{locator}' anchored to the row "
+            f"containing '{anchor}' → '{composite}'"
+        )
+        return {'locator': composite}
+
+    return None
+
+
+# Every pair of matches must be on one ancestor line — a strict nesting
+# chain. Node.contains() is per-document, so matches spread across shadow
+# roots never chain (safe fallback to the flagged Option-1 path).
+_CONTAINMENT_CHAIN_JS = (
+    "els => els.length > 1 && els.every(a => els.every(b => "
+    "a === b || a.contains(b) || b.contains(a)))"
+)
+
+
+async def _collapse_containment_chain(search_context, selector: str) -> Optional[str]:
+    """
+    Nested-match collapse for the row-anchor rescue (q02, 2026-07-17).
+
+    ASTPP stamps the same tooltip on a grid action link AND the icon
+    inside it (``<a title="Edit"><span title="Edit">``), so the
+    row-scoped chain counts one control twice and the rescue declared
+    it ambiguous — every ASTPP grid action then shipped as the flagged
+    positional fallback (``[title="Edit"] >> nth=18``, observed
+    drifting from nth=16 overnight as the table grew). When ALL matches
+    sit on one ancestor line (every pair nests) they are a single
+    control: emit ``{selector} >> nth=0``. Document order puts a parent
+    before its descendants, so nth=0 is the outermost element by
+    STRUCTURE, not by page order — the composite still follows the
+    row's datum when the table reorders. Callers therefore keep the
+    base candidate's stability for the collapsed composite.
+
+    Anything short of a full chain — a second control in the row, a
+    second row matching the anchor, matches split across shadow roots,
+    or a probe error — returns None and the caller keeps today's
+    flagged Option-1 fallback.
+    """
+    try:
+        is_chain = await search_context.locator(selector).evaluate_all(
+            _CONTAINMENT_CHAIN_JS
+        )
+    except Exception as e:
+        logger.debug(f"   Containment-chain probe failed for {selector!r}: {e}")
+        return None
+    if not is_chain:
+        return None
+    collapsed = f'{selector} >> nth=0'
+    logger.info(
+        f"   🪆 NESTED-MATCH COLLAPSE: all visible matches for "
+        f"{selector!r} form one containment chain — one control, taking "
+        f"the outermost → '{collapsed}'"
+    )
+    return collapsed
+
+
+def _classify_result_stability(
+    result: dict, final_locator: str, iframe_context: Optional[str]
+) -> str:
+    """
+    Stability for a text-first/semantic payload (E1/B2).
+
+    Row-anchored results classify their BASE selector — the collapse
+    suffix (``>> visible=true >> nth=0``) is structural, and
+    classify_locator can't tell it from a genuine nth disambiguation
+    (which never sets row_anchored). An ordinal iframe hop still makes
+    the whole composite positional, exactly as
+    ``_apply_iframe_prefix_to_result`` rules for STEP-0 results.
+    Non-anchored results classify the finished locator (iframe prefix
+    included when present, so a positional hop is caught there too).
+    """
+    if result.get('row_anchored'):
+        if iframe_context and is_positional_locator(iframe_context):
+            return POSITIONAL
+        return classify_locator(result.get('row_anchor_base') or final_locator)
+    return classify_locator(final_locator)
+
+
+async def _singleton_matches_coordinates(page, selector: str, x: float, y: float) -> tuple[bool, str]:
+    """
+    Identity check for a count==1 text match: is it the element the vision
+    model saw at (x, y)? (A5)
+
+    Same contract as multi-match disambiguation: the coordinates must fall
+    inside the element's bounding box, or its center must be within
+    COORD_DISTANCE_THRESHOLD. A hidden element (no bounding box) can never
+    be what vision saw. Fails open on errors — the text already matched,
+    and a transient check failure is not evidence of a wrong element.
+
+    Returns:
+        Tuple of (is_match: bool, reason: str)
+    """
+    try:
+        box = await page.locator(selector).bounding_box()
+        if not box:
+            return False, "hidden (no bounding box)"
+
+        if (box['x'] <= x <= box['x'] + box['width'] and
+                box['y'] <= y <= box['y'] + box['height']):
+            return True, "coords inside bounding box"
+
+        center_x = box['x'] + box['width'] / 2
+        center_y = box['y'] + box['height'] / 2
+        distance = math.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+        if distance < COORD_DISTANCE_THRESHOLD:
+            return True, f"center {distance:.0f}px from coords"
+        return False, f"center {distance:.0f}px from coords (limit {COORD_DISTANCE_THRESHOLD}px)"
+    except Exception as e:
+        logger.warning(f"   ⚠️ Singleton identity check errored — accepting unchecked: {e}")
+        return True, f"identity check skipped ({e})"
+
+
+async def _checkbox_evidence_corroborated(
+    probe_page,
+    x: Optional[float],
+    y: Optional[float],
+    iframe_context: Optional[str],
+    prefer_radio: bool,
+) -> bool:
+    """
+    Second source of truth for the text-first checkbox/radio detour:
+    does the live DOM actually have checkbox/radio structure at the
+    click coordinates?
+
+    Mirrors the STEP-0 dispatcher contract (classifier + probe must
+    agree) for the path where no element_data exists: the description /
+    vision hint is source one, this probe is source two.
+
+    Returns True when the probe confirms. Inside iframes the probe's
+    ``page.evaluate`` runs on the top document and can't see the frame's
+    DOM — there the claim (description keywords or vision hint) gates
+    alone, preserving iframe checkbox support.
+    """
+    if iframe_context:
+        return True
+    if probe_page is None or x is None or y is None:
+        return False
+
+    from .dom_probe import probe_specialized_type
+    order = ("radio", "checkbox") if prefer_radio else ("checkbox", "radio")
+    for suspected in order:
+        result = await probe_specialized_type(
+            probe_page, suspected, coords=(x, y)
+        )
+        if result["confirmed"]:
+            return True
+    return False
+
+
+async def _find_element_by_expected_text(
+    page,
+    expected_text: str,
+    element_description: str,
+    x: float = None,
+    y: float = None,
+    vision_type_hint: Optional[str] = None,
+    probe_page=None,
+    iframe_context: Optional[str] = None,
+    row_anchor_text: Optional[str] = None,
+) -> Optional[dict]:
     """
     Try to find element directly by the expected visible text.
     This is the TEXT-FIRST approach - more reliable than coordinates.
     
-    ENHANCED: Now detects checkbox/radio context and returns the actual input element
-    instead of just the text label. This fixes issues where clicking text labels
-    doesn't toggle checkboxes without proper <label> association.
-    
+    CHECKBOX/RADIO DETOUR: when the step gives real checkbox/radio
+    evidence (description keywords or vision hint) AND the DOM probe
+    confirms matching structure at the click coordinates, return the
+    actual input element instead of the text label — clicking bare label
+    text doesn't toggle inputs without a proper <label> association.
+    The detour never triggers on text shape alone (A1): a short label
+    like "Page 2" must not start a checkbox hunt.
+
     Args:
-        page: Playwright page object
+        page: Locator search context (Playwright page or frame_locator)
         expected_text: The actual text AI sees on the element
         element_description: Human-readable description (for context)
-        
+        x, y: Click coordinates from browser-use (probe corroboration)
+        vision_type_hint: LLM's visual classification for the element
+        probe_page: Page-level object for the DOM probe (page.evaluate
+            doesn't exist on frame_locator search contexts)
+        iframe_context: Iframe locator when the element is inside a
+            frame — the probe can't see into frames, so description or
+            vision evidence alone gates the detour there
+
     Returns:
         Dict with 'locator' and optionally 'element_type' if found, None otherwise.
         For backward compatibility, returns string locator for non-checkbox elements.
@@ -709,12 +1252,15 @@ async def _find_element_by_expected_text(page, expected_text: str, element_descr
     # ========================================
     # SPECIAL HANDLING: Checkbox/Radio Elements
     # ========================================
-    # Detect if we're looking for a checkbox or radio button based on:
-    # 1. Description mentions checkbox/radio/toggle/check/select
-    # 2. Expected text looks like a checkbox label (short text, often with numbers)
-    
-    # OPTIMIZATION: Early exit for obvious non-form elements
-    # Skip checkbox detection entirely if description indicates non-input elements
+    # Two-source gate (same contract as the STEP-0 dispatcher): the
+    # detour runs only when the step CLAIMS a checkbox/radio (description
+    # keywords or vision hint) AND the live DOM probe finds matching
+    # structure at the click coordinates. Text shape (length, leading
+    # word) is not evidence — that heuristic sent 23% of text searches
+    # into checkbox hunting with a 0% hit rate and could return a
+    # checkbox for a pagination step (A1/C7).
+
+    # Early exit for obvious non-form elements
     skip_checkbox_check = False
     if element_description:
         # Keywords that clearly indicate non-form elements
@@ -722,32 +1268,54 @@ async def _find_element_by_expected_text(page, expected_text: str, element_descr
         if any(keyword in desc_lower for keyword in non_form_keywords):
             skip_checkbox_check = True
             logger.info(f"   ⏩ Skipping checkbox detection - element is clearly not a form input")
-    
+
     if not skip_checkbox_check:
+        # 'select the' intentionally absent: it's dropdown phrasing and
+        # dragged select steps into checkbox hunting.
         is_checkbox_context = any(keyword in desc_lower for keyword in [
-            'checkbox', 'check box', 'radio', 'toggle', 'check the', 'select the',
+            'checkbox', 'check box', 'radio', 'toggle', 'check the',
             'tick', 'untick', 'check mark', 'input element for'
         ])
-        
-        # Also detect common checkbox label patterns
-        is_checkbox_like_text = (
-            text.lower().startswith('checkbox') or
-            text.lower().startswith('option') or
-            text.lower().startswith('select') or
-            text.lower() in ['yes', 'no', 'agree', 'accept', 'remember me', 'terms', 'newsletter'] or
-            len(text) < MAX_CHECKBOX_LABEL_LENGTH  # Short text near form elements often indicates checkbox labels
-        )
-        
-        if is_checkbox_context or is_checkbox_like_text:
-            logger.info(f"   🎯 Checkbox/Radio context detected - checking for input element")
-            checkbox_result = await _find_checkbox_or_radio_by_label(page, text)
-            
-            if checkbox_result:
-                # Return the checkbox/radio input locator instead of text
-                logger.info(f"   ✅ Returning checkbox/radio locator: {checkbox_result['locator']}")
-                return checkbox_result
+        hint_normalized = (vision_type_hint or '').lower().strip()
+        hint_is_checkbox = hint_normalized in ('checkbox', 'radio')
+
+        if is_checkbox_context or hint_is_checkbox:
+            prefer_radio = 'radio' in desc_lower or hint_normalized == 'radio'
+            corroborated = await _checkbox_evidence_corroborated(
+                probe_page=probe_page, x=x, y=y,
+                iframe_context=iframe_context, prefer_radio=prefer_radio,
+            )
+            if corroborated:
+                logger.info(f"   🎯 Checkbox/Radio context detected - checking for input element")
+                checkbox_result = await _find_checkbox_or_radio_by_label(page, text)
+
+                if checkbox_result:
+                    # G3: a styled switch's real input can be display:none —
+                    # discovery-time JS clicks succeed on it, but the
+                    # generated RF Click would time out. Redirect to the
+                    # visible clickable and keep the input for state reads.
+                    proxy_info = await _resolve_hidden_input_proxy(
+                        page, checkbox_result['locator']
+                    )
+                    if proxy_info:
+                        checkbox_result = {
+                            **checkbox_result,
+                            'hidden_input': True,
+                            'input_locator': checkbox_result['locator'],
+                        }
+                        if proxy_info.get('locator'):
+                            checkbox_result['locator'] = proxy_info['locator']
+                            checkbox_result['proxy_kind'] = proxy_info['proxy_kind']
+                    # Return the checkbox/radio input locator instead of text
+                    logger.info(f"   ✅ Returning checkbox/radio locator: {checkbox_result['locator']}")
+                    return checkbox_result
+                else:
+                    logger.info(f"   ⚠️ No checkbox/radio found, falling back to text-based search")
             else:
-                logger.info(f"   ⚠️ No checkbox/radio found, falling back to text-based search")
+                logger.info(
+                    f"   ⏩ Checkbox/radio claimed but DOM probe found no "
+                    f"matching structure at ({x}, {y}) - skipping detour"
+                )
     
     # ========================================
     # Standard Text-Based Search
@@ -792,17 +1360,60 @@ async def _find_element_by_expected_text(page, expected_text: str, element_descr
         try:
             count = await page.locator(selector).count()
             if count == 1:
+                # A singleton is only "lucky" — verify it is the element the
+                # vision model saw before trusting it (A5). A hidden duplicate
+                # of the text must not shadow the real element; the next
+                # selector (e.g. role=button[name=…]) may match it correctly.
+                if x is not None and y is not None:
+                    is_match, reason = await _singleton_matches_coordinates(page, selector, x, y)
+                    if not is_match:
+                        logger.info(
+                            f"   ⚠️ '{selector}' is unique but {reason} — "
+                            f"not the element at ({x}, {y}), trying next selector"
+                        )
+                        continue
                 logger.info(f"   ✅ TEXT-FIRST SUCCESS: Found unique element with '{selector}'")
                 # Return as dict for consistency, but no special element_type
                 return {'locator': selector}
             elif count > 1:
-                # NEW: Try to disambiguate using coordinates if available
+                # G1: row-anchored rescue comes BEFORE nth= disambiguation —
+                # anchoring to the QA-named row data survives reorder; nth=
+                # silently acts on a different row when sort/data changes.
+                row_ambiguous = False
+                if row_anchor_text:
+                    row = await _upgrade_to_row_anchor(
+                        page, selector, row_anchor_text, x=x, y=y
+                    )
+                    if row and row.get('locator'):
+                        logger.info(f"   ✅ TEXT-FIRST SUCCESS (row-anchored): {row['locator']}")
+                        # row_anchor_base: the pre-anchor selector, so the
+                        # payload site classifies the BASE — the collapse
+                        # suffix (>> visible=true >> nth=0) is structural,
+                        # not positional.
+                        return {
+                            'locator': row['locator'],
+                            'row_anchored': True,
+                            'row_anchor_base': selector,
+                        }
+                    row_ambiguous = bool(row and row.get('ambiguous'))
+                # Try to disambiguate using coordinates if available
                 if x is not None and y is not None:
                     result = await _disambiguate_by_coordinates(page, selector, x, y)
                     if result:
+                        if row_ambiguous:
+                            # Option 1 (owner, 2026-07-08): ambiguous anchor
+                            # falls through to today's behavior, flagged so
+                            # nlrf can warn — demote, never delete.
+                            result['row_anchor_ambiguous'] = True
                         logger.info(f"   ✅ TEXT-FIRST SUCCESS (disambiguated): {result['locator']}")
                         return result
                 else:
+                    # G2: no coordinates to disambiguate with, but hidden
+                    # duplicates must not kill a visible-unique text match.
+                    upgraded = await _upgrade_to_visible_only(page, selector)
+                    if upgraded:
+                        logger.info(f"   ✅ TEXT-FIRST SUCCESS (visible-only): {upgraded}")
+                        return {'locator': upgraded}
                     logger.info(f"   ⚠️ Multiple matches ({count}) for: {selector} (no coords for disambiguation)")
             # count == 0: no matches, try next
         except Exception as e:
@@ -813,14 +1424,20 @@ async def _find_element_by_expected_text(page, expected_text: str, element_descr
     return None
 
 
-async def _find_element_by_description(page, description: str) -> Optional[str]:
+async def _find_element_by_description(
+    page, description: str, row_anchor_text: Optional[str] = None
+) -> Optional[dict]:
     """
     Fallback: Try to find element by its description when coordinates fail.
-    Returns the unique locator string if found, None otherwise.
-    
+    Returns ``{'locator': str}`` if found — with ``row_anchored`` /
+    ``row_anchor_base`` stapled on when the G1 rescue built the locator,
+    so the payload site classifies the base selector's stability instead
+    of the composite (the collapse suffix is structural, not positional).
+    Returns None otherwise.
+
     This is used when document.elementFromPoint() returns BODY/HTML,
     which happens when coordinates land in empty space (common with centered layouts).
-    
+
     Strategy: Use Playwright's semantic locators based on the element description.
     This is more reliable than coordinate-based approach since it matches what
     the AI "sees" (text, role, label) rather than pixel positions.
@@ -884,14 +1501,31 @@ async def _find_element_by_description(page, description: str) -> Optional[str]:
                 count = await page.locator(selector).count()
                 if count == 1:
                     logger.info(f"   ✅ Found unique element with semantic locator: {selector}")
-                    return selector
+                    return {'locator': selector}
                 elif count > 1:
+                    # G1: row-anchored rescue for per-row action controls.
+                    # This path has no coordinates, so ambiguity cannot be
+                    # flagged here — it falls through unchanged.
+                    if row_anchor_text:
+                        row = await _upgrade_to_row_anchor(
+                            page, selector, row_anchor_text
+                        )
+                        if row and row.get('locator'):
+                            return {
+                                'locator': row['locator'],
+                                'row_anchored': True,
+                                'row_anchor_base': selector,
+                            }
+                    # G2: hidden duplicates — unique-among-visible still wins.
+                    upgraded = await _upgrade_to_visible_only(page, selector)
+                    if upgraded:
+                        return {'locator': upgraded}
                     logger.info(f"   ⚠️ Multiple matches ({count}) for: {selector}")
                 # count == 0: no matches, try next
             except Exception as e:
                 logger.info(f"   ⚠️ Selector failed: {selector} - {e}")
                 pass
-        
+
         logger.warning(f"   ❌ No unique element found for description: {description}")
         return None
     except Exception as e:
@@ -1176,6 +1810,13 @@ async def _find_element_via_accessibility_tree(
     
     # Derive role hints from description
     desc_lower = element_description.lower() if element_description else ""
+    # q05 guard (ii): a description that names a field/input must never
+    # resolve to a bare text node — get_by_text matches the LABEL when the
+    # agent passes the label's text as expected_text, and a fill/Get Classes
+    # target that is a <label> fails or lies at runtime.
+    is_field_description = any(
+        kw in desc_lower for kw in ('field', 'input', 'textbox', 'text box')
+    )
     role_hints = []
     if any(kw in desc_lower for kw in ['button', 'submit', 'click']):
         role_hints.append('button')
@@ -1265,16 +1906,42 @@ async def _find_element_via_accessibility_tree(
                 logger.debug(f"   Role {role} search failed: {e}")
                 continue
         
+        async def _text_match_is_form_control(locator_obj) -> bool:
+            """q05 guard (ii): for field/input descriptions, a unique
+            get_by_text match is acceptable only when it IS a form control
+            (getByText matches inputs by value) or a contenteditable
+            editor — never a bare label/text node."""
+            try:
+                info = await locator_obj.first.evaluate(
+                    "el => ({tag: el.tagName, isContentEditable: "
+                    "!!el.isContentEditable, id: el.id || '', "
+                    "name: el.getAttribute('name') || ''})"
+                )
+            except Exception:
+                return False
+            tag = (info.get('tag') or '').lower()
+            if tag in ('input', 'textarea', 'select') or info.get('isContentEditable'):
+                return True
+            logger.info(
+                f"   ⛔ Unique text match is <{tag}>, not a form control — "
+                f"rejected for field description "
+                f"(signal: text-node-rejected-for-field-description)"
+            )
+            return False
+
         # Strategy 2: Try get_by_text (searches visible text content)
         try:
             locator_obj = page.get_by_text(expected_text, exact=True)
             count = await locator_obj.count()
-            
-            if count == 1:
+
+            if count == 1 and (
+                not is_field_description
+                or await _text_match_is_form_control(locator_obj)
+            ):
                 # Get the text locator string
                 locator_str = f'text="{expected_text}"'
                 locator_str = apply_iframe_prefix(locator_str)
-                
+
                 logger.info(f"   ✅ NATIVE TEXT SUCCESS: {locator_str}")
                 return {
                     'locator': locator_str,
@@ -1286,16 +1953,19 @@ async def _find_element_via_accessibility_tree(
                 }
         except Exception:
             pass
-        
+
         # Strategy 3: Try get_by_text with partial match
         try:
             locator_obj = page.get_by_text(expected_text, exact=False)
             count = await locator_obj.count()
-            
-            if count == 1:
+
+            if count == 1 and (
+                not is_field_description
+                or await _text_match_is_form_control(locator_obj)
+            ):
                 locator_str = f'text="{expected_text}"'
                 locator_str = apply_iframe_prefix(locator_str)
-                
+
                 logger.info(f"   ✅ NATIVE TEXT (partial) SUCCESS: {locator_str}")
                 return {
                     'locator': locator_str,
@@ -1308,24 +1978,49 @@ async def _find_element_via_accessibility_tree(
         except Exception:
             pass
         
-        # Strategy 4: Try get_by_label (for form elements)
+        # Strategy 4: Try get_by_label (for form elements).
+        # get_by_label resolves the label ASSOCIATION to the control itself,
+        # but 'label="..."' is NOT a valid locator engine at runtime
+        # (Playwright: Unknown engine "label"; live-verified 2026-07-17,
+        # zero lifetime emissions) — so emit the resolved control's own
+        # attributes instead: id= first, then css tag[name=]. No runtime-
+        # valid resolution -> fall through, never the broken label= string.
         try:
             locator_obj = page.get_by_label(expected_text, exact=False)
             count = await locator_obj.count()
-            
+
             if count == 1:
-                locator_str = f'label="{expected_text}"'
-                locator_str = apply_iframe_prefix(locator_str)
-                
-                logger.info(f"   ✅ NATIVE LABEL SUCCESS: {locator_str}")
-                return {
-                    'locator': locator_str,
-                    'count': 1,
-                    'unique': True,
-                    'accessible_name': expected_text,
-                    'element_type': 'label',
-                    'strategy': 'playwright_get_by_label'
-                }
+                info = await locator_obj.first.evaluate(
+                    "el => ({tag: el.tagName, isContentEditable: "
+                    "!!el.isContentEditable, id: el.id || '', "
+                    "name: el.getAttribute('name') || ''})"
+                )
+                tag = (info.get('tag') or '').lower()
+                candidates = []
+                if info.get('id'):
+                    candidates.append(f"id={info['id']}")
+                if info.get('name') and tag:
+                    safe = str(info['name']).replace('"', '\\"')
+                    candidates.append(f'{tag}[name="{safe}"]')
+                for resolved in candidates:
+                    if await page.locator(resolved).count() == 1:
+                        locator_str = apply_iframe_prefix(resolved)
+                        logger.info(
+                            f"   ✅ NATIVE LABEL SUCCESS: {locator_str} "
+                            f"(signal: label-resolved-to-control)"
+                        )
+                        return {
+                            'locator': locator_str,
+                            'count': 1,
+                            'unique': True,
+                            'accessible_name': expected_text,
+                            'element_type': tag or 'label',
+                            'strategy': 'playwright_get_by_label_resolved'
+                        }
+                logger.info(
+                    f"   ⚠️ get_by_label matched but the control has no "
+                    f"unique id/name — skipping (label= is not runtime-valid)"
+                )
         except Exception:
             pass
         
@@ -1642,7 +2337,6 @@ async def _find_element_via_accessibility(
     y: float,
     element_description: str,
     expected_text: Optional[str] = None,
-    library_type: str = "browser",
     search_context=None,
     iframe_context: Optional[str] = None
 ) -> Optional[dict]:
@@ -1710,7 +2404,17 @@ async def _find_element_via_accessibility(
     role = acc_info['role']
     accessible_name = acc_info.get('accessibleName')
     is_collection = acc_info.get('isCollection', False)
-    
+
+    if accessible_name:
+        # D2 (dialog-clobber): normalize whitespace BEFORE the name enters
+        # any locator string. aria-sourced names can carry newlines (the
+        # announcement-modal name did); a newline truncates the .robot
+        # variable line and the selector dies at runtime, invisible to
+        # dryrun. Playwright's role-engine name matching normalizes
+        # whitespace itself, so the normalized form matches whenever the
+        # raw form does.
+        accessible_name = ' '.join(str(accessible_name).split())
+
     if accessible_name:
         safe_name = accessible_name.replace('"', '\\"')
         locator = f'role={role}[name="{safe_name}"]'
@@ -2193,6 +2897,149 @@ def _attach_classifier_metadata(
         result["vision_type_hint"] = vision_type_hint
 
 
+def _build_element_data_candidates(element_data: dict) -> list[dict]:
+    """
+    Build prioritized locator candidates from browser-use DOM attributes.
+
+    Pure candidate generation for STEP 0 (element-data locators): direct
+    attributes first (id, test id, name, aria-label, placeholder), then
+    parent-context CSS for elements without id/name. Uniqueness validation
+    happens in the caller.
+    """
+    locator_candidates = []
+
+    # Priority 1: ID (most stable — unless the VALUE is session-generated;
+    # stability demotes those below stable candidates in the caller's sort)
+    if element_data.get('id'):
+        element_id_val = element_data['id']
+        id_stability = score_stability('id', element_id_val)
+        # Handle numeric IDs with attribute selector
+        if element_id_val.isdigit():
+            locator_candidates.append({
+                'locator': f'[id="{element_id_val}"]',
+                'type': 'id-attr',
+                'priority': PRIORITY_ID,
+                'strategy': 'ID attribute selector (numeric ID)',
+                'stability': id_stability
+            })
+        else:
+            locator_candidates.append({
+                'locator': f'#{element_id_val}',  # Use CSS ID selector - Playwright native format
+                'type': 'id',
+                'priority': PRIORITY_ID,
+                'strategy': 'ID selector from element_data',
+                'stability': id_stability
+            })
+    
+    # Priority 2: test attribute (very stable for testing)
+    # dataTestId may have been sourced from data-test rather than data-testid
+    # (see _extract_dom_node_attributes) — emit the attribute that actually
+    # exists on the element or the selector matches 0 elements.
+    if element_data.get('dataTestId'):
+        test_attr = element_data.get('dataTestAttr') or 'data-testid'
+        locator_candidates.append({
+            'locator': f'[{test_attr}="{element_data["dataTestId"]}"]',
+            'type': test_attr,
+            'priority': PRIORITY_TEST_ID,
+            'strategy': f'{test_attr} from element_data',
+            'stability': score_stability(test_attr, element_data['dataTestId'])
+        })
+
+    # Priority 3: name attribute
+    if element_data.get('name'):
+        locator_candidates.append({
+            'locator': f'[name="{element_data["name"]}"]',
+            'type': 'name',
+            'priority': PRIORITY_NAME,
+            'strategy': 'Name attribute from element_data',
+            'stability': score_stability('name', element_data['name'])
+        })
+    
+    # Priority 4: aria-label (with role if available)
+    if element_data.get('ariaLabel'):
+        aria_label = element_data['ariaLabel']
+        # aria-labels carry visible content: "Cart (3 items)" dies at RF
+        # runtime when the count changes (B3).
+        aria_stability = VOLATILE if is_dynamic_text(aria_label) else STABLE
+        role = element_data.get('role')
+        if role:
+            locator_candidates.append({
+                'locator': f'[role="{role}"][aria-label="{aria_label}"]',
+                'type': 'aria-role',
+                'priority': PRIORITY_ARIA_LABEL,
+                'strategy': 'ARIA label + role from element_data',
+                'stability': aria_stability
+            })
+        else:
+            locator_candidates.append({
+                'locator': f'[aria-label="{aria_label}"]',
+                'type': 'aria-label',
+                'priority': PRIORITY_ARIA_LABEL,
+                'strategy': 'ARIA label from element_data',
+                'stability': aria_stability
+            })
+    
+    # Priority 5: placeholder (for inputs)
+    if element_data.get('placeholder'):
+        locator_candidates.append({
+            'locator': f'[placeholder="{element_data["placeholder"]}"]',
+            'type': 'placeholder',
+            'priority': PRIORITY_PLACEHOLDER,
+            'strategy': 'Placeholder attribute from element_data',
+            'stability': STABLE
+        })
+    
+    # Priority 5.5: Parent-context CSS locators (for elements without id/name)
+    # When element lacks direct id/name but has parent with id/class, generate
+    # stable CSS selectors like "#parentId input" or ".parentClass input"
+    # This is MORE STABLE than xpath because it uses semantic anchors
+    if not element_data.get('id') and not element_data.get('name'):
+        tag_name = element_data.get('tagName', '')
+        parent_id = element_data.get('parentId', '')
+        # STEP-0 (_extract_dom_node_attributes) emits the parent's classes as
+        # `parentClassName`; only the coordinate-shape payload uses
+        # `parentClass`. Read the STEP-0 key first, else this fallback is dead
+        # on its only caller's payload.
+        parent_class = element_data.get('parentClassName', '') or element_data.get('parentClass', '')
+        input_type = element_data.get('type', '')
+        
+        # Build CSS selector using parent context
+        escaped_parent_id = _escape_css_selector(parent_id)
+        if escaped_parent_id and tag_name:
+            # Use parent id + tag name (e.g., "#formContainer input")
+            css_locator = f'#{escaped_parent_id} {tag_name}'
+            if input_type:
+                # Be more specific for inputs (e.g., "#formContainer input[type='text']")
+                css_locator = f'#{escaped_parent_id} {tag_name}[type="{input_type}"]'
+            locator_candidates.append({
+                'locator': css_locator,
+                'type': 'parent-id-css',
+                'priority': PRIORITY_CSS_PARENT_ID,
+                'strategy': f'Parent ID context + tag (#{parent_id} {tag_name})',
+                'stability': score_stability('id', parent_id)
+            })
+            logger.info(f"   📋 Added parent-context CSS: {css_locator}")
+        
+        elif parent_class and tag_name:
+            # Use first significant class from parent (escape special chars)
+            first_class = parent_class.split()[0] if ' ' in parent_class else parent_class
+            escaped_class = _escape_css_selector(first_class)
+            if escaped_class:
+                css_locator = f'.{escaped_class} {tag_name}'
+                if input_type:
+                    css_locator = f'.{escaped_class} {tag_name}[type="{input_type}"]'
+                locator_candidates.append({
+                    'locator': css_locator,
+                    'type': 'parent-class-css',
+                    'priority': PRIORITY_CSS_CLASS,
+                    'strategy': f'Parent class context + tag (.{first_class} {tag_name})',
+                    'stability': score_stability('class', first_class)
+                })
+                logger.info(f"   📋 Added parent-context CSS: {css_locator}")
+
+    return locator_candidates
+
+
 async def _generate_locators_from_element_data(
     search_context,  # Can be page or frame_locator when in iframe context
     element_data: dict[str, Any],
@@ -2204,6 +3051,7 @@ async def _generate_locators_from_element_data(
     vision_type_hint: Optional[str] = None,  # LLM's visual classification (1 of 2 sources of truth)
     vision_framework_hint: Optional[str] = None,  # LLM's framework guess
     page=None,  # Page-level reference for DOM probe (vs. search_context which can be frame_locator)
+    row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
 ) -> Optional[dict]:
     """
     Generate and validate locators from element_data extracted from browser-use DOM.
@@ -2288,18 +3136,48 @@ async def _generate_locators_from_element_data(
         f"(confidence={type_info.confidence}, signals={type_info.signals})"
     )
 
+    # Trust order (2026-07-16, owner-approved — same contract as
+    # _should_treat_as_collection at STEP 0.5): a named row anchor means ONE
+    # row's control, never the whole collection. Description keywords like
+    # "... in the customer data table" vote 'collection' here exactly the way
+    # the STEP 0.5 keyword fallback does, and the DOM probe "confirms"
+    # trivially (any per-row control has tr/tbody ancestors) — ASTPP gate
+    # q02 r1 shipped a bare 'tbody > tr' claimed found:true off this route
+    # while the agent's call carried row_anchor_text AND is_collection=False.
+    # Demote to unknown so the generic candidate loop (which owns the
+    # row-anchor rescue) handles the element.
+    if type_info.primary_type == "collection" and row_anchor_text:
+        type_info.signals.append("row-anchor-suppresses-collection")
+        type_info.primary_type = "unknown"
+        type_info.framework = ""
+        type_info.confidence = "low"
+        logger.info(
+            "   📌 Collection classification suppressed: row anchor "
+            f"'{row_anchor_text}' names one row's control"
+        )
+
     # Determine which type to probe and whether we're in confirmation or
     # discovery mode. Discovery mode kicks in when the classifier said
     # "unknown" but the vision hint mapped to a specialized type.
     suspected_type = ""
     probe_mode = ""
-    if type_info.primary_type in ("dropdown", "collection", "checkbox", "radio"):
+    if type_info.primary_type in (
+        "dropdown", "collection", "checkbox", "radio", "file-upload",
+        "date-picker",
+    ):
         suspected_type = type_info.primary_type
         probe_mode = "confirmation"
     elif type_info.primary_type == "unknown" and vision_type_hint:
         from .classifier import map_vision_hint
         mapped = map_vision_hint(vision_type_hint)
-        if mapped in ("dropdown", "collection", "checkbox", "radio"):
+        if mapped == "collection" and row_anchor_text:
+            # Same trust order for the discovery route: a vision hint of
+            # 'collection' must not resurrect the suppressed verdict.
+            type_info.signals.append("row-anchor-suppresses-collection")
+        elif mapped in (
+            "dropdown", "collection", "checkbox", "radio", "file-upload",
+            "date-picker",
+        ):
             suspected_type = mapped
             probe_mode = "discovery"
 
@@ -2382,6 +3260,53 @@ async def _generate_locators_from_element_data(
             return dropdown_result
         # Else: fall through to the generic 21-strategy below.
 
+    elif type_info.primary_type == "file-upload":
+        # G5: the correct element to return is NOT the styled button
+        # vision clicked — it is the file input the probe anchored.
+        # The handler needs probe_result for that anchor.
+        file_upload_result = await _file_upload_handler.find_locator(
+            page=search_context,
+            element_data=element_data,
+            type_info=type_info,
+            element_id=element_id,
+            element_description=element_description,
+            expected_text=expected_text,
+            search_context=search_context,
+            iframe_context=iframe_context,
+            confirmed_coords=confirmed_coords,
+            probe_result=probe_result,
+        )
+        if file_upload_result is not None:
+            _attach_classifier_metadata(
+                file_upload_result, type_info, probe_result, vision_type_hint
+            )
+            return file_upload_result
+        # Else: fall through to the generic 21-strategy below.
+
+    elif type_info.primary_type == "date-picker":
+        # G4: commits only on flatpickr (readonly inputs where Fill Text
+        # dies) — native input[type=date] falls through unchanged. The
+        # handler needs probe_result for the wrap-mode button → sibling
+        # input anchor.
+        date_picker_result = await _date_picker_handler.find_locator(
+            page=search_context,
+            element_data=element_data,
+            type_info=type_info,
+            element_id=element_id,
+            element_description=element_description,
+            expected_text=expected_text,
+            search_context=search_context,
+            iframe_context=iframe_context,
+            confirmed_coords=confirmed_coords,
+            probe_result=probe_result,
+        )
+        if date_picker_result is not None:
+            _attach_classifier_metadata(
+                date_picker_result, type_info, probe_result, vision_type_hint
+            )
+            return date_picker_result
+        # Else: fall through to the generic 21-strategy below.
+
     elif type_info.primary_type == "collection":
         collection_result = await _collection_handler.find_locator(
             page=search_context,
@@ -2428,114 +3353,7 @@ async def _generate_locators_from_element_data(
     # SINGLE ELEMENT LOCATOR GENERATION
     # ========================================
     # Generate candidate locators in priority order
-    locator_candidates = []
-    
-    # Priority 1: ID (most stable)
-    if element_data.get('id'):
-        element_id_val = element_data['id']
-        # Handle numeric IDs with attribute selector
-        if element_id_val.isdigit():
-            locator_candidates.append({
-                'locator': f'[id="{element_id_val}"]',
-                'type': 'id-attr',
-                'priority': PRIORITY_ID,
-                'strategy': 'ID attribute selector (numeric ID)'
-            })
-        else:
-            locator_candidates.append({
-                'locator': f'#{element_id_val}',  # Use CSS ID selector - Playwright native format
-                'type': 'id',
-                'priority': PRIORITY_ID,
-                'strategy': 'ID selector from element_data'
-            })
-    
-    # Priority 2: data-testid (very stable for testing)
-    if element_data.get('dataTestId'):
-        locator_candidates.append({
-            'locator': f'[data-testid="{element_data["dataTestId"]}"]',
-            'type': 'data-testid',
-            'priority': PRIORITY_TEST_ID,
-            'strategy': 'data-testid from element_data'
-        })
-    
-    # Priority 3: name attribute
-    if element_data.get('name'):
-        locator_candidates.append({
-            'locator': f'[name="{element_data["name"]}"]',
-            'type': 'name',
-            'priority': PRIORITY_NAME,
-            'strategy': 'Name attribute from element_data'
-        })
-    
-    # Priority 4: aria-label (with role if available)
-    if element_data.get('ariaLabel'):
-        aria_label = element_data['ariaLabel']
-        role = element_data.get('role')
-        if role:
-            locator_candidates.append({
-                'locator': f'[role="{role}"][aria-label="{aria_label}"]',
-                'type': 'aria-role',
-                'priority': PRIORITY_ARIA_LABEL,
-                'strategy': 'ARIA label + role from element_data'
-            })
-        else:
-            locator_candidates.append({
-                'locator': f'[aria-label="{aria_label}"]',
-                'type': 'aria-label',
-                'priority': PRIORITY_ARIA_LABEL,
-                'strategy': 'ARIA label from element_data'
-            })
-    
-    # Priority 5: placeholder (for inputs)
-    if element_data.get('placeholder'):
-        locator_candidates.append({
-            'locator': f'[placeholder="{element_data["placeholder"]}"]',
-            'type': 'placeholder',
-            'priority': PRIORITY_PLACEHOLDER,
-            'strategy': 'Placeholder attribute from element_data'
-        })
-    
-    # Priority 5.5: Parent-context CSS locators (for elements without id/name)
-    # When element lacks direct id/name but has parent with id/class, generate
-    # stable CSS selectors like "#parentId input" or ".parentClass input"
-    # This is MORE STABLE than xpath because it uses semantic anchors
-    if not element_data.get('id') and not element_data.get('name'):
-        tag_name = element_data.get('tagName', '')
-        parent_id = element_data.get('parentId', '')
-        parent_class = element_data.get('parentClass', '')
-        input_type = element_data.get('type', '')
-        
-        # Build CSS selector using parent context
-        escaped_parent_id = _escape_css_selector(parent_id)
-        if escaped_parent_id and tag_name:
-            # Use parent id + tag name (e.g., "#formContainer input")
-            css_locator = f'#{escaped_parent_id} {tag_name}'
-            if input_type:
-                # Be more specific for inputs (e.g., "#formContainer input[type='text']")
-                css_locator = f'#{escaped_parent_id} {tag_name}[type="{input_type}"]'
-            locator_candidates.append({
-                'locator': css_locator,
-                'type': 'parent-id-css',
-                'priority': PRIORITY_CSS_PARENT_ID,
-                'strategy': f'Parent ID context + tag (#{parent_id} {tag_name})'
-            })
-            logger.info(f"   📋 Added parent-context CSS: {css_locator}")
-        
-        elif parent_class and tag_name:
-            # Use first significant class from parent (escape special chars)
-            first_class = parent_class.split()[0] if ' ' in parent_class else parent_class
-            escaped_class = _escape_css_selector(first_class)
-            if escaped_class:
-                css_locator = f'.{escaped_class} {tag_name}'
-                if input_type:
-                    css_locator = f'.{escaped_class} {tag_name}[type="{input_type}"]'
-                locator_candidates.append({
-                    'locator': css_locator,
-                    'type': 'parent-class-css',
-                    'priority': PRIORITY_CSS_CLASS,
-                    'strategy': f'Parent class context + tag (.{first_class} {tag_name})'
-                })
-                logger.info(f"   📋 Added parent-context CSS: {css_locator}")
+    locator_candidates = _build_element_data_candidates(element_data)
     
     # ========================================
     # SMART LOCATOR FALLBACK (when no id/name/aria-label available)
@@ -2574,16 +3392,19 @@ async def _generate_locators_from_element_data(
                     'locator': shortened_xpath,
                     'type': 'shortened-xpath',
                     'priority': 15,  # Before full xpath
-                    'strategy': 'Shortened XPath (unique suffix)'
+                    'strategy': 'Shortened XPath (unique suffix)',
+                    'stability': classify_locator(shortened_xpath)
                 })
-            
+
             # Add full xpath as last resort with lowest priority
             strategy_note = 'Full XPath' + (' (iframe element)' if in_iframe else ' (last resort)')
+            full_xpath_locator = f'xpath={full_xpath}'
             locator_candidates.append({
-                'locator': f'xpath={full_xpath}',
+                'locator': full_xpath_locator,
                 'type': 'full-xpath',
                 'priority': 19,  # Demoted to last resort
-                'strategy': strategy_note
+                'strategy': strategy_note,
+                'stability': classify_locator(full_xpath_locator)
             })
             
             if in_iframe:
@@ -2592,15 +3413,53 @@ async def _generate_locators_from_element_data(
             # Skip xpath - let TEXT-FIRST (STEP 1) handle with disambiguation
             logger.info(f"   ⏭️ Skipping xpath - expected_text available, will use TEXT-FIRST strategy")
     
-    # Sort candidates by priority (lower number = higher priority)
-    locator_candidates.sort(key=lambda c: c.get('priority', 100))
-    
+    # Sort candidates by stability tier first, then priority (E1): a
+    # session-generated id (ext-gen1042) sinks below a stable name= but
+    # stays in the list as a last resort — demoted, never deleted, so a
+    # volatile-only element is still returned (marked) and found=false
+    # cannot rise (locked decision #3).
+    locator_candidates.sort(
+        key=lambda c: (
+            stability_rank(c.get('stability', STABLE)),
+            c.get('priority', 100),
+        )
+    )
+
     # Try each candidate locator in priority order
+    row_anchor_ambiguous_seen = False
     for candidate in locator_candidates:
         locator = candidate['locator']
         try:
             count = await search_context.locator(locator).count()
-            
+
+            # G1: per-row action controls (Edit/Delete icons repeated on
+            # every grid row) are only distinguishable by the row's data —
+            # anchor to the QA-named row before any other rescue.
+            row_anchored = False
+            if count > 1 and row_anchor_text:
+                _rc = confirmed_coords or (None, None)
+                row = await _upgrade_to_row_anchor(
+                    search_context, locator, row_anchor_text,
+                    x=_rc[0], y=_rc[1],
+                )
+                if row and row.get('locator'):
+                    locator = row['locator']
+                    count = 1
+                    row_anchored = True
+                elif row and row.get('ambiguous'):
+                    row_anchor_ambiguous_seen = True
+
+            # G2: hidden duplicates (closed modals, dual navs) must not kill
+            # the candidate when exactly one match is visible — upgrade to a
+            # visible-only composite and validate that instead.
+            visibility_filtered = False
+            if count > 1:
+                upgraded = await _upgrade_to_visible_only(search_context, locator)
+                if upgraded:
+                    locator = upgraded
+                    count = 1
+                    visibility_filtered = True
+
             if count == 1:
                 # SEMANTIC VALIDATION: Verify we found the RIGHT element
                 semantic_match = True
@@ -2611,18 +3470,18 @@ async def _generate_locators_from_element_data(
                     semantic_match, actual_text = await validate_semantic_match(None, expected_text, page=search_context, locator=locator)
                     
                     if not semantic_match:
-                        # Form controls (<input>, <select>, <textarea>) have no textContent
-                        # by the HTML spec — they are void/replaced elements. expected_text
-                        # here is the field's label context (visually associated by the LLM),
-                        # NOT the element's own DOM text. validate_semantic_match always returns
-                        # ("", False) for inputs, making it impossible for a correct structural
-                        # locator (id, name, data-testid) to pass when expected_text is set.
-                        # A unique structural locator for a form control IS semantic correctness:
-                        # id="first_name" uniquely naming the First Name field is the definition
-                        # of correct identification — textContent agreement is not required and
-                        # would never be achievable.
-                        # The alternative (falling through to TEXT-FIRST) reliably returns the
-                        # associated <label> element, which is the wrong element for automation.
+                        # Form controls (<input>, <select>, <textarea>): the semantic
+                        # check above already covers placeholder, aria-label, value,
+                        # and associated label text, so a labeled or placeholder-bearing
+                        # field passes on its own merits. When it still fails, a unique
+                        # structural locator (id, name, data-testid) is accepted anyway —
+                        # some fields are genuinely surface-less and structural uniqueness
+                        # is the only identification available (A2). The acceptance is
+                        # UNVERIFIED and reported as such: semantic_match stays False with
+                        # validation_method="form_control_structural". Narrowing the
+                        # acceptance to empty-surface fields only is deferred (owner,
+                        # 2026-07-04) until these logs show a real wrong-field acceptance
+                        # — watch for the warning below with a non-empty surface.
                         is_form_control = element_data.get('tagName', '').lower() in ('input', 'select', 'textarea')
 
                         # For DROPDOWNS: Use coordinate-based validation instead of text
@@ -2630,9 +3489,16 @@ async def _generate_locators_from_element_data(
                         is_dropdown = is_dropdown_element(element_data, element_description)
 
                         if is_form_control:
-                            semantic_match = True
                             validation_method = "form_control_structural"
-                            logger.info(f"   ✅ {candidate['type']}: form control — text validation skipped (inputs have no textContent)")
+                            if actual_text:
+                                logger.warning(
+                                    f"   ⚠️ {candidate['type']}: form control surface ('{actual_text[:MAX_TEXT_CONTENT_LENGTH]}') "
+                                    f"does not match expected '{expected_text}' — accepting unique structural locator UNVERIFIED (A2 carve-out)"
+                                )
+                            else:
+                                logger.info(
+                                    f"   ✅ {candidate['type']}: form control with empty semantic surface — accepting on structural uniqueness (unverified)"
+                                )
                         elif is_dropdown and confirmed_coords:
                             logger.info(f"   🔽 Dropdown detected - trying coordinate validation instead of text")
                             coord_match, coord_reason = await _validate_by_coordinates(
@@ -2644,11 +3510,15 @@ async def _generate_locators_from_element_data(
                                 validation_method = "coordinates"
                                 logger.info(f"   ✅ Dropdown validated via coordinates at {confirmed_coords}")
                             else:
-                                logger.info(f"   ⚠️ {candidate['type']}: coordinate validation also failed ({coord_reason})")
-                                logger.info(f"      Accepting unique locator anyway (trusting browser-use vision)")
-                                # For dropdowns, still accept unique locator even if coords don't match exactly
-                                semantic_match = True
-                                validation_method = "trust_unique"
+                                # Semantic text AND coordinates both flagged the wrong
+                                # element — two independent signals are never overridden
+                                # (A3). Reject and let later candidates / pipeline steps
+                                # find it or fail loudly.
+                                logger.info(
+                                    f"   ⚠️ {candidate['type']}: coordinate validation also failed ({coord_reason}) "
+                                    f"— rejecting despite uniqueness (trying next)"
+                                )
+                                continue
                         else:
                             # Not a form control or dropdown - standard text mismatch handling
                             logger.info(f"   ⚠️ {candidate['type']}: unique but text mismatch (trying next)")
@@ -2668,12 +3538,23 @@ async def _generate_locators_from_element_data(
                     element_type = 'table-row'
                     logger.info(f"      Element type: table-row")
                 
+                candidate_stability = candidate.get('stability', STABLE)
+                if candidate_stability == VOLATILE:
+                    logger.warning(
+                        f"   ⚠️ Emitting VOLATILE locator {locator} — no stable "
+                        f"candidate validated; expect breakage in a fresh session"
+                    )
+
                 return {
                     'element_id': element_id,
                     'description': element_description,
                     'found': True,
                     'best_locator': locator,
                     'element_type': element_type,
+                    'stability': candidate_stability,
+                    **({'visibility_filtered': True} if visibility_filtered else {}),
+                    **({'row_anchored': True} if row_anchored else {}),
+                    **({'row_anchor_ambiguous': True} if row_anchor_ambiguous_seen else {}),
                     'all_locators': [{
                         'type': candidate['type'],
                         'locator': locator,
@@ -2684,12 +3565,21 @@ async def _generate_locators_from_element_data(
                         'valid': True,
                         'validated': True,
                         'semantic_match': semantic_match,
-                        'validation_method': validation_method
+                        'validation_method': validation_method,
+                        'stability': candidate_stability,
+                        **({'visibility_filtered': True} if visibility_filtered else {}),
+                        **({'row_anchored': True} if row_anchored else {})
                     }],
                     'element_info': {
                         'tagName': element_data.get('tagName', ''),
                         'id': element_data.get('id', ''),
                         'textContent': element_data.get('textContent', ''),
+                        # Marker evidence for nlrf's Task G state scan — the
+                        # candidate path carries these (d3f6859); the STEP-0
+                        # accept must not starve the same consumer.
+                        'className': element_data.get('className', ''),
+                        'ariaInvalid': element_data.get('ariaInvalid', ''),
+                        'parentClassName': element_data.get('parentClassName', ''),
                         'actual_text': actual_text,
                         'source': 'element_data'
                     },
@@ -2724,6 +3614,463 @@ async def _generate_locators_from_element_data(
     return None
 
 
+def _build_coordinate_strategies(element_data: dict) -> list[dict]:
+    """
+    Build the coordinate-fallback locator strategies from extracted element data.
+
+    Pure candidate generation for the 21-strategy cascade (STEP 3): given the
+    element attributes read from the DOM at the confirmed coordinates, emit
+    every applicable strategy in priority order (lower = better). Uniqueness
+    validation happens in _validate_strategy_candidates.
+    """
+    locator_strategies = []
+
+    # Strategy 1: ID (Priority 1 - Best)
+    if element_data['id']:
+        locator_strategies.append({
+            'type': 'id',
+            'locator': f"id={element_data['id']}",
+            'priority': PRIORITY_ID,
+            'strategy': 'Native ID attribute'
+        })
+
+    # Strategy 2: data-testid (Priority 2)
+    if element_data['dataTestId']:
+        locator_strategies.append({
+            'type': 'data-testid',
+            'locator': f"data-testid={element_data['dataTestId']}",
+            'priority': PRIORITY_TEST_ID,
+            'strategy': 'Test ID attribute'
+        })
+
+    # Strategy 3: data-test (Priority 2)
+    if element_data['dataTest']:
+        locator_strategies.append({
+            'type': 'data-test',
+            'locator': f"data-test={element_data['dataTest']}",
+            'priority': PRIORITY_TEST_ID,
+            'strategy': 'Test attribute'
+        })
+
+    # Strategy 4: data-qa (Priority 2)
+    # Playwright has no data-qa selector engine (data-testid/data-test are
+    # built-in, data-qa is not) — only the CSS attribute form resolves.
+    if element_data['dataQa']:
+        data_qa_escaped = element_data['dataQa'].replace('"', '\\"')
+        locator_strategies.append({
+            'type': 'data-qa',
+            'locator': f'[data-qa="{data_qa_escaped}"]',
+            'priority': PRIORITY_TEST_ID,
+            'strategy': 'QA attribute'
+        })
+
+    # Strategy 5: name (Priority 3)
+    # Browser Library (Playwright) has no name= engine — only the CSS
+    # attribute form resolves.
+    if element_data['name']:
+        name_escaped = element_data['name'].replace('"', '\\"')
+        locator_strategies.append({
+            'type': 'name',
+            'locator': f'[name="{name_escaped}"]',
+            'priority': PRIORITY_NAME,
+            'strategy': 'Name attribute'
+        })
+
+    # Strategy 6: aria-label (Priority 4)
+    if element_data['ariaLabel']:
+        aria_label_escaped = element_data['ariaLabel'].replace('"', '\\"')
+        locator_strategies.append({
+            'type': 'aria-label',
+            'locator': f'[aria-label="{aria_label_escaped}"]',
+            'priority': PRIORITY_ARIA_LABEL,
+            'strategy': 'ARIA label'
+        })
+
+    # Strategy 7: placeholder (Priority 5)
+    if element_data['placeholder']:
+        placeholder_escaped = element_data['placeholder'].replace('"', '\\"')
+        locator_strategies.append({
+            'type': 'placeholder',
+            'locator': f'[placeholder="{placeholder_escaped}"]',
+            'priority': PRIORITY_PLACEHOLDER,
+            'strategy': 'Placeholder attribute'
+        })
+
+    # Strategy 8: title (Priority 5)
+    if element_data['title']:
+        title_escaped = element_data['title'].replace('"', '\\"')
+        locator_strategies.append({
+            'type': 'title',
+            'locator': f'[title="{title_escaped}"]',
+            'priority': PRIORITY_PLACEHOLDER,
+            'strategy': 'Title attribute'
+        })
+
+    # Strategy 9: Text content (Priority 6)
+    if element_data['innerText'] and len(element_data['innerText']) > MIN_TEXT_LENGTH:
+        # Escape quotes in text
+        text = element_data['innerText'].replace('"', '\\"')
+        locator_strategies.append({
+            'type': 'text',
+            'locator': f'text="{text}"',
+            'priority': PRIORITY_TEXT,
+            'strategy': 'Visible text content'
+        })
+
+    # Strategy 10: Role + Name (Priority 7)
+    if element_data['role'] and element_data['innerText']:
+        text = element_data['innerText'].replace('"', '\\"')
+        locator_strategies.append({
+            'type': 'role',
+            'locator': f'role={element_data["role"]}[name="{text}"]',
+            'priority': PRIORITY_ROLE,
+            'strategy': 'ARIA role with name'
+        })
+
+    # Strategy 11: CSS with parent ID context (Priority 8)
+    # Raw id/class values can carry CSS meta characters (Tailwind w-1/2,
+    # md:flex) — escape both, skip when unescapable (same as STEP 0).
+    if element_data['parentId'] and element_data['className']:
+        first_class = element_data['className'].split(
+        )[0] if element_data['className'] else ''
+        escaped_parent_id = _escape_css_selector(element_data['parentId'])
+        escaped_class = _escape_css_selector(first_class)
+        if escaped_parent_id and escaped_class:
+            locator_strategies.append({
+                'type': 'css-parent-id',
+                'locator': f"#{escaped_parent_id} {element_data['tagName']}.{escaped_class}",
+                'priority': PRIORITY_CSS_PARENT_ID,
+                'strategy': 'CSS with parent ID context'
+            })
+
+    # Strategy 12: CSS with nth-child (Priority 9)
+    if element_data['siblingIndex'] and element_data['parentClass']:
+        first_parent_class = element_data['parentClass'].split(
+        )[0] if element_data['parentClass'] else ''
+        escaped_parent_class = _escape_css_selector(first_parent_class)
+        if escaped_parent_class:
+            locator_strategies.append({
+                'type': 'css-nth-child',
+                'locator': f".{escaped_parent_class} > {element_data['tagName']}:nth-child({element_data['siblingIndex']})",
+                'priority': PRIORITY_CSS_NTH_CHILD,
+                'strategy': 'CSS with nth-child'
+            })
+
+    # Strategy 13: Simple CSS class (Priority 10)
+    if element_data['className']:
+        first_class = element_data['className'].split(
+        )[0] if element_data['className'] else ''
+        escaped_class = _escape_css_selector(first_class)
+        if escaped_class:
+            locator_strategies.append({
+                'type': 'css-class',
+                'locator': f"{element_data['tagName']}.{escaped_class}",
+                'priority': PRIORITY_CSS_CLASS,
+                'strategy': 'Simple CSS class'
+            })
+
+    # Strategy 14: XPath with parent ID (Priority 11)
+    if element_data['parentId']:
+        locator_strategies.append({
+            'type': 'xpath-parent-id',
+            'locator': f"xpath=//*[@id='{element_data['parentId']}']//{element_data['tagName']}",
+            'priority': PRIORITY_XPATH_PARENT_ID,
+            'strategy': 'XPath with parent ID'
+        })
+
+    # Strategy 15: XPath with parent class and position (Priority 12)
+    if element_data['parentClass'] and element_data['siblingIndex']:
+        first_parent_class = element_data['parentClass'].split(
+        )[0] if element_data['parentClass'] else ''
+        if first_parent_class:
+            locator_strategies.append({
+                'type': 'xpath-parent-class-position',
+                'locator': f"xpath=//*[contains(@class, '{first_parent_class}')]//{element_data['tagName']}[{element_data['siblingIndex']}]",
+                'priority': PRIORITY_XPATH_PARENT_CLASS,
+                'strategy': 'XPath with parent class and position'
+            })
+
+    # Strategy 16: XPath with text (Priority 13)
+    # XPath 1.0 has no backslash escaping — _xpath_string_literal builds a
+    # valid literal (concat() when both quote types are present).
+    if element_data['innerText'] and len(element_data['innerText']) > MIN_TEXT_LENGTH:
+        text_literal = _xpath_string_literal(
+            element_data['innerText'][:MAX_TEXT_DISPLAY_LENGTH]
+        )
+        locator_strategies.append({
+            'type': 'xpath-text',
+            'locator': f"xpath=//{element_data['tagName']}[contains(text(), {text_literal})]",
+            'priority': PRIORITY_XPATH_TEXT,
+            'strategy': 'XPath with text content'
+        })
+
+    # Strategy 17: XPath with title attribute (Priority 14)
+    if element_data['title']:
+        title_literal = _xpath_string_literal(element_data['title'])
+        locator_strategies.append({
+            'type': 'xpath-title',
+            'locator': f"xpath=//{element_data['tagName']}[@title={title_literal}]",
+            'priority': PRIORITY_XPATH_TITLE,
+            'strategy': 'XPath with title attribute'
+        })
+
+    # Strategy 18: XPath with href (for links) (Priority 15)
+    if element_data['href'] and element_data['tagName'] == 'a':
+        # Use partial href match
+        href_part = element_data['href'].split('?')[0].split('#')[0]
+        # Safe slicing to prevent IndexError when href_part is empty or too short
+        if href_part and len(href_part) > 0:
+            href_slice = href_part[-MAX_TEXT_DISPLAY_LENGTH:] if len(href_part) >= MAX_TEXT_DISPLAY_LENGTH else href_part
+            locator_strategies.append({
+                'type': 'xpath-href',
+                'locator': f"xpath=//a[contains(@href, '{href_slice}')]",
+                'priority': PRIORITY_XPATH_HREF,
+                'strategy': 'XPath with href'
+            })
+
+    # Strategy 19: XPath with class and position (Priority 16)
+    if element_data['className'] and element_data['siblingIndex']:
+        first_class = element_data['className'].split(
+        )[0] if element_data['className'] else ''
+        if first_class:
+            locator_strategies.append({
+                'type': 'xpath-class-position',
+                'locator': f"xpath=(//{element_data['tagName']}[contains(@class, '{first_class}')])[{element_data['siblingIndex']}]",
+                'priority': PRIORITY_XPATH_CLASS_POSITION,
+                'strategy': 'XPath with class and position'
+            })
+
+    # Strategy 20: XPath with multiple attributes (Priority 17)
+    if element_data['className'] and element_data['innerText']:
+        first_class = element_data['className'].split(
+        )[0] if element_data['className'] else ''
+        text = element_data['innerText'][:30]
+        if first_class and text:
+            text_literal = _xpath_string_literal(text)
+            locator_strategies.append({
+                'type': 'xpath-multi-attr',
+                'locator': f"xpath=//{element_data['tagName']}[contains(@class, '{first_class}') and contains(text(), {text_literal})]",
+                'priority': PRIORITY_XPATH_MULTI_ATTR,
+                'strategy': 'XPath with class and text'
+            })
+
+    # Strategy 21: XPath - first of type with class (Priority 18)
+    if element_data['className']:
+        first_class = element_data['className'].split(
+        )[0] if element_data['className'] else ''
+        if first_class:
+            locator_strategies.append({
+                'type': 'xpath-first-of-class',
+                'locator': f"xpath=(//{element_data['tagName']}[contains(@class, '{first_class}')])[1]",
+                'priority': PRIORITY_XPATH_FIRST_OF_CLASS,
+                'strategy': 'XPath - first element with class'
+            })
+
+    # Stability annotation (E1): every strategy carries its tier so the
+    # caller's ordering, the early-exit, and the PHASE-2 re-ranker all
+    # read one verdict.
+    for strategy in locator_strategies:
+        strategy['stability'] = _score_strategy_stability(strategy, element_data)
+
+    return locator_strategies
+
+
+def _worst_stability(*tiers: str) -> str:
+    """Return the most fragile of the given tiers (highest rank)."""
+    return max(tiers, key=stability_rank)
+
+
+def _score_strategy_stability(strategy: dict, element_data: dict) -> str:
+    """
+    Classify one STEP-3 strategy by the raw material it embeds.
+
+    Position dominates (nth-child, numeric XPath predicates, ordinal group
+    indexes encode today's DOM order — B2); attribute-backed strategies
+    score their source VALUE (B1); content-backed strategies check for
+    data-bound text like "Cart (3 items)" (B3).
+    """
+    if is_positional_locator(strategy['locator']):
+        return POSITIONAL
+
+    stype = strategy['type']
+    inner_text = element_data.get('innerText', '') or ''
+    first_class = (element_data.get('className', '') or '').split()[0] \
+        if (element_data.get('className', '') or '').strip() else ''
+
+    if stype == 'id':
+        return score_stability('id', element_data.get('id', ''))
+    if stype == 'data-testid':
+        return score_stability('data-testid', element_data.get('dataTestId', ''))
+    if stype == 'data-test':
+        return score_stability('data-test', element_data.get('dataTest', ''))
+    if stype == 'data-qa':
+        return score_stability('data-qa', element_data.get('dataQa', ''))
+    if stype == 'name':
+        return score_stability('name', element_data.get('name', ''))
+    if stype == 'aria-label':
+        return VOLATILE if is_dynamic_text(element_data.get('ariaLabel', '')) else STABLE
+    if stype in ('title', 'xpath-title'):
+        return VOLATILE if is_dynamic_text(element_data.get('title', '')) else STABLE
+    if stype in ('text', 'xpath-text'):
+        return VOLATILE if is_dynamic_text(inner_text) else STABLE
+    if stype == 'role':
+        return VOLATILE if is_dynamic_text(inner_text) else STABLE
+    if stype == 'placeholder':
+        return STABLE
+    if stype == 'css-parent-id':
+        return _worst_stability(
+            score_stability('id', element_data.get('parentId', '')),
+            score_stability('class', first_class),
+        )
+    if stype == 'xpath-parent-id':
+        return score_stability('id', element_data.get('parentId', ''))
+    if stype == 'css-class':
+        return score_stability('class', first_class)
+    if stype == 'xpath-multi-attr':
+        return _worst_stability(
+            score_stability('class', first_class),
+            VOLATILE if is_dynamic_text(inner_text[:30]) else STABLE,
+        )
+    if stype == 'xpath-href':
+        return STABLE  # query/fragment already stripped by the builder
+
+    return classify_locator(strategy['locator'])
+
+
+async def _validate_strategy_candidates(
+    search_context,
+    sorted_strategies: list,
+    expected_text: Optional[str] = None,
+    row_anchor_text: Optional[str] = None,
+    x: Optional[float] = None,
+    y: Optional[float] = None,
+) -> list[dict]:
+    """
+    Validate strategy candidates for uniqueness against the live DOM.
+
+    Runs count() per candidate in priority order, recording the outcome on
+    each. Early-exits once a high-priority candidate (priority <= PRIORITY_NAME:
+    ID, test attribute, name) validates as unique - remaining candidates stay
+    unvalidated. When expected_text is given, the early-exit additionally
+    requires a semantic match: a unique-but-wrong-text id must not stop the
+    loop, or Step 5 (authoritative selection) never sees the lower-priority
+    strategies that point at the right element.
+    """
+    validated_locators = []
+
+    for idx, strategy in enumerate(sorted_strategies, 1):
+        try:
+            # Log strategy attempt (DEBUG level - verbose details)
+            logger.info(f"🔍 Strategy {idx}/{len(sorted_strategies)}: {strategy['type']} (priority={strategy['priority']})")
+            logger.info(f"   Locator: {strategy['locator']}")
+            logger.info(f"   Strategy: {strategy['strategy']}")
+            
+            # Validate with Playwright
+            # NOTE: Use search_context (either page or frame_locator) for validation
+            # This ensures iframe locators are validated inside the iframe
+            count = await search_context.locator(strategy['locator']).count()
+
+            # G1: row-anchored rescue for per-row action controls — the
+            # QA-named row datum scopes the repeated candidate to its row;
+            # stability stays that of the base (data-derived anchor).
+            if count > 1 and row_anchor_text:
+                row = await _upgrade_to_row_anchor(
+                    search_context, strategy['locator'], row_anchor_text,
+                    x=x, y=y,
+                )
+                if row and row.get('locator'):
+                    strategy = {
+                        **strategy,
+                        'locator': row['locator'],
+                        'row_anchored': True,
+                    }
+                    count = 1
+                elif row and row.get('ambiguous'):
+                    # Option 1: fall through flagged — demote, never delete.
+                    strategy = {**strategy, 'row_anchor_ambiguous': True}
+
+            # G2: rescue candidates whose only duplicates are hidden DOM
+            # (closed modals, dual navs) — unique-among-visible upgrades to
+            # a visible-only composite; stability stays that of the base.
+            if count > 1:
+                upgraded = await _upgrade_to_visible_only(
+                    search_context, strategy['locator']
+                )
+                if upgraded:
+                    strategy = {
+                        **strategy,
+                        'locator': upgraded,
+                        'visibility_filtered': True,
+                    }
+                    count = 1
+
+            # Determine validation status
+            is_unique = (count == 1)
+            is_valid = (count == 1)  # Only unique locators are valid
+            
+            validated_locators.append({
+                **strategy,
+                'count': count,
+                'unique': is_unique,
+                'valid': is_valid,
+                'validated': True,
+                'validation_method': 'playwright'
+            })
+
+            # Log validation result with detailed status
+            if is_unique:
+                logger.info(f"   ✅ VALID & UNIQUE: count={count}, unique={is_unique}, valid={is_valid}")
+                
+                # OPTIMIZATION: Early exit for high-priority unique locators
+                # If we found a high-priority unique locator (ID, test-id, name), stop searching
+                # Priority 1-3 are considered "high-priority" (ID, test attributes, name)
+                # — but only when the VALUE is stable (E1): a volatile id
+                # (ext-gen1042) must not stop the cascade before stable
+                # lower-priority strategies get validated.
+                if (
+                    strategy['priority'] <= PRIORITY_NAME  # PRIORITY_NAME = 3
+                    and strategy.get('stability', STABLE) == STABLE
+                ):
+                    semantic_ok = True
+                    if expected_text:
+                        is_match, observed_text = await validate_semantic_match(
+                            None, expected_text,
+                            page=search_context, locator=strategy['locator']
+                        )
+                        if not is_match:
+                            semantic_ok = False
+                            logger.info(
+                                f"   🛑 SEMANTIC VETO on early exit: expected '{expected_text}', "
+                                f"got '{observed_text[:MAX_TEXT_CONTENT_LENGTH]}' - continuing validation"
+                            )
+                    if semantic_ok:
+                        logger.info(f"   ⚡ EARLY EXIT: High-priority unique locator found (priority={strategy['priority']})")
+                        logger.info(f"   Skipping validation of {len(sorted_strategies) - idx} remaining strategies")
+                        break  # Exit the loop early
+                    
+            elif count > 1:
+                logger.info(f"   ❌ NOT UNIQUE: count={count}, unique={is_unique}, valid={is_valid}")
+            elif count == 0:
+                logger.info(f"   ❌ NOT FOUND: count={count}, unique={is_unique}, valid={is_valid}")
+            else:
+                logger.info(f"   ⚠️ UNEXPECTED: count={count}, unique={is_unique}, valid={is_valid}")
+
+        except Exception as e:
+            logger.warning(f"   ❌ VALIDATION ERROR: {type(e).__name__}: {e}")
+            logger.warning(f"   Locator: {strategy['locator']}")
+            validated_locators.append({
+                **strategy,
+                'count': 0,  # Set to 0 instead of None for consistency
+                'unique': False,
+                'valid': False,
+                'validated': False,
+                'validation_error': str(e),
+                'validation_method': 'playwright'
+            })
+
+    return validated_locators
+
+
 async def find_unique_locator_at_coordinates(
     page,
     x: float,
@@ -2731,7 +4078,6 @@ async def find_unique_locator_at_coordinates(
     element_id: str,
     element_description: str,
     expected_text: Optional[str] = None,
-    library_type: str = "browser",
     element_data: Optional[dict] = None,  # Element attributes from browser-use DOM (id, class, text, etc.)
     search_context=None,  # Either page or frame_locator for iframe context
     iframe_context: Optional[str] = None,  # Iframe locator (e.g., 'iframe[id="main"]') for composite locators
@@ -2739,6 +4085,7 @@ async def find_unique_locator_at_coordinates(
     browser_session=None,  # BrowserSession for resolved_node lookup (DELTA 1)
     vision_type_hint: Optional[str] = None,  # LLM's visual classification (1 of 2 sources of truth)
     vision_framework_hint: Optional[str] = None,  # LLM's framework guess
+    row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
 ) -> dict:
     """
     Find a unique locator for an element using a semantic-first approach.
@@ -2772,7 +4119,6 @@ async def find_unique_locator_at_coordinates(
         element_description: Human-readable description (primary source for semantic locators)
         expected_text: The actual visible text AI sees on the element (e.g., "Submit", "Nike Air Max 270").
                       Used for semantic validation AND for text-first locator search.
-        library_type: "browser" or "selenium" - determines locator format
         element_data: Optional dict with element attributes from browser-use DOM:
                      {"tagName": "a", "id": "", "textContent": "Services", "href": "/services", ...}
         search_context: The context to use for locator searches (page or frame_locator).
@@ -2792,6 +4138,25 @@ async def find_unique_locator_at_coordinates(
     if iframe_context:
         logger.info(f"   🖼️ Iframe context: {iframe_context}")
     logger.info(f"   Coordinates: ({x}, {y}) [fallback]")
+
+    if not row_anchor_text:
+        row_anchor_text = _derive_row_anchor_text_from_description(element_description)
+        if row_anchor_text:
+            logger.info(f"   📌 Row anchor derived from description: '{row_anchor_text}'")
+
+    # q02 guard: an expected_text that IS the anchor datum makes every
+    # text-derived accept target the anchor CELL (unique, so the row
+    # rescue never fires). Correct it from the DOM evidence — idempotent
+    # when actions.py already corrected upstream.
+    expected_text, _anchor_corrected = correct_expected_text_for_row_anchor(
+        expected_text, row_anchor_text, element_data
+    )
+    if _anchor_corrected:
+        logger.info(
+            f"   📌 ROW-ANCHOR CORRECTION: expected_text was the anchor datum "
+            f"'{row_anchor_text}'; using element's own text '{expected_text}' "
+            f"(signal: row-anchor-corrects-expected-text)"
+        )
 
     # DELTA 1: Resolve the DOM node at (x, y) once via get_dom_element_at_coordinates.
     # Cache-hit path returns a fully-populated selector_map node (children_nodes is a list).
@@ -2837,7 +4202,22 @@ async def find_unique_locator_at_coordinates(
         for loc in result.get('all_locators', []):
             if loc.get('locator') and not loc['locator'].startswith(iframe_context):
                 loc['locator'] = _make_composite_locator(loc['locator'])
-        
+
+        # An ordinal iframe hop (iframe >> nth=N >>> ...) encodes DOM order:
+        # the whole composite is positional even when the inner locator is
+        # stable (B2). Row-anchored results are exempt from the whole-string
+        # check — their >> nth=0 is the containment collapse (structural,
+        # parent-first document order); for those only the hop itself can
+        # make the composite positional.
+        best = result.get('best_locator', '')
+        positional_scope = (
+            iframe_context if result.get('row_anchored') else best
+        )
+        if best and is_positional_locator(positional_scope):
+            result['stability'] = POSITIONAL
+            for loc in result.get('all_locators', []):
+                loc['stability'] = POSITIONAL
+
         result['iframe_context'] = iframe_context
         return result
     
@@ -2883,6 +4263,7 @@ async def find_unique_locator_at_coordinates(
             vision_type_hint=vision_type_hint,  # 1 of 2 sources of truth (probe is the other)
             vision_framework_hint=vision_framework_hint,
             page=page,  # Page-level for DOM probe (search_context may be frame_locator)
+            row_anchor_text=row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
         )
         if result:
             # Add approach metrics for pattern analysis
@@ -2898,16 +4279,17 @@ async def find_unique_locator_at_coordinates(
     # STEP 0.5: Collection detection (hybrid: is_collection flag + keyword fallback)
     # ========================================
     # Priority 1: Explicit is_collection=True from custom action (most reliable)
-    # Priority 2: Fallback keyword detection in description (backup)
+    # Priority 2: Fallback keyword detection in description (backup, suppressed
+    # when a row_anchor_text names a specific row — see _should_treat_as_collection)
     #
     # DESIGN: If CrewAI determined this is a collection, trust that decision
     # and return a multi-element locator even if only 1 element is currently visible.
-    
+
     explicit_collection = is_collection is True
-    keyword_collection = _is_collection_element({}, element_description) if element_description else False
-    
-    is_collection_request = explicit_collection or keyword_collection
-    
+    is_collection_request = _should_treat_as_collection(
+        is_collection, element_description, row_anchor_text
+    )
+
     if is_collection_request and expected_text:
         logger.info(f"🔍 Step 0.5: Collection detected - trying multi-element approach")
         if explicit_collection:
@@ -2933,11 +4315,13 @@ async def find_unique_locator_at_coordinates(
                 if iframe_context:
                     locator = _make_composite_locator(locator)
                 
+                collection_stability = classify_locator(locator)
                 return {
                     'element_id': element_id,
                     'description': element_description,
                     'found': True,
                     'best_locator': locator,
+                    'stability': collection_stability,
                     'is_collection': True,
                     'element_type': 'collection',
                     'all_locators': [{
@@ -2950,7 +4334,8 @@ async def find_unique_locator_at_coordinates(
                         'valid': True,
                         'validated': True,
                         'semantic_match': True,
-                        'validation_method': 'playwright'
+                        'validation_method': 'playwright',
+                        'stability': collection_stability
                     }],
                     'element_info': {
                         'expected_text': expected_text,
@@ -2994,7 +4379,13 @@ async def find_unique_locator_at_coordinates(
     if expected_text and expected_text.strip():
         logger.info(f"🔍 Step 1: Trying TEXT-FIRST locators from expected_text: '{expected_text}'")
         
-        text_result = await _find_element_by_expected_text(search_context, expected_text, element_description, x, y)
+        text_result = await _find_element_by_expected_text(
+            search_context, expected_text, element_description, x, y,
+            vision_type_hint=vision_type_hint,
+            probe_page=page,  # Page-level for the DOM probe (search_context may be a frame_locator)
+            iframe_context=iframe_context,
+            row_anchor_text=row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
+        )
         
         if text_result:
             # text_result is now a dict with 'locator' and optionally 'element_type'
@@ -3015,11 +4406,32 @@ async def find_unique_locator_at_coordinates(
                 strategy_name = 'Text-first locator from expected_text'
                 locator_type = 'text-first'
             
+            # Text-first locators can carry nth= disambiguation (positional)
+            # or data-bound text like "Cart (3 items)" (volatile) — classify
+            # the finished locator so the payload is honest about it.
+            text_first_stability = _classify_result_stability(
+                text_result, text_locator, iframe_context
+            )
+
+            # Carry the hidden-input redirect contract (G3) into element_info
+            # so the Assembler can click the proxy but read state from the
+            # real input.
+            _text_element_info = {'expected_text': expected_text}
+            if element_type:
+                _text_element_info['element_type'] = element_type
+            for _g3_key in ('hidden_input', 'input_locator', 'proxy_kind'):
+                if _g3_key in text_result:
+                    _text_element_info[_g3_key] = text_result[_g3_key]
             return {
                 'element_id': element_id,
                 'description': element_description,
                 'found': True,
                 'best_locator': text_locator,
+                'stability': text_first_stability,
+                # G1 row-anchor contract: anchored composite, or ambiguous
+                # anchor that fell through to nth= (nlrf warns on the flag).
+                **({'row_anchored': True} if text_result.get('row_anchored') else {}),
+                **({'row_anchor_ambiguous': True} if text_result.get('row_anchor_ambiguous') else {}),
                 'element_type': element_type,  # NEW: Pass element_type to caller
                 'all_locators': [{
                     'type': locator_type,
@@ -3031,9 +4443,10 @@ async def find_unique_locator_at_coordinates(
                     'valid': True,
                     'validated': True,
                     'semantic_match': True,  # By definition, text-first is semantically correct
-                    'validation_method': 'playwright'
+                    'validation_method': 'playwright',
+                    'stability': text_first_stability
                 }],
-                'element_info': {'expected_text': expected_text, 'element_type': element_type} if element_type else {'expected_text': expected_text},
+                'element_info': _text_element_info,
                 'coordinates': {'x': x, 'y': y, 'note': 'Not used - text-first approach succeeded'},
                 'validation_summary': {
                     'total_generated': 1,
@@ -3071,9 +4484,12 @@ async def find_unique_locator_at_coordinates(
     if element_description and element_description.strip():
         logger.info(f"🔍 Step 2: Trying SEMANTIC locators from description: '{element_description}'")
         
-        semantic_locator = await _find_element_by_description(search_context, element_description)
-        
-        if semantic_locator:
+        semantic_result = await _find_element_by_description(
+            search_context, element_description, row_anchor_text=row_anchor_text
+        )
+
+        if semantic_result:
+            semantic_locator = semantic_result['locator']
             # Add iframe prefix if needed
             if iframe_context:
                 semantic_locator = _make_composite_locator(semantic_locator)
@@ -3081,8 +4497,11 @@ async def find_unique_locator_at_coordinates(
             # If expected_text provided, validate that we found the right element
             semantic_match = True
             actual_text = ""
+            validation_method = "playwright"
+            accept = True
             if expected_text:
                 semantic_match, actual_text = await validate_semantic_match(None, expected_text, page=search_context, locator=semantic_locator)
+                accept = semantic_match
                 if not semantic_match:
                     logger.warning(f"⚠️ Description-based locator found BUT text doesn't match!")
                     logger.warning(f"   Expected: '{expected_text}'")
@@ -3091,14 +4510,30 @@ async def find_unique_locator_at_coordinates(
                     # Don't return - continue to try coordinates
                 else:
                     logger.info(f"✅ Semantic locator is correct (text matches)")
-            
-            if semantic_match:
+            else:
+                # The locator was built from description keywords alone
+                # (substring matchers) and there is no expected_text to check
+                # it against. Acceptance unchanged, but reported UNVERIFIED
+                # instead of validated (A6).
+                semantic_match = False
+                validation_method = "description_derived"
+                logger.info(
+                    "   ⚠️ No expected_text — accepting description-derived locator UNVERIFIED (A6)"
+                )
+
+            if accept:
                 logger.info(f"✅ Semantic locator found: {semantic_locator}")
+                semantic_stability = _classify_result_stability(
+                    semantic_result, semantic_locator, iframe_context
+                )
                 return {
                     'element_id': element_id,
                     'description': element_description,
                     'found': True,
                     'best_locator': semantic_locator,
+                    'stability': semantic_stability,
+                    **({'row_anchored': True}
+                       if semantic_result.get('row_anchored') else {}),
                     'all_locators': [{
                         'type': 'semantic',
                         'locator': semantic_locator,
@@ -3109,7 +4544,8 @@ async def find_unique_locator_at_coordinates(
                         'valid': True,
                         'validated': True,
                         'semantic_match': semantic_match,
-                        'validation_method': 'playwright'
+                        'validation_method': validation_method,
+                        'stability': semantic_stability
                     }],
                     'element_info': {'description': element_description, 'actual_text': actual_text} if actual_text else {'description': element_description},
                     'coordinates': {'x': x, 'y': y, 'note': 'Not used - semantic approach succeeded'},
@@ -3120,7 +4556,7 @@ async def find_unique_locator_at_coordinates(
                         'validated': 1,
                         'best_type': 'semantic',
                         'best_strategy': 'Semantic locator from description',
-                        'validation_method': 'playwright'
+                        'validation_method': validation_method
                     },
                     # Top-level validation fields (required by workflow validation)
                     'validated': True,
@@ -3158,31 +4594,47 @@ async def find_unique_locator_at_coordinates(
         y=y,
         element_description=element_description,
         expected_text=expected_text,
-        library_type=library_type,
         search_context=search_context,
         iframe_context=iframe_context
     )
     
+    # Validate against expected_text if provided. D1 (dialog-clobber): a
+    # DETECTED mismatch rejects the fallback result instead of accepting it
+    # — the clobber run accepted role=dialog[...] for 'Sign In' despite
+    # logging the mismatch. Task 7 precedent: never return-something-over-
+    # fail on a detected contradiction; the coordinate-based approach below
+    # is the next honest step. No expected_text or no accessible_name means
+    # nothing to contradict — accept stands.
+    semantic_match = True
     if accessibility_result and accessibility_result.get('locator'):
-        locator = accessibility_result['locator']
-        logger.info(f"✅ ACCESSIBILITY FALLBACK SUCCESS: {locator}")
-        
-        # Validate against expected_text if provided
-        semantic_match = True
         if expected_text and accessibility_result.get('accessible_name'):
             expected_lower = expected_text.lower()
             accessible_lower = accessibility_result['accessible_name'].lower()
             semantic_match = expected_lower in accessible_lower or accessible_lower in expected_lower
-            if not semantic_match:
-                logger.info(f"   ⚠️ Semantic mismatch: expected '{expected_text}' but found '{accessibility_result['accessible_name']}'")
-        
+        if not semantic_match:
+            logger.info(
+                f"   ⛔ Accessibility fallback found "
+                f"'{accessibility_result['accessible_name']}' but expected "
+                f"'{expected_text}' — rejecting the mismatched result "
+                f"(signal: accessibility-mismatch-rejected); falling back "
+                f"to coordinate-based approach"
+            )
+            accessibility_result = None
+
+    if accessibility_result and accessibility_result.get('locator'):
+        locator = accessibility_result['locator']
+        logger.info(f"✅ ACCESSIBILITY FALLBACK SUCCESS: {locator}")
+
+        accessibility_stability = classify_locator(locator)
         return _apply_iframe_prefix_to_result({
             # CRITICAL: workflow.py extraction requires these fields
             'element_id': element_id,
             'description': element_description,
             'found': True,  # CRITICAL: Required by registration.py to recognize as success
             'best_locator': locator,
-            'all_locators': [{'locator': locator, 'method': 'accessibility_role', 'priority': 1}],
+            'stability': accessibility_stability,
+            'all_locators': [{'locator': locator, 'method': 'accessibility_role', 'priority': 1,
+                              'stability': accessibility_stability}],
             'preferred_method': 'accessibility_role',
             'validated': True,
             'count': accessibility_result.get('count', 1),
@@ -3455,311 +4907,25 @@ async def find_unique_locator_at_coordinates(
         }
 
     # Step 3: Try multiple locator strategies in priority order
-    locator_strategies = []
-
-    # Strategy 1: ID (Priority 1 - Best)
-    if element_data['id']:
-        locator_strategies.append({
-            'type': 'id',
-            'locator': f"id={element_data['id']}",
-            'priority': PRIORITY_ID,
-            'strategy': 'Native ID attribute'
-        })
-
-    # Strategy 2: data-testid (Priority 2)
-    if element_data['dataTestId']:
-        locator_strategies.append({
-            'type': 'data-testid',
-            'locator': f"data-testid={element_data['dataTestId']}",
-            'priority': PRIORITY_TEST_ID,
-            'strategy': 'Test ID attribute'
-        })
-
-    # Strategy 3: data-test (Priority 2)
-    if element_data['dataTest']:
-        locator_strategies.append({
-            'type': 'data-test',
-            'locator': f"data-test={element_data['dataTest']}",
-            'priority': PRIORITY_TEST_ID,
-            'strategy': 'Test attribute'
-        })
-
-    # Strategy 4: data-qa (Priority 2)
-    if element_data['dataQa']:
-        locator_strategies.append({
-            'type': 'data-qa',
-            'locator': f"data-qa={element_data['dataQa']}",
-            'priority': PRIORITY_TEST_ID,
-            'strategy': 'QA attribute'
-        })
-
-    # Strategy 5: name (Priority 3)
-    # Note: Browser Library (Playwright) doesn't support name= prefix
-    # SeleniumLibrary supports name= prefix
-    if element_data['name']:
-        if library_type == "browser":
-            # Browser Library: use attribute selector
-            name_escaped = element_data['name'].replace('"', '\\"')
-            locator_strategies.append({
-                'type': 'name',
-                'locator': f'[name="{name_escaped}"]',
-                'priority': PRIORITY_NAME,
-                'strategy': 'Name attribute'
-            })
-        else:
-            # SeleniumLibrary: use name= prefix
-            locator_strategies.append({
-                'type': 'name',
-                'locator': f"name={element_data['name']}",
-                'priority': PRIORITY_NAME,
-                'strategy': 'Name attribute'
-            })
-
-    # Strategy 6: aria-label (Priority 4)
-    if element_data['ariaLabel']:
-        aria_label_escaped = element_data['ariaLabel'].replace('"', '\\"')
-        locator_strategies.append({
-            'type': 'aria-label',
-            'locator': f'[aria-label="{aria_label_escaped}"]',
-            'priority': PRIORITY_ARIA_LABEL,
-            'strategy': 'ARIA label'
-        })
-
-    # Strategy 7: placeholder (Priority 5)
-    if element_data['placeholder']:
-        placeholder_escaped = element_data['placeholder'].replace('"', '\\"')
-        locator_strategies.append({
-            'type': 'placeholder',
-            'locator': f'[placeholder="{placeholder_escaped}"]',
-            'priority': PRIORITY_PLACEHOLDER,
-            'strategy': 'Placeholder attribute'
-        })
-
-    # Strategy 8: title (Priority 5)
-    if element_data['title']:
-        title_escaped = element_data['title'].replace('"', '\\"')
-        locator_strategies.append({
-            'type': 'title',
-            'locator': f'[title="{title_escaped}"]',
-            'priority': PRIORITY_PLACEHOLDER,
-            'strategy': 'Title attribute'
-        })
-
-    # Strategy 9: Text content (Priority 6)
-    if element_data['innerText'] and len(element_data['innerText']) > MIN_TEXT_LENGTH:
-        # Escape quotes in text
-        text = element_data['innerText'].replace('"', '\\"')
-        locator_strategies.append({
-            'type': 'text',
-            'locator': f'text="{text}"',
-            'priority': PRIORITY_TEXT,
-            'strategy': 'Visible text content'
-        })
-
-    # Strategy 10: Role + Name (Priority 7)
-    if element_data['role'] and element_data['innerText']:
-        text = element_data['innerText'].replace('"', '\\"')
-        locator_strategies.append({
-            'type': 'role',
-            'locator': f'role={element_data["role"]}[name="{text}"]',
-            'priority': PRIORITY_ROLE,
-            'strategy': 'ARIA role with name'
-        })
-
-    # Strategy 11: CSS with parent ID context (Priority 8)
-    if element_data['parentId'] and element_data['className']:
-        first_class = element_data['className'].split(
-        )[0] if element_data['className'] else ''
-        if first_class:
-            locator_strategies.append({
-                'type': 'css-parent-id',
-                'locator': f"#{element_data['parentId']} {element_data['tagName']}.{first_class}",
-                'priority': PRIORITY_CSS_PARENT_ID,
-                'strategy': 'CSS with parent ID context'
-            })
-
-    # Strategy 12: CSS with nth-child (Priority 9)
-    if element_data['siblingIndex'] and element_data['parentClass']:
-        first_parent_class = element_data['parentClass'].split(
-        )[0] if element_data['parentClass'] else ''
-        if first_parent_class:
-            locator_strategies.append({
-                'type': 'css-nth-child',
-                'locator': f".{first_parent_class} > {element_data['tagName']}:nth-child({element_data['siblingIndex']})",
-                'priority': PRIORITY_CSS_NTH_CHILD,
-                'strategy': 'CSS with nth-child'
-            })
-
-    # Strategy 13: Simple CSS class (Priority 10)
-    if element_data['className']:
-        first_class = element_data['className'].split(
-        )[0] if element_data['className'] else ''
-        if first_class:
-            locator_strategies.append({
-                'type': 'css-class',
-                'locator': f"{element_data['tagName']}.{first_class}",
-                'priority': PRIORITY_CSS_CLASS,
-                'strategy': 'Simple CSS class'
-            })
-
-    # Strategy 14: XPath with parent ID (Priority 11)
-    if element_data['parentId']:
-        locator_strategies.append({
-            'type': 'xpath-parent-id',
-            'locator': f"xpath=//*[@id='{element_data['parentId']}']//{element_data['tagName']}",
-            'priority': PRIORITY_XPATH_PARENT_ID,
-            'strategy': 'XPath with parent ID'
-        })
-
-    # Strategy 15: XPath with parent class and position (Priority 12)
-    if element_data['parentClass'] and element_data['siblingIndex']:
-        first_parent_class = element_data['parentClass'].split(
-        )[0] if element_data['parentClass'] else ''
-        if first_parent_class:
-            locator_strategies.append({
-                'type': 'xpath-parent-class-position',
-                'locator': f"xpath=//*[contains(@class, '{first_parent_class}')]//{element_data['tagName']}[{element_data['siblingIndex']}]",
-                'priority': PRIORITY_XPATH_PARENT_CLASS,
-                'strategy': 'XPath with parent class and position'
-            })
-
-    # Strategy 16: XPath with text (Priority 13)
-    if element_data['innerText'] and len(element_data['innerText']) > MIN_TEXT_LENGTH:
-        text = element_data['innerText'].replace("'", "\\'")
-        locator_strategies.append({
-            'type': 'xpath-text',
-            'locator': f"xpath=//{element_data['tagName']}[contains(text(), '{text[:MAX_TEXT_DISPLAY_LENGTH]}')]",
-            'priority': PRIORITY_XPATH_TEXT,
-            'strategy': 'XPath with text content'
-        })
-
-    # Strategy 17: XPath with title attribute (Priority 14)
-    if element_data['title']:
-        title = element_data['title'].replace("'", "\\'")
-        locator_strategies.append({
-            'type': 'xpath-title',
-            'locator': f"xpath=//{element_data['tagName']}[@title='{title}']",
-            'priority': PRIORITY_XPATH_TITLE,
-            'strategy': 'XPath with title attribute'
-        })
-
-    # Strategy 18: XPath with href (for links) (Priority 15)
-    if element_data['href'] and element_data['tagName'] == 'a':
-        # Use partial href match
-        href_part = element_data['href'].split('?')[0].split('#')[0]
-        # Safe slicing to prevent IndexError when href_part is empty or too short
-        if href_part and len(href_part) > 0:
-            href_slice = href_part[-MAX_TEXT_DISPLAY_LENGTH:] if len(href_part) >= MAX_TEXT_DISPLAY_LENGTH else href_part
-            locator_strategies.append({
-                'type': 'xpath-href',
-                'locator': f"xpath=//a[contains(@href, '{href_slice}')]",
-                'priority': PRIORITY_XPATH_HREF,
-                'strategy': 'XPath with href'
-            })
-
-    # Strategy 19: XPath with class and position (Priority 16)
-    if element_data['className'] and element_data['siblingIndex']:
-        first_class = element_data['className'].split(
-        )[0] if element_data['className'] else ''
-        if first_class:
-            locator_strategies.append({
-                'type': 'xpath-class-position',
-                'locator': f"xpath=(//{element_data['tagName']}[contains(@class, '{first_class}')])[{element_data['siblingIndex']}]",
-                'priority': PRIORITY_XPATH_CLASS_POSITION,
-                'strategy': 'XPath with class and position'
-            })
-
-    # Strategy 20: XPath with multiple attributes (Priority 17)
-    if element_data['className'] and element_data['innerText']:
-        first_class = element_data['className'].split(
-        )[0] if element_data['className'] else ''
-        text = element_data['innerText'].replace("'", "\\'")[:30]
-        if first_class and text:
-            locator_strategies.append({
-                'type': 'xpath-multi-attr',
-                'locator': f"xpath=//{element_data['tagName']}[contains(@class, '{first_class}') and contains(text(), '{text}')]",
-                'priority': PRIORITY_XPATH_MULTI_ATTR,
-                'strategy': 'XPath with class and text'
-            })
-
-    # Strategy 21: XPath - first of type with class (Priority 18)
-    if element_data['className']:
-        first_class = element_data['className'].split(
-        )[0] if element_data['className'] else ''
-        if first_class:
-            locator_strategies.append({
-                'type': 'xpath-first-of-class',
-                'locator': f"xpath=(//{element_data['tagName']}[contains(@class, '{first_class}')])[1]",
-                'priority': PRIORITY_XPATH_FIRST_OF_CLASS,
-                'strategy': 'XPath - first element with class'
-            })
+    locator_strategies = _build_coordinate_strategies(element_data)
 
     logger.info(
         f"🔍 Generated {len(locator_strategies)} locator strategies to test")
 
     # Step 4: Validate each strategy
-    validated_locators = []
-    
     # Sort strategies by priority for optimal early exit
     # Lower priority number = better locator (1=ID is best, 18=XPath-first-of-class is worst)
-    sorted_strategies = sorted(locator_strategies, key=lambda x: x['priority'])
-
-    for idx, strategy in enumerate(sorted_strategies, 1):
-        try:
-            # Log strategy attempt (DEBUG level - verbose details)
-            logger.info(f"🔍 Strategy {idx}/{len(sorted_strategies)}: {strategy['type']} (priority={strategy['priority']})")
-            logger.info(f"   Locator: {strategy['locator']}")
-            logger.info(f"   Strategy: {strategy['strategy']}")
-            
-            # Validate with Playwright
-            # NOTE: Use search_context (either page or frame_locator) for validation
-            # This ensures iframe locators are validated inside the iframe
-            count = await search_context.locator(strategy['locator']).count()
-            
-            # Determine validation status
-            is_unique = (count == 1)
-            is_valid = (count == 1)  # Only unique locators are valid
-            
-            validated_locators.append({
-                **strategy,
-                'count': count,
-                'unique': is_unique,
-                'valid': is_valid,
-                'validated': True,
-                'validation_method': 'playwright'
-            })
-
-            # Log validation result with detailed status
-            if is_unique:
-                logger.info(f"   ✅ VALID & UNIQUE: count={count}, unique={is_unique}, valid={is_valid}")
-                
-                # OPTIMIZATION: Early exit for high-priority unique locators
-                # If we found a high-priority unique locator (ID, test-id, name), stop searching
-                # Priority 1-3 are considered "high-priority" (ID, test attributes, name)
-                if strategy['priority'] <= PRIORITY_NAME:  # PRIORITY_NAME = 3
-                    logger.info(f"   ⚡ EARLY EXIT: High-priority unique locator found (priority={strategy['priority']})")
-                    logger.info(f"   Skipping validation of {len(sorted_strategies) - idx} remaining strategies")
-                    break  # Exit the loop early
-                    
-            elif count > 1:
-                logger.info(f"   ❌ NOT UNIQUE: count={count}, unique={is_unique}, valid={is_valid}")
-            elif count == 0:
-                logger.info(f"   ❌ NOT FOUND: count={count}, unique={is_unique}, valid={is_valid}")
-            else:
-                logger.info(f"   ⚠️ UNEXPECTED: count={count}, unique={is_unique}, valid={is_valid}")
-
-        except Exception as e:
-            logger.warning(f"   ❌ VALIDATION ERROR: {type(e).__name__}: {e}")
-            logger.warning(f"   Locator: {strategy['locator']}")
-            validated_locators.append({
-                **strategy,
-                'count': 0,  # Set to 0 instead of None for consistency
-                'unique': False,
-                'valid': False,
-                'validated': False,
-                'validation_error': str(e),
-                'validation_method': 'playwright'
-            })
+    # Stability tier first, then priority (E1): volatile ids and positional
+    # strategies sink below stable candidates but stay in the cascade as
+    # last resorts — demoted, never deleted.
+    sorted_strategies = sorted(
+        locator_strategies,
+        key=lambda x: (stability_rank(x.get('stability', STABLE)), x['priority']),
+    )
+    validated_locators = await _validate_strategy_candidates(
+        search_context, sorted_strategies, expected_text=expected_text,
+        row_anchor_text=row_anchor_text, x=x, y=y,
+    )
 
     # Step 5: Select best locator (unique, lowest priority number)
     # WITH SEMANTIC VALIDATION if expected_text is provided
@@ -3771,8 +4937,12 @@ async def find_unique_locator_at_coordinates(
     actual_text = ""
     
     if unique_locators:
-        # Sort by priority (lowest = best)
-        sorted_locators = sorted(unique_locators, key=lambda x: x['priority'])
+        # Sort by stability tier, then priority (E1): a volatile id only
+        # wins when no stable candidate validated.
+        sorted_locators = sorted(
+            unique_locators,
+            key=lambda x: (stability_rank(x.get('stability', STABLE)), x['priority']),
+        )
         
         # If expected_text is provided, find a locator that ALSO matches semantically
         if expected_text:
@@ -3973,12 +5143,20 @@ async def find_unique_locator_at_coordinates(
         'description': element_description,
         'found': best_locator is not None,
         'best_locator': best_locator,
+        'stability': (
+            best_locator_obj.get('stability', STABLE)
+            if best_locator_obj else None
+        ),
         'all_locators': validated_locators,
         'element_info': {
             'id': element_data['id'],
             'tagName': element_data['tagName'],
             'text': element_data['textContent'],
             'className': element_data['className'],
+            # .get: some element_data producers (JS extraction paths) predate
+            # the Task G aria pipe and don't carry the key.
+            'ariaInvalid': element_data.get('ariaInvalid', ''),
+            'parentClassName': element_data.get('parentClassName', ''),
             'name': element_data['name'],
             'testId': element_data['dataTestId'],
             'actual_text': actual_text,  # Add actual text for debugging
@@ -3999,6 +5177,11 @@ async def find_unique_locator_at_coordinates(
         result['unique'] = True
         result['valid'] = True
         result['validation_method'] = 'playwright'
+        if best_locator_obj.get('stability', STABLE) != STABLE:
+            logger.warning(
+                f"   ⚠️ Emitting {best_locator_obj.get('stability')} locator "
+                f"{best_locator} — no stable candidate validated"
+            )
         # Approach metrics for pattern analysis (coordinate_fallback succeeded)
         result['approach_metrics'] = {
             **_approach_metrics_base,

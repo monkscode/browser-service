@@ -80,6 +80,90 @@ class TestExtractDomNodeAttributes:
         assert result["tagName"] == "span"
         assert result["id"] == ""
 
+    # --- C3: the source test attribute must be carried with the value ---
+
+    def _make_node(self, attrs):
+        node = MagicMock()
+        node.node_name = "BUTTON"
+        node.attributes = attrs
+        node.xpath = ""
+        return node
+
+    def test_data_testid_carries_source_attr(self):
+        """data-testid present → dataTestAttr names data-testid."""
+        result = self._get_fn()(self._make_node({"data-testid": "login-btn"}))
+        assert result["dataTestId"] == "login-btn"
+        assert result["dataTestAttr"] == "data-testid"
+
+    def test_data_test_only_carries_source_attr(self):
+        """C3 regression: element with ONLY data-test must not be reported as
+        data-testid — the emitter would build [data-testid=...] which matches
+        0 elements and silently loses the hook."""
+        result = self._get_fn()(self._make_node({"data-test": "login-btn"}))
+        assert result["dataTestId"] == "login-btn"
+        assert result["dataTestAttr"] == "data-test"
+
+    def test_both_test_attrs_prefer_data_testid(self):
+        result = self._get_fn()(
+            self._make_node({"data-testid": "tid", "data-test": "t"})
+        )
+        assert result["dataTestId"] == "tid"
+        assert result["dataTestAttr"] == "data-testid"
+
+    def test_neither_test_attr_defaults(self):
+        result = self._get_fn()(self._make_node({"id": "x"}))
+        assert result["dataTestId"] == ""
+        assert result["dataTestAttr"] == "data-testid"
+
+    # --- Task G (nlrf G7): aria-invalid rides the extraction pipe ---
+
+    def test_aria_invalid_extracted(self):
+        """aria-invalid is the ARIA state signal for invalid fields —
+        nlrf's state-verification assembler emits a Get Attribute
+        assertion when the observed field carries it, covering sites
+        that mark errors via ARIA instead of a CSS class."""
+        result = self._get_fn()(
+            self._make_node({"id": "email", "aria-invalid": "true"})
+        )
+        assert result["ariaInvalid"] == "true"
+
+    def test_aria_invalid_defaults_empty(self):
+        """Fields without the attribute must report empty string, not
+        raise — most elements never set aria-invalid."""
+        result = self._get_fn()(self._make_node({"id": "email"}))
+        assert result["ariaInvalid"] == ""
+
+    # --- Task G parent scan: Bootstrap-3-style parent-level error marker ---
+
+    def test_parent_class_extracted(self):
+        """Bootstrap 3 marks invalid fields on the PARENT div
+        (form-group has-error) — the field's own class list stays clean.
+        The extractor must carry the immediate parent's classes so nlrf's
+        marker scan can cover that convention (JS-extraction element_data
+        producers already emit parentClassName; this aligns the DOM-node
+        path)."""
+        parent = MagicMock()
+        parent.attributes = {"class": "form-group has-error"}
+        node = self._make_node({"id": "email", "class": "form-control"})
+        node.parent_node = parent
+        result = self._get_fn()(node)
+        assert result["parentClassName"] == "form-group has-error"
+
+    def test_parent_class_defaults_empty_without_parent(self):
+        """Root-level elements (no parent) must report empty string."""
+        node = self._make_node({"id": "email"})
+        node.parent_node = None
+        result = self._get_fn()(node)
+        assert result["parentClassName"] == ""
+
+    def test_parent_class_defaults_empty_without_parent_attributes(self):
+        """A parent node without an attributes dict must not raise."""
+        parent = MagicMock(spec=[])
+        node = self._make_node({"id": "email"})
+        node.parent_node = parent
+        result = self._get_fn()(node)
+        assert result["parentClassName"] == ""
+
 
 class TestDetectIframeContext:
     """Tests for _detect_iframe_context."""
@@ -88,7 +172,8 @@ class TestDetectIframeContext:
         from browser_service.agent.registration import _detect_iframe_context
         return _detect_iframe_context
 
-    def _make_iframe_element(self, x, y, w, h, iframe_id="", iframe_name=""):
+    def _make_iframe_element(self, x, y, w, h, iframe_id="", iframe_name="",
+                             iframe_title="", iframe_class=""):
         elem = MagicMock()
         elem.node_name = "iframe"
         pos = MagicMock()
@@ -97,7 +182,12 @@ class TestDetectIframeContext:
         pos.width = w
         pos.height = h
         elem.absolute_position = pos
-        elem.attributes = {"id": iframe_id, "name": iframe_name}
+        elem.attributes = {
+            "id": iframe_id,
+            "name": iframe_name,
+            "title": iframe_title,
+            "class": iframe_class,
+        }
         return elem
 
     def test_coords_inside_iframe_by_id(self):
@@ -140,6 +230,109 @@ class TestDetectIframeContext:
         locator, _ = fn(selector_map, (100, 100))
         assert "iframe" in locator
         assert "nth=" in locator
+
+    # --- G6 / Task F: title and class before the ordinal fallback -------
+    # The ordinal shifts when an async third-party iframe (ASTPP:
+    # #jsd-widget support chat) loads at a different moment between
+    # discovery and RF runtime — iframe >> nth=N then points at a
+    # DIFFERENT frame. A stable title/class names the frame by what it
+    # is instead of where it sits.
+
+    def test_iframe_by_title(self):
+        """CKEditor case: no id/name, stable title → iframe[title=...]."""
+        fn = self._get_fn()
+        editor = self._make_iframe_element(
+            0, 0, 800, 600, iframe_title="Rich Text Editor, template",
+            iframe_class="cke_wysiwyg_frame cke_reset",
+        )
+        widget = self._make_iframe_element(
+            900, 900, 50, 50, iframe_id="jsd-widget")
+        locator, _ = fn({0: editor, 1: widget}, (100, 100))
+        assert locator == 'iframe[title="Rich Text Editor, template"]'
+
+    def test_title_quotes_escaped(self):
+        fn = self._get_fn()
+        iframe = self._make_iframe_element(
+            0, 0, 800, 600, iframe_title='He said "hi"')
+        locator, _ = fn({0: iframe}, (100, 100))
+        assert locator == 'iframe[title="He said \\"hi\\""]'
+
+    def test_dynamic_title_skipped(self):
+        """A data-bound title (date) dies next session → not an anchor."""
+        fn = self._get_fn()
+        iframe = self._make_iframe_element(
+            0, 0, 800, 600, iframe_title="Report 2026-07-08")
+        locator, _ = fn({0: iframe}, (100, 100))
+        assert "nth=" in locator
+
+    def test_duplicate_title_skipped(self):
+        """Two iframes sharing a title → frame_locator would be ambiguous."""
+        fn = self._get_fn()
+        a = self._make_iframe_element(0, 0, 400, 600, iframe_title="Ad")
+        b = self._make_iframe_element(500, 0, 400, 600, iframe_title="Ad")
+        locator, _ = fn({0: a, 1: b}, (100, 100))
+        assert "nth=" in locator
+
+    def test_iframe_by_unique_stable_class(self):
+        """No id/name/title → first stable, unique, identifier-shaped class."""
+        fn = self._get_fn()
+        editor = self._make_iframe_element(
+            0, 0, 800, 600, iframe_class="cke_wysiwyg_frame cke_reset")
+        widget = self._make_iframe_element(
+            900, 900, 50, 50, iframe_class="jsd-frame")
+        locator, _ = fn({0: editor, 1: widget}, (100, 100))
+        assert locator == "iframe.cke_wysiwyg_frame"
+
+    def test_volatile_class_skipped(self):
+        """An init-order counter class (cke_1) is dead next session —
+        the scorer must veto it (couples with the cke_\\d+ scorer rule)."""
+        fn = self._get_fn()
+        iframe = self._make_iframe_element(0, 0, 800, 600,
+                                           iframe_class="cke_1")
+        locator, _ = fn({0: iframe}, (100, 100))
+        assert "nth=" in locator
+
+    def test_volatile_class_skipped_next_class_used(self):
+        fn = self._get_fn()
+        iframe = self._make_iframe_element(
+            0, 0, 800, 600, iframe_class="cke_1 cke_wysiwyg_frame")
+        locator, _ = fn({0: iframe}, (100, 100))
+        assert locator == "iframe.cke_wysiwyg_frame"
+
+    def test_non_identifier_class_skipped(self):
+        """Tailwind-style class (w-1/2) is not a valid bare .class selector."""
+        fn = self._get_fn()
+        iframe = self._make_iframe_element(0, 0, 800, 600,
+                                           iframe_class="w-1/2")
+        locator, _ = fn({0: iframe}, (100, 100))
+        assert "nth=" in locator
+
+    def test_shared_class_skipped(self):
+        """A class carried by another iframe too is ambiguous → ordinal."""
+        fn = self._get_fn()
+        a = self._make_iframe_element(0, 0, 400, 600,
+                                      iframe_class="widget-frame")
+        b = self._make_iframe_element(500, 0, 400, 600,
+                                      iframe_class="widget-frame extra")
+        locator, _ = fn({0: a, 1: b}, (100, 100))
+        assert "nth=" in locator
+
+    def test_id_still_wins_over_title(self):
+        """Cascade order unchanged at the top: id beats title/class."""
+        fn = self._get_fn()
+        iframe = self._make_iframe_element(
+            0, 0, 800, 600, iframe_id="main-frame",
+            iframe_title="Rich Text Editor", iframe_class="cke_wysiwyg_frame")
+        locator, _ = fn({0: iframe}, (100, 100))
+        assert locator == 'iframe[id="main-frame"]'
+
+    def test_ordinal_counts_prior_iframes(self):
+        """The ordinal fallback still counts iframes in selector_map order."""
+        fn = self._get_fn()
+        first = self._make_iframe_element(900, 900, 50, 50)   # not containing
+        second = self._make_iframe_element(0, 0, 800, 600)    # target, bare
+        locator, _ = fn({0: first, 1: second}, (100, 100))
+        assert locator == "iframe >> nth=1"
 
     def test_empty_selector_map(self):
         """None or empty selector_map → (None, None)."""

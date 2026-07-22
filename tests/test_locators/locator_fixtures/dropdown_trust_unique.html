@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Dropdown trust_unique fixture (Task 7 / A3)</title>
+</head>
+<body style="margin:0">
+  <!-- Two custom comboboxes (divs, not <select>) so they route past the
+       form-control carve-out into the dropdown branch. Both display the
+       same unset placeholder text, so the semantic check fails for either
+       field name — as with real custom dropdowns whose value text lives
+       in sibling elements. The 300px gap guarantees a coordinate mismatch
+       (>50px tolerance) when coords point at the other combobox. -->
+  <div style="padding:20px">
+    <div class="field-label">Country</div>
+    <div id="country" role="combobox" aria-expanded="false"
+         style="width:220px;height:32px;border:1px solid #888">Choose an option</div>
+  </div>
+  <div style="padding:20px;margin-top:300px">
+    <div class="field-label">Currency</div>
+    <div id="currency" role="combobox" aria-expanded="false"
+         style="width:220px;height:32px;border:1px solid #888">Choose an option</div>
+  </div>
+</body>
+</html>

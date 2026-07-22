@@ -225,6 +225,16 @@ def capture_session_pid(session) -> Optional[int]:
         Chrome browser process PID, or None if capture failed
     """
     try:
+        # PRIMARY: browser-use launched Chrome itself and already knows the
+        # PID — LocalBrowserWatchdog.browser_pid (present in 0.12.0 and
+        # 0.12.6). Reading it is instant; the netstat/lsof scan below blocks
+        # this task's event loop for up to 5s, so it is fallback-only.
+        watchdog = getattr(session, '_local_browser_watchdog', None)
+        watchdog_pid = getattr(watchdog, 'browser_pid', None) if watchdog is not None else None
+        if isinstance(watchdog_pid, int) and watchdog_pid > 0:
+            logger.debug("   📍 Browser PID %s read from LocalBrowserWatchdog", watchdog_pid)
+            return watchdog_pid
+
         cdp_url = getattr(session, 'cdp_url', None)
         if not cdp_url:
             return None

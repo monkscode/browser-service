@@ -66,18 +66,20 @@ Step 3: Call find_unique_locator Action
    - Optionally provide candidate_locator if you can identify: id, data-testid, or name
    - **Optionally provide element_type** based on what you SEE in the screenshot:
      dropdown / checkbox / radio / input / button / link / image / label /
-     text-area / table / other. Only set this when you are confident from
-     visual inspection — leave blank if uncertain. The locator pipeline
-     uses this hint as one of TWO sources of truth (the other is a live
-     Playwright DOM probe); a wrong hint never silently propagates.
+     text-area / table / file-upload / date-picker / other. Only set this
+     when you are confident from visual inspection — leave blank if
+     uncertain. The locator pipeline uses this hint as one of TWO sources
+     of truth (the other is a live Playwright DOM probe); a wrong hint
+     never silently propagates.
    - **Optionally provide framework_hint** if the visible widget matches
      a known UI framework's appearance: tom-select / select2 / kendo /
-     react-select / vue-select / ant-design / material-ui / datatables /
-     ag-grid / material-table / react-table / native / other. Examples:
-     Tom Select's pill-shaped tag input, Material-UI's floating-label
-     inputs, DataTables' search/pagination chrome. Pick 'native' for
-     plain HTML controls without a framework wrapper. Leave blank if
-     uncertain.
+     react-select / vue-select / ant-design / material-ui / flatpickr /
+     datatables / ag-grid / material-table / react-table / native /
+     other. Examples: Tom Select's pill-shaped tag input, Material-UI's
+     floating-label inputs, DataTables' search/pagination chrome,
+     flatpickr's calendar overlay on a readonly date input. Pick
+     'native' for plain HTML controls without a framework wrapper.
+     Leave blank if uncertain.
    - The action will validate using Playwright (NO JavaScript needed from you)
 
 Step 4: Receive Validated Result

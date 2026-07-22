@@ -28,10 +28,89 @@ Usage:
 
 import asyncio
 import logging
+import time
 from typing import Dict, Any, Optional
+
+from browser_service.locators.classifier import classify_element_type
+from browser_service.locators.stability import classify_locator
 
 # Get logger
 logger = logging.getLogger(__name__)
+
+
+def _candidate_element_info(element_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """element_info for a candidate-path accept, copied from element_data (E1).
+
+    The fast path used to return element_info={} — element_classes /
+    aria_invalid / parent_classes and the tagName routing fallback all
+    vanished downstream whenever the agent's proposed locator validated.
+    Tolerant .get: element_data producers vary in which keys they carry.
+    """
+    if not element_data:
+        return {}
+    return {
+        'id': element_data.get('id', ''),
+        'tagName': element_data.get('tagName', ''),
+        'text': element_data.get('textContent', '') or element_data.get('text', ''),
+        'className': element_data.get('className', ''),
+        'ariaInvalid': element_data.get('ariaInvalid', ''),
+        'parentClassName': element_data.get('parentClassName', ''),
+        'name': element_data.get('name', ''),
+        'testId': element_data.get('dataTestId', ''),
+        'source': 'candidate_element_data',
+    }
+
+
+def _candidate_tier0_stamp(
+    element_data: Optional[Dict[str, Any]], element_description: str
+) -> Dict[str, Any]:
+    """Classifier stamp for a candidate-path accept — Tier-0 DOM evidence only.
+
+    The full path corroborates classifier verdicts with a DOM probe before
+    any handler commits; the candidate path has no page round-trip, so the
+    stamp is gated to Tier-0 verdicts carrying attribute evidence beyond the
+    bare tag name (type= / className: / role= signals). Bare-tagName verdicts
+    (select/tr/li) stay unstamped — nlrf's tagName fallback already routes
+    those, and stamping tr/li would put 'table-row'/'list-item' into
+    dropdown_framework and fire the DROPDOWN block on collection steps.
+    Vision hints never feed this stamp (they are only corroborated on the
+    probe path).
+
+    select_id: only when the element is itself a <select> with an id — no
+    derivation from input ids, no probe.
+    """
+    if not element_data:
+        return {}
+
+    stamp: Dict[str, Any] = {}
+    if (element_data.get('tagName') or '').lower() == 'select' and element_data.get('id'):
+        stamp['select_id'] = element_data['id']
+
+    type_info = classify_element_type(element_data, element_description)
+    if 'tier:0' not in type_info.signals:
+        return stamp
+    if not any(
+        s.startswith(('type=', 'className:', 'role=')) for s in type_info.signals
+    ):
+        return stamp
+    # role=combobox/listbox is on the approved skip list: a
+    # dropdown/combobox-input stamp matches no composer TYPE rule, while
+    # the tagName fallback (div/input/span/button) routes TYPE 2/3.
+    if type_info.primary_type == 'dropdown' and type_info.framework == 'combobox-input':
+        return stamp
+
+    stamp['element_type'] = type_info.primary_type
+    stamp['classifier_confidence'] = type_info.confidence
+    stamp['classifier_signals'] = list(type_info.signals)
+    if type_info.primary_type == 'dropdown':
+        stamp['dropdown_framework'] = type_info.framework or ''
+    elif type_info.primary_type == 'date-picker':
+        stamp['datepicker_framework'] = type_info.framework or ''
+        # Explicit empty: 'flatpickr' in dropdown_framework would misroute
+        # the Assembler's dropdown table (Task D guard — mirrors the
+        # date_picker handler).
+        stamp['dropdown_framework'] = ''
+    return stamp
 
 
 def _log_success_result(element_id: str, result: Dict[str, Any]) -> None:
@@ -101,6 +180,7 @@ async def find_unique_locator_action(
     browser_session=None,  # BrowserSession for resolved_node lookup in smart_locator
     vision_type_hint: Optional[str] = None,  # LLM's visual type classification (any specialized type)
     vision_framework_hint: Optional[str] = None,  # LLM's framework guess (any specialized type)
+    row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
 ) -> Dict[str, Any]:
     """
     Custom action that agent can call to find and validate unique locator.
@@ -152,18 +232,11 @@ async def find_unique_locator_action(
     Phase: Error Handling and Logging
     Requirements: 8.2, 8.4, 9.1
     """
-    # Import config and settings here to avoid circular imports
+    # Import config here to avoid circular imports
     from browser_service.config import config
-    try:
-        from src.backend.core.config import settings as _nl_settings
-    except ImportError:
-        _nl_settings = None
 
-    # Resolve timeout for smart locator finder (default matches NL repo config)
-    if _nl_settings is not None and hasattr(_nl_settings, 'CUSTOM_ACTION_TIMEOUT'):
-        custom_action_timeout = _nl_settings.CUSTOM_ACTION_TIMEOUT
-    else:
-        custom_action_timeout = 5
+    # Budget for the strategy cascade — CUSTOM_ACTION_TIMEOUT env var, default 5
+    custom_action_timeout = config.locator.custom_action_timeout
 
     logger.info(f"🎯 Custom Action: find_unique_locator called for {element_id}")
     logger.info(f"   Description: {element_description}")
@@ -233,6 +306,25 @@ async def find_unique_locator_action(
             return create_error_result('InvalidElementIdError', error_msg)
 
         # ========================================
+        # ROW-ANCHOR EXPECTED-TEXT CORRECTION (ASTPP gate q02)
+        # ========================================
+        # The agent sometimes passes the row anchor datum as expected_text
+        # for a per-row control whose own DOM text disagrees — the candidate
+        # semantic check and the cascade's text-first step would then both
+        # target the anchor CELL. Correct before either runs.
+        from browser_service.locators import correct_expected_text_for_row_anchor
+
+        expected_text, _anchor_corrected = correct_expected_text_for_row_anchor(
+            expected_text, row_anchor_text, element_data
+        )
+        if _anchor_corrected:
+            logger.info(
+                f"   📌 ROW-ANCHOR CORRECTION: expected_text was the anchor datum "
+                f"'{row_anchor_text}'; using element's own text '{expected_text}' "
+                f"(signal: row-anchor-corrects-expected-text)"
+            )
+
+        # ========================================
         # STEP 1: Validate Candidate Locator (if provided)
         # ========================================
 
@@ -286,16 +378,52 @@ async def find_unique_locator_action(
                     logger.info("      - validation_method: playwright")
 
                     if count == 1:
+                        # q02 guard: a unique candidate that targets the row
+                        # anchor datum itself while the indexed element's own
+                        # text disagrees is the anchor CELL, not the row's
+                        # control. Reject into the cascade (which row-scopes
+                        # correctly) — the semantic check can't stand in when
+                        # expected_text is absent.
+                        from browser_service.locators import candidate_targets_row_anchor
+
+                        _anchor_norm = ' '.join(str(row_anchor_text or '').split())
+                        _elem_text_norm = ' '.join(str(
+                            (element_data or {}).get('textContent')
+                            or (element_data or {}).get('text')
+                            or ''
+                        ).split())
+                        _anchor_reject = bool(
+                            _anchor_norm
+                            and _elem_text_norm
+                            and _elem_text_norm != _anchor_norm
+                            and candidate_targets_row_anchor(playwright_locator, row_anchor_text)
+                        )
+                        if _anchor_reject:
+                            logger.info(
+                                f"   ⛔ ROW-ANCHOR CANDIDATE REJECT: '{playwright_locator}' "
+                                f"targets the anchor datum '{row_anchor_text}' but the "
+                                f"element's own text is '{_elem_text_norm}' — continuing "
+                                f"with smart locator finder "
+                                f"(signal: row-anchor-rejects-candidate)"
+                            )
+
                         # Close the "unique but semantically wrong" hole (probe 06).
                         # Validate the RESOLVED element — what playwright_locator actually
                         # resolves to on the page — not the intended element from element_data
                         # (audit Issue 2b). Guard with expected_text so we accept on uniqueness
                         # alone when no semantic hint is available (audit Issue 5).
-                        _semantic_ok = True
-                        if expected_text:
+                        _semantic_ok = not _anchor_reject
+                        if _semantic_ok and expected_text:
                             from browser_service.locators import validate_semantic_match
+                            # accept_empty_interactive (q05 guard i): a unique
+                            # candidate with an EMPTY semantic surface cannot
+                            # contradict expected_text — the agent sometimes
+                            # attaches the label's text to a surface-less input
+                            # (broken <label for=>), and the veto killed the
+                            # correct locator. Opt-in here only.
                             _semantic_ok, _observed = await validate_semantic_match(
-                                None, expected_text, page=search_root, locator=playwright_locator
+                                None, expected_text, page=search_root, locator=playwright_locator,
+                                accept_empty_interactive=True,
                             )
                             if not _semantic_ok:
                                 logger.info(
@@ -334,11 +462,35 @@ async def find_unique_locator_action(
                                 elem_has_text = bool(text_content and text_content.strip())
                                 elem_data_available = True
 
+                            # Acceptance unchanged (a volatile candidate that
+                            # falls through could end in found=false, which
+                            # must not rise) — but the payload reports the
+                            # tier honestly so nlrf can warn or heal (E1).
+                            candidate_stability = classify_locator(final_locator)
+                            if candidate_stability != 'stable':
+                                logger.warning(
+                                    f"   ⚠️ Agent-provided candidate is {candidate_stability}: "
+                                    f"{final_locator} — accepted, reported for healing"
+                                )
+
+                            # E1 (Option B): the accept must not starve the
+                            # composer/idiom routing downstream — copy the DOM
+                            # evidence and stamp Tier-0 verdicts.
+                            candidate_stamp = _candidate_tier0_stamp(
+                                element_data, element_description
+                            )
+                            if candidate_stamp:
+                                logger.info(
+                                    f"   🏷️ Candidate Tier-0 stamp: {candidate_stamp}"
+                                )
+
                             return {
+                                **candidate_stamp,
                                 'element_id': element_id,
                                 'description': element_description,
                                 'found': True,
                                 'best_locator': final_locator,  # Use converted locator
+                                'stability': candidate_stability,
                                 'all_locators': [{
                                     'type': 'candidate',
                                     'locator': final_locator,  # Use converted locator
@@ -348,9 +500,10 @@ async def find_unique_locator_action(
                                     'unique': True,
                                     'valid': True,
                                     'validated': True,
-                                    'validation_method': 'playwright'
+                                    'validation_method': 'playwright',
+                                    'stability': candidate_stability
                                 }],
-                                'element_info': {},
+                                'element_info': _candidate_element_info(element_data),
                                 'coordinates': {'x': x, 'y': y},
                                 'validation_summary': {
                                     'total_generated': 1,
@@ -454,6 +607,9 @@ async def find_unique_locator_action(
             else:
                 search_context = page
             
+            # Per-element latency telemetry (bench harness). The timer line is
+            # emitted on the timeout path too, so every element yields a sample.
+            _locator_timer_start = time.monotonic()
             result = await asyncio.wait_for(
                 find_unique_locator_at_coordinates(
                     page=page,
@@ -464,15 +620,25 @@ async def find_unique_locator_action(
                     element_id=element_id,
                     element_description=element_description,
                     expected_text=expected_text,  # Pass expected_text for semantic validation
-                    library_type=config.robot_library,  # Use configured library type
                     element_data=element_data,  # Pass element attributes from browser-use DOM
                     is_collection=is_collection,  # Pass collection flag for multi-element detection
                     browser_session=browser_session,  # For resolved_node lookup (DELTA 1)
                     vision_type_hint=vision_type_hint,  # LLM's visual classification (1 of 2 sources)
                     vision_framework_hint=vision_framework_hint,  # LLM's framework guess
+                    row_anchor_text=row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
                 ),
                 timeout=custom_action_timeout
             )
+
+            duration_ms = (time.monotonic() - _locator_timer_start) * 1000.0
+            logger.info(
+                f"LOCATOR_TIMER element_id={element_id} "
+                f"duration_ms={duration_ms:.1f} found={bool(result.get('found'))}"
+            )
+            # Only enrich an EXISTING approach_metrics dict — failure results may
+            # not carry one, and inventing it here would corrupt pattern analysis.
+            if isinstance(result.get('approach_metrics'), dict):
+                result['approach_metrics']['duration_ms'] = round(duration_ms, 1)
 
             # Log the result with detailed information
             if result.get('found'):
@@ -483,6 +649,11 @@ async def find_unique_locator_action(
             return result
 
         except asyncio.TimeoutError:
+            duration_ms = (time.monotonic() - _locator_timer_start) * 1000.0
+            logger.info(
+                f"LOCATOR_TIMER element_id={element_id} "
+                f"duration_ms={duration_ms:.1f} found=False"
+            )
             # Handle timeout gracefully
             timeout_msg = f"Smart locator finder timed out after {custom_action_timeout} seconds"
             logger.error(f"⏱️ {timeout_msg}")

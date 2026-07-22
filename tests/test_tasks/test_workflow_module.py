@@ -8,9 +8,10 @@ Tests functions that have no browser/agent dependencies:
 """
 
 import json
-import pytest
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 class TestExtractFromResultLines:
@@ -694,6 +695,7 @@ class TestAgentVisionModeWiring:
         + the custom-actions flag, and applies the schema exclusion — no
         hardcoded use_vision=True kwarg left."""
         import inspect
+
         import browser_service.tasks.workflow as wf
         src = inspect.getsource(wf.process_workflow_task)
         assert "_resolve_use_vision(config.agent_vision_mode, enable_custom_actions_flag)" in src
@@ -706,6 +708,51 @@ class TestAgentVisionModeWiring:
         flip the already-constructed agent back to full vision (browser-use's
         own DeepSeek handling mutates settings.use_vision the same way)."""
         import inspect
+
         import browser_service.tasks.workflow as wf
         src = inspect.getsource(wf.process_workflow_task)
         assert "agent.settings.use_vision = True" in src
+
+
+class TestRunUnifiedWorkflowPageBinding:
+    """Regression guard for the orphaned ``page`` reference.
+
+    Commit 5867f33 ("Remove locator pipelines") deleted the CDP page setup —
+    including the ``page = None`` fallback binding — but left the DOM-attrs
+    validation branch that reads ``page`` (``if page:`` / ``page.locator(...)``).
+    With no binding, reaching that branch raises ``NameError: name 'page' is not
+    defined`` instead of taking the intended "skip validation, trust browser_use"
+    else-path. This parses the nested run_unified_workflow and asserts every
+    ``page`` read has a binding, so the orphan cannot reappear.
+    """
+
+    def _run_unified_workflow_node(self):
+        import ast
+        import inspect
+        import textwrap
+
+        import browser_service.tasks.workflow as wf
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(wf.process_workflow_task)))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and \
+                    node.name == "run_unified_workflow":
+                return node
+        raise AssertionError("run_unified_workflow not found in process_workflow_task")
+
+    def test_page_is_bound_before_use(self):
+        import ast
+        fn = self._run_unified_workflow_node()
+        loads = any(
+            isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id == "page"
+            for n in ast.walk(fn)
+        )
+        stores = any(
+            isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and n.id == "page"
+            for n in ast.walk(fn)
+        )
+        if loads:
+            assert stores, (
+                "run_unified_workflow reads `page` but never binds it — restore the "
+                "`page = None` fallback removed in 5867f33 (else `if page:` NameErrors)."
+            )

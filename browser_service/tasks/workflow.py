@@ -12,11 +12,12 @@ import asyncio
 import json
 import logging
 import re
-import structlog
 import time
 
+import structlog
+
 logger = logging.getLogger(__name__)
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from browser_service.locators.stability import (
     STABLE,
@@ -106,13 +107,15 @@ def _apply_vision_mode(agent, use_vision) -> None:
 # Import browser-use components
 from browser_use import Agent
 
+from browser_service.agent import register_custom_actions
+from browser_service.browser import capture_session_pid, cleanup_browser_resources
+
 # Import local modules
 from browser_service.config import config
-from browser_service.browser import cleanup_browser_resources, capture_session_pid
-from browser_service.prompts import build_workflow_prompt, build_system_prompt
-from browser_service.agent import register_custom_actions
+from browser_service.prompts import build_system_prompt, build_workflow_prompt
 from browser_service.utils.json_parser import extract_json_for_element
 from browser_service.utils.metrics import record_workflow_metrics
+
 try:
     from src.backend.core.config import settings as _nl_settings
 except ImportError:
@@ -127,7 +130,7 @@ except ImportError:
         wait_for_network_idle_page_load_time = 1.0
         wait_between_actions = 0.5
         system_prompt_additions = []
-    
+
     def get_client_config(url: str):
         return _MockClientConfig()
 # JSON EXTRACTION HELPERS (Module Level)
@@ -332,11 +335,16 @@ def process_workflow_task(
         connected_browser = None
         playwright_instance = None
         browser_pid = None  # Captured after session.start() for orphan cleanup
+        # Playwright/CDP page access is disabled (removed with the locator pipelines
+        # in 5867f33). The DOM-attrs validation branch below reads `page`; keep it
+        # bound to None so those `if page:` checks take the "trust browser_use" path
+        # instead of raising NameError.
+        page = None
 
         try:
             # Initialize browser session ONCE
             logger.info("🌐 Initializing browser session...")
-            
+
             # CRITICAL: Set explicit viewport for consistent coordinates
             # browser-use in headful mode (headless=False) defaults to no_viewport=True
             # which makes content fit to window, causing coordinate misalignment.
@@ -346,7 +354,7 @@ def process_workflow_task(
             # 3. document.elementFromPoint(x, y) returns the same element vision AI identified
             VIEWPORT_WIDTH = 1920
             VIEWPORT_HEIGHT = 1080
-            
+
             # ========================================
             # CLIENT-SPECIFIC CONFIGURATION
             # ========================================
@@ -359,7 +367,7 @@ def process_workflow_task(
                            f"wait_between_actions={client_config.wait_between_actions}s")
                 if client_config.system_prompt_additions:
                     logger.info(f"   Prompt hints: {len(client_config.system_prompt_additions)} application-specific hints")
-            
+
             session = BrowserSession(
                 headless=session_config.get("headless", config.headless),
                 viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
@@ -382,7 +390,7 @@ def process_workflow_task(
                 ]
             )
             logger.info(f"📐 Viewport set to {VIEWPORT_WIDTH}x{VIEWPORT_HEIGHT} for coordinate consistency (no_viewport=False)")
-            
+
             # browser-use requires explicit start() call
             logger.info("🚀 Starting browser session...")
             await session.start()
@@ -403,7 +411,7 @@ def process_workflow_task(
             # Buffer increased from 5 to 8 for browser-use 0.12.0 agent planning overhead (2-3 steps)
             dynamic_max_steps = 1 + (len(elements) * 3) + 1 + 8
             logger.info(f"📊 Dynamic max_steps: {dynamic_max_steps} (for {len(elements)} elements)")
-            
+
             # NOTE: Element sequencing is handled by the AI agent based on:
             # 1. The order elements are received (from Step Planner)
             # 2. The 'action' field on each element (input/click/submit vs get_text/get_attribute)
@@ -594,7 +602,7 @@ def process_workflow_task(
             if hasattr(agent_result, 'usage') and agent_result.usage:
                 usage = agent_result.usage
                 logger.info(f"🔍 DEBUG: usage type = {type(usage)}")
-                
+
                 # Try to dump the usage object for full visibility
                 try:
                     if hasattr(usage, 'model_dump'):
@@ -613,7 +621,7 @@ def process_workflow_task(
                     'actual_cost': getattr(usage, 'total_cost', 0.0) or 0.0
                 }
 
-                logger.info(f"📊 ACTUAL TOKEN USAGE from browser-use:")
+                logger.info("📊 ACTUAL TOKEN USAGE from browser-use:")
                 logger.info(f"   Input tokens (prompt): {token_usage['input_tokens']}")
                 logger.info(f"   Output tokens (completion): {token_usage['output_tokens']}")
                 logger.info(f"   Total tokens: {token_usage['total_tokens']}")
@@ -621,7 +629,7 @@ def process_workflow_task(
                 logger.info(f"   Actual cost: ${token_usage['actual_cost']:.6f}")
             else:
                 logger.warning("⚠️ No token usage data available from agent_result.usage")
-                
+
                 # Fallback: Try agent.token_cost_service if available
                 if hasattr(agent, 'token_cost_service'):
                     logger.info("🔍 DEBUG: Trying fallback via agent.token_cost_service...")
@@ -636,7 +644,7 @@ def process_workflow_task(
                                 'cached_tokens': getattr(usage_summary, 'total_prompt_cached_tokens', 0) or 0,
                                 'actual_cost': getattr(usage_summary, 'total_cost', 0.0) or 0.0
                             }
-                            logger.info(f"📊 TOKEN USAGE from fallback (token_cost_service):")
+                            logger.info("📊 TOKEN USAGE from fallback (token_cost_service):")
                             logger.info(f"   Total tokens: {token_usage['total_tokens']}")
                     except Exception as e:
                         logger.warning(f"⚠️ Could not get usage from token_cost_service: {e}")
@@ -694,10 +702,10 @@ def process_workflow_task(
             # When custom actions are enabled, results are stored directly in ActionResult.metadata
             # This is the FASTEST path - no coordinate parsing, no Playwright extraction needed
             results_list = []
-            
+
             if custom_actions_enabled and hasattr(agent_result, 'history') and agent_result.history:
                 logger.info("🎯 Extracting results from custom action metadata (primary path)...")
-                
+
                 for idx, step in enumerate(agent_result.history):
                     if hasattr(step, 'result') and step.result:
                         if isinstance(step.result, list):
@@ -705,17 +713,17 @@ def process_workflow_task(
                                 if hasattr(action_result, 'metadata') and isinstance(action_result.metadata, dict):
                                     metadata = action_result.metadata
                                     elem_id = metadata.get('element_id')
-                                    
+
                                     # Check if this is a custom action result with locator data
                                     if elem_id and metadata.get('found') and metadata.get('best_locator'):
                                         logger.info(f"   ✅ Found custom action result for {elem_id}: {metadata.get('best_locator')}")
-                                        
+
                                         # Check if we already have this element
                                         existing_idx = next(
-                                            (i for i, r in enumerate(results_list) if r.get('element_id') == elem_id), 
+                                            (i for i, r in enumerate(results_list) if r.get('element_id') == elem_id),
                                             None
                                         )
-                                        
+
                                         if existing_idx is None:
                                             # First occurrence, add it
                                             metadata['metrics'] = {'custom_action_used': True}
@@ -725,10 +733,10 @@ def process_workflow_task(
                                             logger.info(f"   🔄 Updating {elem_id} with latest result")
                                             metadata['metrics'] = {'custom_action_used': True}
                                             results_list[existing_idx] = metadata
-                
+
                 if results_list:
                     logger.info(f"   🎉 Extracted {len(results_list)}/{len(elements)} elements via custom action metadata")
-                    logger.info(f"   ⏭️  Skipping coordinate parsing and Playwright extraction (not needed)")
+                    logger.info("   ⏭️  Skipping coordinate parsing and Playwright extraction (not needed)")
                 else:
                     logger.warning("   ⚠️  No custom action results found in metadata - will try fallback methods")
 
@@ -795,7 +803,7 @@ def process_workflow_task(
                 # Strategy 2: Try history attribute (MOST IMPORTANT for execute_js results)
                 if hasattr(agent_result, 'history') and agent_result.history:
                     logger.info(f"   ✅ Found history with {len(agent_result.history)} items")
-                    
+
                     for idx, step in enumerate(agent_result.history):
                         logger.info(f"   📋 history[{idx}] type: {type(step)}")
                         logger.info(f"   📋 history[{idx}] has result: {hasattr(step, 'result')}")
@@ -825,7 +833,7 @@ def process_workflow_task(
                                     logger.info(f"   🔍 metadata keys: {list(step.result.metadata.keys())}")
                                     direct_results.append(step.result.metadata)
                                     logger.info(f"   ✅ Found element_id in history[{idx}].result.metadata dict!")
-                        
+
                         # Check for tool_results in state
                         if hasattr(step, 'state') and hasattr(step.state, 'tool_results'):
                             for tool_result in step.state.tool_results:
@@ -882,7 +890,7 @@ def process_workflow_task(
 
                 # Combine all result strings (needed for extraction functions)
                 full_result_str = "\n".join(result_strings)
-                
+
                 # Only process strings if we don't have all elements yet
                 if len(results_list) < len(elements):
                     logger.info(
@@ -920,12 +928,12 @@ def process_workflow_task(
                         for json_str in extracted_jsons:
                             if not json_str:
                                 continue
-                            
+
                             try:
                                 parsed = json.loads(json_str)
                                 if not isinstance(parsed, dict):
                                     continue
-                                
+
                                 elem_id = parsed.get('element_id')
                                 if elem_id and parsed.get('found'):
                                     # CRITICAL: Use validated locators from agent if available
@@ -1131,7 +1139,9 @@ def process_workflow_task(
                                             logger.info(
                                                 f"   🎯 Attempting smart locator finder at coordinates ({coords['x']}, {coords['y']})")
                                             try:
-                                                from browser_service.locators import find_unique_locator_at_coordinates
+                                                from browser_service.locators import (
+                                                    find_unique_locator_at_coordinates,
+                                                )
 
                                                 elem_desc = next(
                                                     (e.get('description') for e in elements if e.get('id') == elem_id),
@@ -1234,10 +1244,10 @@ def process_workflow_task(
                     # Check which elements we're still missing
                     missing_ids = [e.get('id') for e in elements if not any(r.get('element_id') == e.get('id') for r in results_list)]
                     logger.info(f"   🔍 Looking for {len(missing_ids)} missing elements: {missing_ids}")
-                    
+
                     for elem in elements:
                         elem_id = elem.get('id')
-                        
+
                         # Skip if we already have this element
                         if any(r.get('element_id') == elem_id for r in results_list):
                             continue
@@ -1482,18 +1492,18 @@ def process_workflow_task(
                 # Score each locator - ONLY score unique and valid locators
                 scored_locators = []
                 skipped_count = 0
-                
+
                 # Check if this is a collection element (collections have unique=False by design)
                 element_type = result.get('element_type', 'single')
                 is_collection = (element_type == 'collection')
-                
+
                 for loc in all_locators:
                     # CRITICAL FIX: Filter out non-unique or invalid locators before scoring
                     # EXCEPTION: Collections are allowed to have unique=False (they match multiple elements)
                     if not is_collection and not (loc.get('unique') and loc.get('valid')):
                         skipped_count += 1
                         continue  # Skip non-unique or invalid locators (but not collections)
-                    
+
                     try:
                         # Collections already have quality_score from smart_locator_finder, preserve it
                         if is_collection and 'quality_score' in loc:
@@ -1532,7 +1542,7 @@ def process_workflow_task(
                     loc_type = loc.get('type', 'unknown')
                     unique = loc.get('unique', False)
                     valid = loc.get('valid', False)
-                    
+
                     if i == 0:
                         # First locator is the selected best
                         logger.info(f"   {quality_score:3d} - {loc_type:15s} - {locator_str} ⭐ SELECTED AS BEST (unique={unique}, valid={valid})")
@@ -1684,7 +1694,7 @@ def process_workflow_task(
             if _nl_settings and _nl_settings.TRACK_LLM_COSTS:
                 # Calculate average metrics
                 avg_llm_calls_per_element = llm_call_count / len(elements) if len(elements) > 0 else 0
-                
+
                 logger.info("=" * 80)
                 logger.info("📊 WORKFLOW COST METRICS")
                 logger.info("="* 80)
@@ -1794,7 +1804,7 @@ def process_workflow_task(
             # This enables tracking which locator approach worked best for different element types
             from urllib.parse import urlparse
             url_domain = urlparse(url).netloc if url else ""
-            
+
             element_approach_metrics = []
             for result in results_list:
                 approach_data = result.get('approach_metrics')

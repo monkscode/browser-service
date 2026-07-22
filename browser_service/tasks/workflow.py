@@ -2174,7 +2174,7 @@ def process_workflow_task(
             )
 
     except Exception as e:
-        logger.error(f"❌ Failed to execute workflow task {task_id}: {e}", exc_info=True)
+        logger.exception(f"❌ Failed to execute workflow task {task_id}: {e}")
         task_processor.update_task(
             task_id,
             {

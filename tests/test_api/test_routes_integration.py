@@ -520,3 +520,39 @@ class TestErrorResponsesDoNotLeakInternals:
         assert "error" not in data, f"500 handler still exposes an error field: {data}"
         assert data["message"] == "Internal server error"
         assert self.SECRET in caplog.text, "the 500 handler must log the cause"
+
+
+class TestLogSanitization:
+    """Caller-controlled values must not be able to forge log entries (CWE-117).
+
+    Scope, stated honestly: log forging via task_id is NOT reachable today.
+    Werkzeug strips CR/LF from the path before the view runs (verified: a
+    "aaa\\r\\nWARNING x" path arrives as "aaaWARNING x"), and the value must
+    also match a server-generated UUID key to reach the log line at all.
+    The sanitizer is defence in depth plus the fix for the SonarCloud finding
+    holding Security Rating on New Code below A.
+
+    These are unit tests of the sanitizer itself. An end-to-end test through
+    the Flask client would assert nothing, because werkzeug has already
+    removed the CR/LF by the time the value reaches the route.
+    """
+
+    def test_crlf_in_logged_value_is_neutralised(self):
+        from browser_service.api.routes import _sanitize_for_log
+
+        forged = "abc\r\nINFO Task deadbeef query completed: True"
+        out = _sanitize_for_log(forged)
+        assert "\n" not in out
+        assert "\r" not in out
+        assert out.startswith("abc")
+
+    def test_long_value_is_capped(self):
+        from browser_service.api.routes import _sanitize_for_log
+
+        assert len(_sanitize_for_log("x" * 500)) <= 80
+
+    def test_ordinary_uuid_passes_through_unchanged(self):
+        from browser_service.api.routes import _sanitize_for_log
+
+        tid = "51aa8eaa-6637-464e-b078-89af2d65191f"
+        assert _sanitize_for_log(tid) == tid

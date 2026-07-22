@@ -16,6 +16,7 @@ Routes:
 """
 
 import logging
+import re
 import time
 import uuid
 from typing import Any
@@ -41,6 +42,20 @@ logger = logging.getLogger(__name__)
 # The only 5xx text a caller ever sees. Exception detail stays in the log —
 # messages carry absolute paths, CDP endpoints and upstream payloads.
 INTERNAL_ERROR_MESSAGE = "Internal server error"
+
+_LOG_UNSAFE_RE = re.compile(r"[\r\n]+")
+
+
+def _sanitize_for_log(value: object, limit: int = 80) -> str:
+    """Neutralise a caller-controlled value before it reaches a log line.
+
+    A value carrying CR/LF lets its sender append fabricated entries to the
+    log (CWE-117). Path segments like task_id are caller-controlled even when
+    a lookup upstream means only server-generated UUIDs get far enough to be
+    logged — this keeps that a property of the log call, not of the distance
+    to the nearest validation.
+    """
+    return _LOG_UNSAFE_RE.sub(" ", str(value))[:limit]
 
 
 def register_routes(app: Flask, task_processor: Any) -> None:
@@ -279,7 +294,8 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             elif status == "completed":
                 response = format_task_response(task, include_results=True, truncate_objective=200)
                 logger.info(
-                    f"Task {task_id} query completed: {task.get('results', {}).get('success', False)}"
+                    f"Task {_sanitize_for_log(task_id)} query completed: "
+                    f"{task.get('results', {}).get('success', False)}"
                 )
                 return jsonify(response), 200
 

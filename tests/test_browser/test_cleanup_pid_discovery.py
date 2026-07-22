@@ -225,9 +225,7 @@ class TestGetBrowserProcessId:
         from browser_service.browser.cleanup import get_browser_process_id
 
         mock_sys.platform = "win32"
-        mock_run.return_value = MagicMock(
-            stdout="  TCP  127.0.0.1:80  0.0.0.0:0  LISTENING  1\n"
-        )
+        mock_run.return_value = MagicMock(stdout="  TCP  127.0.0.1:80  0.0.0.0:0  LISTENING  1\n")
         session = MagicMock(spec=["cdp_url"])
         session.cdp_url = "http://127.0.0.1:9222/devtools/browser/abc"
 

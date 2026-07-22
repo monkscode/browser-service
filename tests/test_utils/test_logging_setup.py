@@ -271,8 +271,7 @@ class TestPosixBranch:
             stream_handlers = [
                 h
                 for h in iso.root.handlers
-                if isinstance(h, logging.StreamHandler)
-                and not isinstance(h, RotatingFileHandler)
+                if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler)
             ]
             assert len(stream_handlers) == 1
             assert stream_handlers[0].stream is iso.stdout

@@ -28,7 +28,12 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Install ruff + mypy
-        run: python -m pip install --upgrade ruff mypy
+        # Pin the format/lint gate for reproducibility. An unpinned `--upgrade`
+        # tracks whatever ruff ships that day, so a new release can reformat or
+        # add a rule and red an unrelated PR. 0.15.18 is the version this tree
+        # was verified clean against. mypy is advisory (continue-on-error below),
+        # pinned only to keep its output stable — bump freely.
+        run: python -m pip install ruff==0.15.18 mypy==1.20.2
       - name: Ruff lint
         run: ruff check --output-format=github .
       - name: Ruff format check

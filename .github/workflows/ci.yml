@@ -217,7 +217,11 @@ jobs:
 
           cat report.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upsert sticky PR comment
-        if: github.event_name == 'pull_request'
+        # Fork PRs get a read-only GITHUB_TOKEN under the pull_request trigger, so
+        # createComment/updateComment would 403 and red this final gate. Restrict
+        # to same-repo PRs, where the token can write; forks still get the run's
+        # step summary.
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
         with:
           script: |

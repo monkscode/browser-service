@@ -90,9 +90,13 @@ class TestIsDropdownElement:
         assert is_dropdown_element({}, "Date picker field") is True
 
     def test_description_no_dropdown_keyword(self):
-        result = is_dropdown_element({}, "Click the submit button")
-        # Should not be True just because of this description
-        assert isinstance(result, bool)
+        """A description with no dropdown keyword must classify as False.
+
+        `isinstance(result, bool)` passed for True as well, so the negative case
+        — the one that stops non-dropdowns entering the dropdown handler — was
+        never actually checked.
+        """
+        assert is_dropdown_element({}, "Click the submit button") is False
 
     # --- ARIA role detection ---
 

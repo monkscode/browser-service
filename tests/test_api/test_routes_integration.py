@@ -104,8 +104,9 @@ class TestWorkflowSubmit:
                 "user_query": "click the button",
             },
         )
-        # Should be 200 or 202 — accept either
-        assert resp.status_code in [200, 202]
+        # 202 exactly. `in [200, 202]` cannot tell an accepted-async submit from a
+        # synchronous completion, which is the only thing this status communicates.
+        assert resp.status_code == 202
         data = resp.get_json()
         assert "task_id" in data
 
@@ -164,10 +165,10 @@ class TestWorkflowSubmit:
                 "url": "https://example.com",
             },
         )
-        assert resp.status_code in [200, 202]
+        assert resp.status_code == 202
 
     def test_batch_alias_works(self, client, processor):
-        """POST /batch works as alias for /workflow."""
+        """POST /batch works as alias for /workflow — same status, same body shape."""
         processor.count_active_tasks.return_value = 0
         resp = client.post(
             "/batch",
@@ -176,27 +177,67 @@ class TestWorkflowSubmit:
                 "url": "https://example.com",
             },
         )
-        assert resp.status_code in [200, 202]
+        assert resp.status_code == 202
+        assert "task_id" in resp.get_json()
 
 
 class TestQueryEndpoint:
     """Tests for GET /query/<task_id>."""
 
     def test_query_completed_task(self, client, processor):
-        """Query a completed task returns result."""
+        """A completed task returns 200 AND carries its results."""
         processor.get_task_status.return_value = {
             "task_id": "t1",
             "status": "completed",
+            "results": {"locator_mapping": {"e1": {"best_locator": "id=x"}}},
+        }
+        resp = client.get("/query/t1")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "completed"
+        assert data["results"] == {"locator_mapping": {"e1": {"best_locator": "id=x"}}}
+
+    @pytest.mark.parametrize("status", ["processing", "running"])
+    def test_query_in_flight_task_returns_202_without_results(self, client, processor, status):
+        """In-flight tasks return 202 and must NOT leak partial results.
+
+        Both branches are pinned: the client polls on 202, so a branch that
+        returned 200 would end the poll on an unfinished task, and one that
+        included results would hand back a partial locator_mapping.
+        """
+        processor.get_task_status.return_value = {
+            "task_id": "t1",
+            "status": status,
+            "results": {"locator_mapping": {"e1": "partial"}},
+        }
+        resp = client.get("/query/t1")
+        assert resp.status_code == 202
+        data = resp.get_json()
+        assert data["status"] == status
+        assert "results" not in data
+
+    def test_query_unrecognised_status_returns_200_without_results(self, client, processor):
+        """A status outside the known set falls to the terminal 200 branch."""
+        processor.get_task_status.return_value = {
+            "task_id": "t1",
+            "status": "failed",
             "results": {"locator_mapping": {}},
         }
         resp = client.get("/query/t1")
         assert resp.status_code == 200
+        assert "results" not in resp.get_json()
 
     def test_query_unknown_task(self, client, processor):
         """Query unknown task_id returns 404."""
         processor.get_task_status.return_value = None
         resp = client.get("/query/nonexistent")
         assert resp.status_code == 404
+
+    def test_query_processor_exception_returns_500(self, client, processor):
+        """An unexpected processor failure surfaces as 500, not a stack trace."""
+        processor.get_task_status.side_effect = RuntimeError("processor exploded")
+        resp = client.get("/query/t1")
+        assert resp.status_code == 500
 
 
 class TestTasksEndpoint:

@@ -111,11 +111,14 @@ class TestExtractAllElementJsons:
         assert self._fn('{"status": "ok"}') == []
 
     def test_single_quote_element_id_pattern(self):
-        """Also matches 'element_id': pattern (single quotes)."""
+        """Also matches 'element_id': pattern (single quotes).
+
+        `isinstance(results, list)` also passed for the empty list — i.e. for the
+        single-quote pattern NOT being matched, which is the exact regression
+        this test exists to catch.
+        """
         text = "{'element_id': 'e1', 'locator': '#btn'}"
-        results = self._fn(text)
-        # Should find the pattern
-        assert isinstance(results, list)
+        assert self._fn(text) == ["{'element_id': 'e1', 'locator': '#btn'}"]
 
 
 class TestProcessWorkflowTaskGuards:

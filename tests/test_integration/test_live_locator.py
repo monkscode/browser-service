@@ -24,6 +24,7 @@ class TestFindUniqueLocatorLive:
     async def test_returns_dict_with_expected_keys(self):
         """Result dict contains all required top-level keys."""
         from browser_service.locators import find_unique_locator_at_coordinates
+
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
@@ -35,7 +36,9 @@ class TestFindUniqueLocatorLive:
             y = bbox["y"] + bbox["height"] / 2 if bbox else 150.0
 
             result = await find_unique_locator_at_coordinates(
-                page=page, x=x, y=y,
+                page=page,
+                x=x,
+                y=y,
                 element_id="elem_1",
                 element_description="main heading",
             )
@@ -49,6 +52,7 @@ class TestFindUniqueLocatorLive:
     async def test_found_true_for_real_element(self):
         """Known-good element coordinates return found=True with a non-empty best_locator."""
         from browser_service.locators import find_unique_locator_at_coordinates
+
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
@@ -78,6 +82,7 @@ class TestFindUniqueLocatorLive:
     async def test_validation_summary_has_expected_keys(self):
         """validation_summary always contains total_generated and validation_method."""
         from browser_service.locators import find_unique_locator_at_coordinates
+
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
@@ -89,7 +94,9 @@ class TestFindUniqueLocatorLive:
             y = bbox["y"] + 10 if bbox else 150.0
 
             result = await find_unique_locator_at_coordinates(
-                page=page, x=x, y=y,
+                page=page,
+                x=x,
+                y=y,
                 element_id="elem_1",
                 element_description="heading",
             )
@@ -104,13 +111,16 @@ class TestFindUniqueLocatorLive:
     async def test_out_of_bounds_coords_returns_found_false(self):
         """Coordinates far outside the viewport produce found=False without raising."""
         from browser_service.locators import find_unique_locator_at_coordinates
+
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             await page.goto(LIVE_URL, wait_until="domcontentloaded")
 
             result = await find_unique_locator_at_coordinates(
-                page=page, x=99999.0, y=99999.0,
+                page=page,
+                x=99999.0,
+                y=99999.0,
                 element_id="elem_1",
                 element_description="nothing",
             )

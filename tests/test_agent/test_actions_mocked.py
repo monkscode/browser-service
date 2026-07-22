@@ -22,8 +22,9 @@ Tests:
   - Collection mode → returns multi-element locator
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 @pytest.fixture
@@ -53,14 +54,19 @@ class TestFindUniqueLocatorAction:
 
         result = await find_unique_locator_action(
             page=None,
-            x=100, y=200,
+            x=100,
+            y=200,
             element_id="elem_1",
             element_description="search input",
         )
         assert result is not None
         # Should indicate failure — exact format depends on implementation
         result_str = str(result)
-        assert "error" in result_str.lower() or "fail" in result_str.lower() or "no page" in result_str.lower()
+        assert (
+            "error" in result_str.lower()
+            or "fail" in result_str.lower()
+            or "no page" in result_str.lower()
+        )
 
     @pytest.mark.asyncio
     async def test_negative_coords_handled(self, mock_playwright_page):
@@ -69,7 +75,8 @@ class TestFindUniqueLocatorAction:
 
         result = await find_unique_locator_action(
             page=mock_playwright_page,
-            x=-10, y=-20,
+            x=-10,
+            y=-20,
             element_id="elem_1",
             element_description="offscreen element",
         )
@@ -85,7 +92,8 @@ class TestFindUniqueLocatorAction:
 
         result = await find_unique_locator_action(
             page=mock_playwright_page,
-            x=100, y=200,
+            x=100,
+            y=200,
             element_id="elem_1",
             element_description="submit button",
             candidate_locator="id=submit-btn",
@@ -102,7 +110,8 @@ class TestFindUniqueLocatorAction:
 
         result = await find_unique_locator_action(
             page=mock_playwright_page,
-            x=100, y=200,
+            x=100,
+            y=200,
             element_id="elem_1",
             element_description="list item",
             candidate_locator=".item",
@@ -118,7 +127,8 @@ class TestFindUniqueLocatorAction:
 
         result = await find_unique_locator_action(
             page=mock_playwright_page,
-            x=100, y=200,
+            x=100,
+            y=200,
             element_id="elem_1",
             element_description="missing button",
             candidate_locator="id=nonexistent",
@@ -128,8 +138,9 @@ class TestFindUniqueLocatorAction:
     @pytest.mark.asyncio
     async def test_candidate_locator_timeout(self, mock_playwright_page):
         """Playwright timeout on candidate → falls through gracefully."""
-        from browser_service.agent.actions import find_unique_locator_action
         import asyncio
+
+        from browser_service.agent.actions import find_unique_locator_action
 
         mock_playwright_page.locator.return_value.count = AsyncMock(
             side_effect=asyncio.TimeoutError("Timeout")
@@ -137,7 +148,8 @@ class TestFindUniqueLocatorAction:
 
         result = await find_unique_locator_action(
             page=mock_playwright_page,
-            x=100, y=200,
+            x=100,
+            y=200,
             element_id="elem_1",
             element_description="slow element",
             candidate_locator="id=slow",
@@ -151,7 +163,8 @@ class TestFindUniqueLocatorAction:
 
         result = await find_unique_locator_action(
             page=mock_playwright_page,
-            x=500, y=300,
+            x=500,
+            y=300,
             element_id="elem_2",
             element_description="search box",
             element_data={
@@ -170,7 +183,8 @@ class TestFindUniqueLocatorAction:
 
         result = await find_unique_locator_action(
             page=mock_playwright_page,
-            x=300, y=400,
+            x=300,
+            y=400,
             element_id="elem_3",
             element_description="unknown element",
         )
@@ -192,6 +206,7 @@ class TestTimeoutFromConfig:
         """A 0.05s config budget must cut off a hanging cascade in ~0.05s, not 5s."""
         import asyncio
         import time
+
         from browser_service.config import config
 
         monkeypatch.setattr(config.locator, "custom_action_timeout", 0.05, raising=False)
@@ -205,7 +220,8 @@ class TestTimeoutFromConfig:
             start = time.monotonic()
             result = await find_unique_locator_action(
                 page=mock_playwright_page,
-                x=300, y=400,
+                x=300,
+                y=400,
                 element_id="elem_slow",
                 element_description="element on a wedged page",
             )
@@ -219,9 +235,12 @@ class TestTimeoutFromConfig:
         assert result["error_type"] == "TimeoutError"
 
     @pytest.mark.asyncio
-    async def test_timeout_result_reports_configured_budget(self, mock_playwright_page, monkeypatch):
+    async def test_timeout_result_reports_configured_budget(
+        self, mock_playwright_page, monkeypatch
+    ):
         """The structured error carries the budget that was actually applied."""
         import asyncio
+
         from browser_service.config import config
 
         monkeypatch.setattr(config.locator, "custom_action_timeout", 0.05, raising=False)
@@ -234,7 +253,8 @@ class TestTimeoutFromConfig:
 
             result = await find_unique_locator_action(
                 page=mock_playwright_page,
-                x=300, y=400,
+                x=300,
+                y=400,
                 element_id="elem_slow",
                 element_description="element on a wedged page",
             )

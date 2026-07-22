@@ -15,8 +15,9 @@ Tests:
   _CDP_URL_PATTERN: valid / invalid patterns
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class TestExtractDomNodeAttributes:
@@ -24,6 +25,7 @@ class TestExtractDomNodeAttributes:
 
     def _get_fn(self):
         from browser_service.agent.registration import _extract_dom_node_attributes
+
         return _extract_dom_node_attributes
 
     def test_full_attributes(self):
@@ -104,9 +106,7 @@ class TestExtractDomNodeAttributes:
         assert result["dataTestAttr"] == "data-test"
 
     def test_both_test_attrs_prefer_data_testid(self):
-        result = self._get_fn()(
-            self._make_node({"data-testid": "tid", "data-test": "t"})
-        )
+        result = self._get_fn()(self._make_node({"data-testid": "tid", "data-test": "t"}))
         assert result["dataTestId"] == "tid"
         assert result["dataTestAttr"] == "data-testid"
 
@@ -122,9 +122,7 @@ class TestExtractDomNodeAttributes:
         nlrf's state-verification assembler emits a Get Attribute
         assertion when the observed field carries it, covering sites
         that mark errors via ARIA instead of a CSS class."""
-        result = self._get_fn()(
-            self._make_node({"id": "email", "aria-invalid": "true"})
-        )
+        result = self._get_fn()(self._make_node({"id": "email", "aria-invalid": "true"}))
         assert result["ariaInvalid"] == "true"
 
     def test_aria_invalid_defaults_empty(self):
@@ -170,10 +168,12 @@ class TestDetectIframeContext:
 
     def _get_fn(self):
         from browser_service.agent.registration import _detect_iframe_context
+
         return _detect_iframe_context
 
-    def _make_iframe_element(self, x, y, w, h, iframe_id="", iframe_name="",
-                             iframe_title="", iframe_class=""):
+    def _make_iframe_element(
+        self, x, y, w, h, iframe_id="", iframe_name="", iframe_title="", iframe_class=""
+    ):
         elem = MagicMock()
         elem.node_name = "iframe"
         pos = MagicMock()
@@ -242,26 +242,27 @@ class TestDetectIframeContext:
         """CKEditor case: no id/name, stable title → iframe[title=...]."""
         fn = self._get_fn()
         editor = self._make_iframe_element(
-            0, 0, 800, 600, iframe_title="Rich Text Editor, template",
+            0,
+            0,
+            800,
+            600,
+            iframe_title="Rich Text Editor, template",
             iframe_class="cke_wysiwyg_frame cke_reset",
         )
-        widget = self._make_iframe_element(
-            900, 900, 50, 50, iframe_id="jsd-widget")
+        widget = self._make_iframe_element(900, 900, 50, 50, iframe_id="jsd-widget")
         locator, _ = fn({0: editor, 1: widget}, (100, 100))
         assert locator == 'iframe[title="Rich Text Editor, template"]'
 
     def test_title_quotes_escaped(self):
         fn = self._get_fn()
-        iframe = self._make_iframe_element(
-            0, 0, 800, 600, iframe_title='He said "hi"')
+        iframe = self._make_iframe_element(0, 0, 800, 600, iframe_title='He said "hi"')
         locator, _ = fn({0: iframe}, (100, 100))
         assert locator == 'iframe[title="He said \\"hi\\""]'
 
     def test_dynamic_title_skipped(self):
         """A data-bound title (date) dies next session → not an anchor."""
         fn = self._get_fn()
-        iframe = self._make_iframe_element(
-            0, 0, 800, 600, iframe_title="Report 2026-07-08")
+        iframe = self._make_iframe_element(0, 0, 800, 600, iframe_title="Report 2026-07-08")
         locator, _ = fn({0: iframe}, (100, 100))
         assert "nth=" in locator
 
@@ -277,9 +278,9 @@ class TestDetectIframeContext:
         """No id/name/title → first stable, unique, identifier-shaped class."""
         fn = self._get_fn()
         editor = self._make_iframe_element(
-            0, 0, 800, 600, iframe_class="cke_wysiwyg_frame cke_reset")
-        widget = self._make_iframe_element(
-            900, 900, 50, 50, iframe_class="jsd-frame")
+            0, 0, 800, 600, iframe_class="cke_wysiwyg_frame cke_reset"
+        )
+        widget = self._make_iframe_element(900, 900, 50, 50, iframe_class="jsd-frame")
         locator, _ = fn({0: editor, 1: widget}, (100, 100))
         assert locator == "iframe.cke_wysiwyg_frame"
 
@@ -287,33 +288,28 @@ class TestDetectIframeContext:
         """An init-order counter class (cke_1) is dead next session —
         the scorer must veto it (couples with the cke_\\d+ scorer rule)."""
         fn = self._get_fn()
-        iframe = self._make_iframe_element(0, 0, 800, 600,
-                                           iframe_class="cke_1")
+        iframe = self._make_iframe_element(0, 0, 800, 600, iframe_class="cke_1")
         locator, _ = fn({0: iframe}, (100, 100))
         assert "nth=" in locator
 
     def test_volatile_class_skipped_next_class_used(self):
         fn = self._get_fn()
-        iframe = self._make_iframe_element(
-            0, 0, 800, 600, iframe_class="cke_1 cke_wysiwyg_frame")
+        iframe = self._make_iframe_element(0, 0, 800, 600, iframe_class="cke_1 cke_wysiwyg_frame")
         locator, _ = fn({0: iframe}, (100, 100))
         assert locator == "iframe.cke_wysiwyg_frame"
 
     def test_non_identifier_class_skipped(self):
         """Tailwind-style class (w-1/2) is not a valid bare .class selector."""
         fn = self._get_fn()
-        iframe = self._make_iframe_element(0, 0, 800, 600,
-                                           iframe_class="w-1/2")
+        iframe = self._make_iframe_element(0, 0, 800, 600, iframe_class="w-1/2")
         locator, _ = fn({0: iframe}, (100, 100))
         assert "nth=" in locator
 
     def test_shared_class_skipped(self):
         """A class carried by another iframe too is ambiguous → ordinal."""
         fn = self._get_fn()
-        a = self._make_iframe_element(0, 0, 400, 600,
-                                      iframe_class="widget-frame")
-        b = self._make_iframe_element(500, 0, 400, 600,
-                                      iframe_class="widget-frame extra")
+        a = self._make_iframe_element(0, 0, 400, 600, iframe_class="widget-frame")
+        b = self._make_iframe_element(500, 0, 400, 600, iframe_class="widget-frame extra")
         locator, _ = fn({0: a, 1: b}, (100, 100))
         assert "nth=" in locator
 
@@ -321,16 +317,22 @@ class TestDetectIframeContext:
         """Cascade order unchanged at the top: id beats title/class."""
         fn = self._get_fn()
         iframe = self._make_iframe_element(
-            0, 0, 800, 600, iframe_id="main-frame",
-            iframe_title="Rich Text Editor", iframe_class="cke_wysiwyg_frame")
+            0,
+            0,
+            800,
+            600,
+            iframe_id="main-frame",
+            iframe_title="Rich Text Editor",
+            iframe_class="cke_wysiwyg_frame",
+        )
         locator, _ = fn({0: iframe}, (100, 100))
         assert locator == 'iframe[id="main-frame"]'
 
     def test_ordinal_counts_prior_iframes(self):
         """The ordinal fallback still counts iframes in selector_map order."""
         fn = self._get_fn()
-        first = self._make_iframe_element(900, 900, 50, 50)   # not containing
-        second = self._make_iframe_element(0, 0, 800, 600)    # target, bare
+        first = self._make_iframe_element(900, 900, 50, 50)  # not containing
+        second = self._make_iframe_element(0, 0, 800, 600)  # target, bare
         locator, _ = fn({0: first, 1: second}, (100, 100))
         assert locator == "iframe >> nth=1"
 
@@ -352,18 +354,21 @@ class TestCdpUrlHelpers:
     def test_extract_cdp_host_port(self):
         """Extracts ws://host:port from full CDP URL."""
         from browser_service.agent.registration import _extract_cdp_host_port
+
         result = _extract_cdp_host_port("ws://127.0.0.1:9222/devtools/browser/abc-123")
         assert result == "ws://127.0.0.1:9222"
 
     def test_extract_cdp_host_port_no_devtools(self):
         """URL without /devtools/ returns as-is."""
         from browser_service.agent.registration import _extract_cdp_host_port
+
         result = _extract_cdp_host_port("ws://localhost:9222")
         assert result == "ws://localhost:9222"
 
     def test_get_cdp_url_direct(self):
         """Strategy 1: Direct cdp_url attribute."""
         from browser_service.agent.registration import _get_cdp_url_from_session
+
         session = MagicMock()
         session.cdp_url = "ws://127.0.0.1:9222/devtools/browser/abc"
         result = _get_cdp_url_from_session(session)
@@ -372,6 +377,7 @@ class TestCdpUrlHelpers:
     def test_get_cdp_url_from_client(self):
         """Strategy 2: cdp_client.url attribute."""
         from browser_service.agent.registration import _get_cdp_url_from_session
+
         session = MagicMock(spec=["cdp_client"])
         session.cdp_url = None  # Force strategy 1 to skip
         del session.cdp_url
@@ -417,17 +423,20 @@ class TestCdpUrlHelpers:
     def test_get_cdp_url_none_session(self):
         """None session → None."""
         from browser_service.agent.registration import _get_cdp_url_from_session
+
         assert _get_cdp_url_from_session(None) is None
 
     def test_cdp_url_pattern_valid(self):
         """CDP URL regex matches valid WebSocket DevTools URLs."""
         from browser_service.agent.registration import _CDP_URL_PATTERN
+
         assert _CDP_URL_PATTERN.match("ws://127.0.0.1:9222/devtools/browser/abc")
         assert _CDP_URL_PATTERN.match("wss://host:443/devtools/browser/xyz")
 
     def test_cdp_url_pattern_invalid(self):
         """CDP URL regex rejects non-CDP strings."""
         from browser_service.agent.registration import _CDP_URL_PATTERN
+
         assert _CDP_URL_PATTERN.match("http://localhost:9222") is None
         assert _CDP_URL_PATTERN.match("not-a-url") is None
 
@@ -438,12 +447,13 @@ class TestNoCacheGlobals:
     def test_no_cache_globals(self):
         """Module must not export any of the removed cache globals."""
         import browser_service.agent.registration as reg
+
         removed = [
-            '_playwright_instance_cache',
-            '_connected_browser_cache',
-            '_cache_cdp_url',
-            '_cache_initialized',
-            '_cache_lock',
+            "_playwright_instance_cache",
+            "_connected_browser_cache",
+            "_cache_cdp_url",
+            "_cache_initialized",
+            "_cache_lock",
         ]
         for name in removed:
             assert not hasattr(reg, name), f"Removed global still present: {name}"
@@ -451,12 +461,14 @@ class TestNoCacheGlobals:
     def test_cleanup_playwright_cache_removed(self):
         """cleanup_playwright_cache must not exist (was module-cache-specific)."""
         import browser_service.agent.registration as reg
-        assert not hasattr(reg, 'cleanup_playwright_cache')
+
+        assert not hasattr(reg, "cleanup_playwright_cache")
 
     def test_invalidate_playwright_cache_removed(self):
         """invalidate_playwright_cache must not exist (was module-cache-specific)."""
         import browser_service.agent.registration as reg
-        assert not hasattr(reg, 'invalidate_playwright_cache')
+
+        assert not hasattr(reg, "invalidate_playwright_cache")
 
     def test_store_cdp_port_for_cleanup_removed(self):
         """_store_cdp_port_for_cleanup must not exist.
@@ -467,7 +479,8 @@ class TestNoCacheGlobals:
         task's browser. _get_cdp_url_from_session is now a pure reader.
         """
         import browser_service.agent.registration as reg
-        assert not hasattr(reg, '_store_cdp_port_for_cleanup'), (
+
+        assert not hasattr(reg, "_store_cdp_port_for_cleanup"), (
             "_store_cdp_port_for_cleanup was re-introduced; it writes to shared "
             "module-level globals in cleanup.py which is unsafe for concurrent tasks."
         )

@@ -7,14 +7,15 @@ Provides:
 - Mock Playwright page objects
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import MagicMock, patch
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Flask app fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def flask_app():
@@ -48,6 +49,7 @@ def mock_processor(flask_app):
 # ---------------------------------------------------------------------------
 # Sample data fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def sample_elements():
@@ -108,6 +110,7 @@ def sample_locator_result():
 # Mock Playwright page
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def mock_page():
     """Mock Playwright page object with common methods stubbed."""
@@ -126,6 +129,7 @@ def mock_page():
 # ---------------------------------------------------------------------------
 # Task processor (standalone, without Flask)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def task_processor():

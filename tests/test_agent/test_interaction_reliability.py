@@ -20,25 +20,28 @@ Coverage:
 """
 
 import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _import_helpers():
     from browser_service.agent.registration import (
         _do_interaction,
         _do_interaction_playwright,
     )
+
     return _do_interaction, _do_interaction_playwright
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # #3 — Malformed locator: _do_interaction_playwright must not raise
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestMalformedLocator:
     """_do_interaction_playwright catches invalid selectors and returns auto_failed."""
@@ -67,6 +70,7 @@ class TestMalformedLocator:
 # ─────────────────────────────────────────────────────────────────────────────
 # #4 — Contenteditable: Control+a clears all before press_sequentially
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestTier2ControlA:
     """Tier 2 input must call press('Control+a') before press_sequentially."""
@@ -116,6 +120,7 @@ class TestTier2ControlA:
 # #5 — Tom Select: dispatchEvent fires on wrapper-bound listener  [integration]
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.skip(
     reason="Needs pytest-playwright's live 'page' fixture; pytest-playwright's sync "
     "event loop conflicts with this suite's asyncio_mode=auto. Run under a dedicated "
@@ -151,6 +156,7 @@ class TestTomSelectWrapperEvent:
         """)
 
         from browser_service.agent.registration import _do_interaction_playwright
+
         note, status = await _do_interaction_playwright(
             active_page=page,
             locator_str=".ts-control",
@@ -170,6 +176,7 @@ class TestTomSelectWrapperEvent:
 # ─────────────────────────────────────────────────────────────────────────────
 # #7 — CDP stall: 10s ceiling fires, falls through to Playwright
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestCdpStallFallthrough:
     """A stalled get_element_by_index must not hang _do_interaction — Playwright handles it."""
@@ -217,6 +224,7 @@ class TestCdpStallFallthrough:
 # #8 — Idempotency: second call for same element_id is no-op
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestIdempotency:
     """_do_interaction must not re-perform an action already in performed_actions."""
 
@@ -263,6 +271,7 @@ class TestIdempotency:
 # ─────────────────────────────────────────────────────────────────────────────
 # #9 — performed_actions isolation: two independent sets do not interfere
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestPerformedActionsIsolation:
     """Two workflows with separate performed_actions sets must not interfere."""
@@ -312,6 +321,7 @@ class TestPerformedActionsIsolation:
 # ─────────────────────────────────────────────────────────────────────────────
 # #10 — Tom Select Tier 0: select_id path uses getElementById JS, skips locator
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestTomSelectTier0SelectId:
     """When select_id is provided, Tier 0 (getElementById) must succeed without touching loc.evaluate."""
@@ -380,6 +390,7 @@ class TestTomSelectTier0SelectId:
 # #11 — Tom Select Tier 0b: sibling DOM traversal  [integration]
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.skip(
     reason="Needs pytest-playwright's live 'page' fixture; pytest-playwright's sync "
     "event loop conflicts with this suite's asyncio_mode=auto. Run under a dedicated "
@@ -413,6 +424,7 @@ class TestTomSelectSiblingDomTraversal:
         """)
 
         from browser_service.agent.registration import _do_interaction_playwright
+
         note, status = await _do_interaction_playwright(
             active_page=page,
             locator_str="#ts-ctrl",
@@ -433,11 +445,13 @@ class TestTomSelectSiblingDomTraversal:
 # #12 — _strip_rf_select_prefix: all branch coverage
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestStripRfSelectPrefix:
     """_strip_rf_select_prefix must only strip known RF strategy prefixes."""
 
     def _strip(self, value: str) -> str:
         from browser_service.agent.registration import _strip_rf_select_prefix
+
         return _strip_rf_select_prefix(value)
 
     def test_empty_string_unchanged(self):
@@ -472,6 +486,7 @@ class TestStripRfSelectPrefix:
 # ─────────────────────────────────────────────────────────────────────────────
 # #13 — Tom Select action remap: input/type → select when dropdown_framework=tom-select
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestTomSelectActionRemap:
     """When dropdown_framework='tom-select', action 'input' or 'type' must be remapped to 'select'."""
@@ -536,6 +551,7 @@ class TestTomSelectActionRemap:
 # ─────────────────────────────────────────────────────────────────────────────
 # Task D (G4) — flatpickr Tier 0 in the input chain
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestFlatpickrInputTier:
     """datepicker_framework='flatpickr' routes input actions through the

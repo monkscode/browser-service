@@ -55,18 +55,18 @@ POSITIONAL = "positional"
 # "select2-selection" — acceptable, because volatile only demotes
 # ordering, while under-flagging would emit a session-dead id as stable.
 _FRAMEWORK_ID_PATTERNS = (
-    re.compile(r"ext-gen\d+"),           # ExtJS generated element
-    re.compile(r"ext-comp-\d+"),         # ExtJS component
-    re.compile(r"ember\d+"),             # Ember view id
+    re.compile(r"ext-gen\d+"),  # ExtJS generated element
+    re.compile(r"ext-comp-\d+"),  # ExtJS component
+    re.compile(r"ember\d+"),  # Ember view id
     re.compile(r"mat-[a-z][a-z-]*-\d+"),  # Angular Material (mat-input-5)
-    re.compile(r"select2-"),             # Select2 (random middle segments)
-    re.compile(r"gwt-uid-\d+"),          # GWT
-    re.compile(r"tomselect-\d+"),        # Tom Select init-order counter
-    re.compile(r"cke_\d+"),              # CKEditor 4 init-order counter (G6);
-                                         # name-derived cke_editor1 /
-                                         # cke_wysiwyg_frame stay stable
-    re.compile(r"radix-"),               # Radix UI generated id
-    re.compile(r":r[0-9a-z]+:"),         # React useId
+    re.compile(r"select2-"),  # Select2 (random middle segments)
+    re.compile(r"gwt-uid-\d+"),  # GWT
+    re.compile(r"tomselect-\d+"),  # Tom Select init-order counter
+    re.compile(r"cke_\d+"),  # CKEditor 4 init-order counter (G6);
+    # name-derived cke_editor1 /
+    # cke_wysiwyg_frame stay stable
+    re.compile(r"radix-"),  # Radix UI generated id
+    re.compile(r":r[0-9a-z]+:"),  # React useId
 )
 
 _UUID_RE = re.compile(
@@ -83,13 +83,13 @@ _HEX_HASH_RE = re.compile(r"(?=[0-9a-fA-F]*\d)[0-9a-fA-F]{16,}$")
 _DIGIT_SUFFIX_RE = re.compile(r".*\D\d{4,}$")
 
 # --- positional locator shapes -------------------------------------------
-_NTH_ENGINE_RE = re.compile(r">>\s*nth=")               # Playwright nth engine
-_NTH_CSS_RE = re.compile(r":nth-(?:child|of-type)\(")   # CSS structural
-_XPATH_GROUP_INDEX_RE = re.compile(r"\)\[\d+\]")        # (//...)[N]
-_XPATH_STEP_INDEX_RE = re.compile(r"\[\d+\]")           # //div[1]/...
+_NTH_ENGINE_RE = re.compile(r">>\s*nth=")  # Playwright nth engine
+_NTH_CSS_RE = re.compile(r":nth-(?:child|of-type)\(")  # CSS structural
+_XPATH_GROUP_INDEX_RE = re.compile(r"\)\[\d+\]")  # (//...)[N]
+_XPATH_STEP_INDEX_RE = re.compile(r"\[\d+\]")  # //div[1]/...
 
 # --- dynamic-text shapes ---------------------------------------------------
-_TRAILING_COUNT_RE = re.compile(r"\(\s*\d+[^)]*\)\s*$")   # "Cart (3 items)"
+_TRAILING_COUNT_RE = re.compile(r"\(\s*\d+[^)]*\)\s*$")  # "Cart (3 items)"
 _ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _SLASH_DATE_RE = re.compile(r"\d{1,2}/\d{1,2}/\d{2,4}")
 _CLOCK_TIME_RE = re.compile(r"(?<!\d)\d{1,2}:\d{2}(?!\d)")
@@ -97,13 +97,13 @@ _BARE_NUMBER_RE = re.compile(r"[$€£]?\s?\d[\d,.]*\+?$")
 
 # --- embedded-value extraction for whole-locator classification -----------
 _LOCATOR_ID_VALUE_RES = (
-    re.compile(r"(?:^|\s|=)#([^\s>\[.:,\"']+)"),   # #value / css=#value
-    re.compile(r"^id=(.+)$"),                       # id=value
-    re.compile(r"\[id=[\"']([^\"']+)[\"']\]"),      # [id="value"]
+    re.compile(r"(?:^|\s|=)#([^\s>\[.:,\"']+)"),  # #value / css=#value
+    re.compile(r"^id=(.+)$"),  # id=value
+    re.compile(r"\[id=[\"']([^\"']+)[\"']\]"),  # [id="value"]
 )
 _LOCATOR_TEXT_VALUE_RES = (
-    re.compile(r"text=[\"']([^\"']*)[\"']"),        # text="..."
-    re.compile(r"text\(\)\s*=\s*'([^']*)'"),        # xpath text()='...'
+    re.compile(r"text=[\"']([^\"']*)[\"']"),  # text="..."
+    re.compile(r"text\(\)\s*=\s*'([^']*)'"),  # xpath text()='...'
     re.compile(r"contains\(text\(\),\s*'([^']*)'"),  # xpath contains(text(),..)
 )
 
@@ -151,15 +151,8 @@ def is_positional_locator(locator: str) -> bool:
     if _NTH_ENGINE_RE.search(locator) or _NTH_CSS_RE.search(locator):
         return True
 
-    is_xpath = (
-        locator.startswith("xpath=")
-        or locator.startswith("//")
-        or locator.startswith("(//")
-    )
-    if is_xpath and (
-        _XPATH_GROUP_INDEX_RE.search(locator)
-        or _XPATH_STEP_INDEX_RE.search(locator)
-    ):
+    is_xpath = locator.startswith("xpath=") or locator.startswith("//") or locator.startswith("(//")
+    if is_xpath and (_XPATH_GROUP_INDEX_RE.search(locator) or _XPATH_STEP_INDEX_RE.search(locator)):
         return True
 
     return False

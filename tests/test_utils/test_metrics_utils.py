@@ -13,8 +13,10 @@ Tests:
   - Missing keys default gracefully
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
+
 from browser_service.utils.metrics import record_workflow_metrics
 
 
@@ -79,8 +81,8 @@ class TestRecordWorkflowMetrics:
             "results": [
                 {"metrics": {"custom_action_used": True}},
                 {"metrics": {"custom_action_used": True}},
-                {"metrics": {"custom_action_used": True}}
-            ]
+                {"metrics": {"custom_action_used": True}},
+            ],
         }
         record_workflow_metrics(workflow_id="wf-004", url="https://example.com", results=results)
 

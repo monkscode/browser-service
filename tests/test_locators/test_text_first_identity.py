@@ -141,6 +141,4 @@ async def test_description_derived_reported_unverified(page):
     assert result["best_locator"] == '[title*="Search"]'
     assert result["semantic_match"] is False
     assert result["all_locators"][0]["validation_method"] == "description_derived"
-    assert (
-        result["validation_summary"]["validation_method"] == "description_derived"
-    )
+    assert result["validation_summary"]["validation_method"] == "description_derived"

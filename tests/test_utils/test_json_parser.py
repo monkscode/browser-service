@@ -21,6 +21,7 @@ Tests cover both extract_element_json and extract_workflow_result:
 """
 
 import pytest
+
 from browser_service.utils.json_parser import (
     extract_json_for_element,
     extract_workflow_json,
@@ -81,7 +82,9 @@ class TestExtractWorkflowResult:
 
     def test_valid_workflow_result(self):
         """Standard workflow result with success and locator_mapping."""
-        text = '{"workflow_completed": true, "results": [{"element_id": "elem_1", "locator": "id=x"}]}'
+        text = (
+            '{"workflow_completed": true, "results": [{"element_id": "elem_1", "locator": "id=x"}]}'
+        )
         result = extract_workflow_json(text)
         assert result is not None
         assert result["workflow_completed"] is True

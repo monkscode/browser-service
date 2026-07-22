@@ -7,11 +7,11 @@ Tier 2 (vision-assist) is skipped — it lands in Phase 2.4.
 """
 
 import pytest
+
 from browser_service.locators.classifier import (
     ElementTypeInfo,
     classify_element_type,
 )
-
 
 # ----------------------------------------------------------------------
 # Tier 0 — pure DOM rules (rules 1–17 from §5)
@@ -29,39 +29,29 @@ class TestTier0NativeFormElements:
         assert "tier:0" in info.signals
 
     def test_input_checkbox_is_native_checkbox(self):
-        info = classify_element_type(
-            {"tagName": "input", "type": "checkbox"}, ""
-        )
+        info = classify_element_type({"tagName": "input", "type": "checkbox"}, "")
         assert info.primary_type == "checkbox"
         assert info.framework == "native"
         assert info.confidence == "high"
 
     def test_input_radio_is_native_radio(self):
-        info = classify_element_type(
-            {"tagName": "input", "type": "radio"}, ""
-        )
+        info = classify_element_type({"tagName": "input", "type": "radio"}, "")
         assert info.primary_type == "radio"
         assert info.framework == "native"
 
     def test_input_file_is_file_upload(self):
-        info = classify_element_type(
-            {"tagName": "input", "type": "file"}, ""
-        )
+        info = classify_element_type({"tagName": "input", "type": "file"}, "")
         assert info.primary_type == "file-upload"
         assert info.framework == "native"
 
     def test_input_date_is_date_picker(self):
-        info = classify_element_type(
-            {"tagName": "input", "type": "date"}, ""
-        )
+        info = classify_element_type({"tagName": "input", "type": "date"}, "")
         assert info.primary_type == "date-picker"
         assert info.framework == "native"
 
     def test_input_text_is_not_classified_at_tier0(self):
         """type=text is not in rules 2–5 — falls to Tier 1, no signals → unknown."""
-        info = classify_element_type(
-            {"tagName": "input", "type": "text"}, ""
-        )
+        info = classify_element_type({"tagName": "input", "type": "text"}, "")
         assert info.primary_type == "unknown"
         assert "tier:1" in info.signals
 
@@ -70,17 +60,13 @@ class TestTier0CollectionTags:
     """Rules 6–7: tr / li (with nav-context exclusion)."""
 
     def test_tr_is_table_row_collection(self):
-        info = classify_element_type(
-            {"tagName": "tr", "className": "data-row"}, "first row"
-        )
+        info = classify_element_type({"tagName": "tr", "className": "data-row"}, "first row")
         assert info.primary_type == "collection"
         assert info.framework == "table-row"
         assert info.confidence == "high"
 
     def test_li_without_nav_class_is_list_item_collection(self):
-        info = classify_element_type(
-            {"tagName": "li", "className": "todo-item"}, "second item"
-        )
+        info = classify_element_type({"tagName": "li", "className": "todo-item"}, "second item")
         assert info.primary_type == "collection"
         assert info.framework == "list-item"
         assert info.confidence == "medium"
@@ -94,9 +80,7 @@ class TestTier0CollectionTags:
         assert info.primary_type != "collection"
 
     def test_li_with_menu_prefix_is_NOT_collection(self):
-        info = classify_element_type(
-            {"tagName": "li", "className": "menu-item"}, "settings"
-        )
+        info = classify_element_type({"tagName": "li", "className": "menu-item"}, "settings")
         assert info.primary_type != "collection"
 
     def test_li_with_breadcrumb_prefix_is_NOT_collection(self):
@@ -110,17 +94,13 @@ class TestTier0DropdownFrameworks:
     """Rules 8–14: framework className patterns."""
 
     def test_tom_select_ts_wrapper(self):
-        info = classify_element_type(
-            {"tagName": "div", "className": "ts-wrapper single"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "className": "ts-wrapper single"}, "")
         assert info.primary_type == "dropdown"
         assert info.framework == "tom-select"
         assert info.confidence == "high"
 
     def test_tom_select_ts_control(self):
-        info = classify_element_type(
-            {"tagName": "div", "className": "ts-control"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "className": "ts-control"}, "")
         assert info.framework == "tom-select"
 
     def test_select2(self):
@@ -131,27 +111,19 @@ class TestTier0DropdownFrameworks:
         assert info.framework == "select2"
 
     def test_kendo_dropdown(self):
-        info = classify_element_type(
-            {"tagName": "div", "className": "k-dropdown"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "className": "k-dropdown"}, "")
         assert info.framework == "kendo"
 
     def test_kendo_combobox(self):
-        info = classify_element_type(
-            {"tagName": "div", "className": "k-combobox"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "className": "k-combobox"}, "")
         assert info.framework == "kendo"
 
     def test_react_select(self):
-        info = classify_element_type(
-            {"tagName": "div", "className": "react-select__control"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "className": "react-select__control"}, "")
         assert info.framework == "react-select"
 
     def test_vue_select(self):
-        info = classify_element_type(
-            {"tagName": "div", "className": "vs__dropdown-toggle"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "className": "vs__dropdown-toggle"}, "")
         assert info.framework == "vue-select"
 
     def test_ant_design(self):
@@ -161,15 +133,11 @@ class TestTier0DropdownFrameworks:
         assert info.framework == "ant-design"
 
     def test_material_ui_select(self):
-        info = classify_element_type(
-            {"tagName": "div", "className": "MuiSelect-root"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "className": "MuiSelect-root"}, "")
         assert info.framework == "material-ui"
 
     def test_material_ui_autocomplete(self):
-        info = classify_element_type(
-            {"tagName": "div", "className": "MuiAutocomplete-input"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "className": "MuiAutocomplete-input"}, "")
         assert info.framework == "material-ui"
 
 
@@ -177,37 +145,27 @@ class TestTier0Roles:
     """Rules 15–17: role-based."""
 
     def test_role_combobox(self):
-        info = classify_element_type(
-            {"tagName": "div", "role": "combobox"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "role": "combobox"}, "")
         assert info.primary_type == "dropdown"
         assert info.framework == "combobox-input"
         assert info.confidence == "high"
 
     def test_role_listbox(self):
-        info = classify_element_type(
-            {"tagName": "div", "role": "listbox"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "role": "listbox"}, "")
         assert info.primary_type == "dropdown"
 
     def test_role_checkbox_custom(self):
-        info = classify_element_type(
-            {"tagName": "div", "role": "checkbox"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "role": "checkbox"}, "")
         assert info.primary_type == "checkbox"
         assert info.framework == "custom"
 
     def test_role_radio_custom(self):
-        info = classify_element_type(
-            {"tagName": "div", "role": "radio"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "role": "radio"}, "")
         assert info.primary_type == "radio"
         assert info.framework == "custom"
 
     def test_role_switch_is_toggle_checkbox(self):
-        info = classify_element_type(
-            {"tagName": "div", "role": "switch"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "role": "switch"}, "")
         assert info.primary_type == "checkbox"
         assert info.framework == "toggle"
 
@@ -221,17 +179,13 @@ class TestTier1RoleVoting:
     """role=row / listitem / grid → collection +3 (medium)."""
 
     def test_role_row_votes_collection_medium(self):
-        info = classify_element_type(
-            {"tagName": "div", "role": "row"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "role": "row"}, "")
         assert info.primary_type == "collection"
         assert info.confidence == "medium"
         assert "tier:1" in info.signals
 
     def test_role_listitem_votes_collection_medium(self):
-        info = classify_element_type(
-            {"tagName": "div", "role": "listitem"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "role": "listitem"}, "")
         assert info.primary_type == "collection"
         assert info.confidence == "medium"
 
@@ -241,16 +195,12 @@ class TestTier1ClassNameVoting:
 
     def test_card_class_votes_collection_low(self):
         """Single +2 vote alone is below medium threshold (3) → low."""
-        info = classify_element_type(
-            {"tagName": "div", "className": "card mb-3"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "className": "card mb-3"}, "")
         assert info.primary_type == "collection"
         assert info.confidence == "low"
 
     def test_grid_item_class_votes_collection(self):
-        info = classify_element_type(
-            {"tagName": "div", "className": "grid-item"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "className": "grid-item"}, "")
         assert info.primary_type == "collection"
 
     def test_nav_class_blocks_collection_vote(self):
@@ -263,9 +213,7 @@ class TestTier1ClassNameVoting:
 
     def test_substring_only_class_does_not_vote_collection(self):
         """'rowboat' contains 'row' as substring but is not a token match."""
-        info = classify_element_type(
-            {"tagName": "div", "className": "rowboat"}, "decorative"
-        )
+        info = classify_element_type({"tagName": "div", "className": "rowboat"}, "decorative")
         assert info.primary_type != "collection"
 
 
@@ -273,16 +221,12 @@ class TestTier1DescriptionVoting:
     """description hints add +1 — never enough alone to clear medium."""
 
     def test_dropdown_description_alone_is_low(self):
-        info = classify_element_type(
-            {"tagName": "div", "className": ""}, "Country dropdown"
-        )
+        info = classify_element_type({"tagName": "div", "className": ""}, "Country dropdown")
         assert info.primary_type == "dropdown"
         assert info.confidence == "low"
 
     def test_collection_description_alone_is_low(self):
-        info = classify_element_type(
-            {"tagName": "div", "className": ""}, "all visible rows"
-        )
+        info = classify_element_type({"tagName": "div", "className": ""}, "all visible rows")
         assert info.primary_type == "collection"
         assert info.confidence == "low"
 
@@ -291,9 +235,7 @@ class TestTier1ClassPlusDescriptionAgreement:
     """className (+2) + description (+1) = 3 → medium."""
 
     def test_card_class_plus_collection_description_is_medium(self):
-        info = classify_element_type(
-            {"tagName": "div", "className": "card"}, "list of items"
-        )
+        info = classify_element_type({"tagName": "div", "className": "card"}, "list of items")
         assert info.primary_type == "collection"
         assert info.confidence == "medium"
 
@@ -358,9 +300,7 @@ class TestTier1NoSignals:
     """Generic elements with no signals → unknown."""
 
     def test_plain_div_is_unknown(self):
-        info = classify_element_type(
-            {"tagName": "div", "className": ""}, ""
-        )
+        info = classify_element_type({"tagName": "div", "className": ""}, "")
         assert info.primary_type == "unknown"
         assert info.confidence == "low"
         assert "no-signals" in info.signals
@@ -385,9 +325,7 @@ class TestSignalsContract:
         assert any(s == "tier:0" for s in info.signals)
 
     def test_tier1_verdict_signals_include_tier1(self):
-        info = classify_element_type(
-            {"tagName": "div", "className": "card"}, ""
-        )
+        info = classify_element_type({"tagName": "div", "className": "card"}, "")
         assert any(s == "tier:1" for s in info.signals)
 
 
@@ -399,7 +337,8 @@ class TestVisionHintIntegration:
 
     def test_hint_agreeing_with_tier0_is_annotated(self):
         info = classify_element_type(
-            {"tagName": "select"}, "",
+            {"tagName": "select"},
+            "",
             vision_type_hint="dropdown",
         )
         assert info.primary_type == "dropdown"
@@ -409,7 +348,8 @@ class TestVisionHintIntegration:
         # tagName=select is HTML-deterministic; even if vision says checkbox,
         # the verdict stays "dropdown" — the conflict is logged for telemetry.
         info = classify_element_type(
-            {"tagName": "select"}, "",
+            {"tagName": "select"},
+            "",
             vision_type_hint="checkbox",
         )
         assert info.primary_type == "dropdown"
@@ -420,7 +360,8 @@ class TestVisionHintIntegration:
         # framework="combobox-input". Vision adds tom-select hint → does not
         # overwrite (Tier 0 already had a framework).
         info = classify_element_type(
-            {"tagName": "div", "role": "combobox"}, "",
+            {"tagName": "div", "role": "combobox"},
+            "",
             vision_type_hint="dropdown",
             vision_framework_hint="tom-select",
         )
@@ -444,7 +385,8 @@ class TestVisionHintIntegration:
         # No DOM signal, only vision hint → max_vote=3 → medium confidence.
         # The dispatcher will still require DOM probe corroboration.
         info = classify_element_type(
-            {"tagName": "div"}, "",
+            {"tagName": "div"},
+            "",
             vision_type_hint="dropdown",
         )
         assert info.primary_type == "dropdown"
@@ -453,7 +395,8 @@ class TestVisionHintIntegration:
     def test_hint_with_dom_agreement_promotes_to_high(self):
         # Vision hint (+3) + className "select" hint (+2) = 5 → high.
         info = classify_element_type(
-            {"tagName": "div", "className": "custom-select"}, "",
+            {"tagName": "div", "className": "custom-select"},
+            "",
             vision_type_hint="dropdown",
         )
         assert info.primary_type == "dropdown"
@@ -462,14 +405,16 @@ class TestVisionHintIntegration:
     def test_unmapped_hint_value_ignored(self):
         # "other" maps to "" — no vote, treated as absent.
         info = classify_element_type(
-            {"tagName": "div"}, "",
+            {"tagName": "div"},
+            "",
             vision_type_hint="other",
         )
         assert info.primary_type == "unknown"
 
     def test_table_hint_maps_to_collection(self):
         info = classify_element_type(
-            {"tagName": "div"}, "",
+            {"tagName": "div"},
+            "",
             vision_type_hint="table",
         )
         assert info.primary_type == "collection"

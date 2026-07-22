@@ -21,26 +21,26 @@ Prompt Structure:
 - Critical rules and completion criteria
 """
 
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
 # Import reusable prompt templates
 from browser_service.prompts.templates import (
-    CUSTOM_ACTION_HEADER,
-    CUSTOM_ACTION_PARAMETERS_EXTENDED,
-    CUSTOM_ACTION_HOW_IT_WORKS,
-    CUSTOM_ACTION_RETURN_VALUE,
-    CUSTOM_ACTION_NO_VALIDATION_NEEDED,
-    EXAMPLE_WORKFLOW_TEMPLATE,
-    CRITICAL_INSTRUCTIONS_CHECKLIST,
-    FORBIDDEN_ACTIONS,
-    STRICT_SCOPE_RULES,
-    SEQUENTIAL_PROCESSING_RULES,
-    NUMERIC_IDS_WARNING,
-    EDGE_CASE_HANDLING,
     COMPLETION_CRITERIA_EXTENDED,
-    WORKFLOW_STEPS_LEGACY,
     COMPLETION_CRITERIA_LEGACY,
+    CRITICAL_INSTRUCTIONS_CHECKLIST,
+    CUSTOM_ACTION_HEADER,
+    CUSTOM_ACTION_HOW_IT_WORKS,
+    CUSTOM_ACTION_NO_VALIDATION_NEEDED,
+    CUSTOM_ACTION_PARAMETERS_EXTENDED,
+    CUSTOM_ACTION_RETURN_VALUE,
+    EDGE_CASE_HANDLING,
+    EXAMPLE_WORKFLOW_TEMPLATE,
+    FORBIDDEN_ACTIONS,
+    NUMERIC_IDS_WARNING,
+    SEQUENTIAL_PROCESSING_RULES,
+    STRICT_SCOPE_RULES,
     UNIQUENESS_REQUIREMENT,
+    WORKFLOW_STEPS_LEGACY,
 )
 
 
@@ -49,7 +49,7 @@ def build_workflow_prompt(
     url: str,
     elements: List[Dict[str, Any]],
     include_custom_action: bool = True,
-    client_hints: Optional[List[str]] = None
+    client_hints: Optional[List[str]] = None,
 ) -> str:
     """
     Build workflow prompt for browser-use agent.
@@ -92,47 +92,51 @@ def build_workflow_prompt(
     # Input validation
     if not elements:
         raise ValueError("Elements list cannot be empty")
-    
+
     # Element limit safeguard - prevents LLM context overflow and excessively long workflows
     MAX_ELEMENTS = 50
     if len(elements) > MAX_ELEMENTS:
         raise ValueError(f"Too many elements ({len(elements)}). Maximum allowed is {MAX_ELEMENTS}.")
-    
+
     if not url or not url.strip():
         raise ValueError("URL cannot be empty")
-    
+
     # Ensure URL has protocol
     url = url.strip()
-    if not url.startswith(('http://', 'https://')):
-        url = f'https://{url}'
-    
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+
     # Sanitize user_query to prevent prompt injection
     # Replace newlines with spaces, limit length
-    user_query = user_query.replace('\n', ' ').replace('\r', ' ').strip()
+    user_query = user_query.replace("\n", " ").replace("\r", " ").strip()
     if len(user_query) > 500:
-        user_query = user_query[:500] + '...'
+        user_query = user_query[:500] + "..."
 
     # Build element list with validation
     element_list = []
     for idx, elem in enumerate(elements):
-        elem_id = elem.get('id', f'elem_unknown_{idx}')  # Default with index if missing
-        elem_desc = elem.get('description', 'No description provided')  # Default description
-        elem_action = elem.get('action', 'get_text')  # Default to get_text if missing
-        elem_value = elem.get('value', '')  # Get value for input actions
-        elem_loop_type = elem.get('loop_type', None)  # Get loop type for collection detection
-        
+        elem_id = elem.get("id", f"elem_unknown_{idx}")  # Default with index if missing
+        elem_desc = elem.get("description", "No description provided")  # Default description
+        elem_action = elem.get("action", "get_text")  # Default to get_text if missing
+        elem_value = elem.get("value", "")  # Get value for input actions
+        elem_loop_type = elem.get("loop_type", None)  # Get loop type for collection detection
+
         # Sanitize description to prevent prompt issues
-        elem_desc = elem_desc.replace('\n', ' ').replace('\r', ' ').strip()
+        elem_desc = elem_desc.replace("\n", " ").replace("\r", " ").strip()
         if len(elem_desc) > 200:
-            elem_desc = elem_desc[:200] + '...'
-        
+            elem_desc = elem_desc[:200] + "..."
+
         # Format element based on action type and loop_type
-        if elem_value and elem_action in ['input', 'type']:
+        if elem_value and elem_action in ["input", "type"]:
             # Input actions with value (CRITICAL for credentials/search terms)
-            element_list.append(f"   - {elem_id}: {elem_desc} (action: {elem_action}, value: \"{elem_value}\")")
+            element_list.append(
+                f'   - {elem_id}: {elem_desc} (action: {elem_action}, value: "{elem_value}")'
+            )
         elif elem_loop_type:
             # Collection elements (loop: FOR indicates multi-element)
-            element_list.append(f"   - {elem_id}: {elem_desc} (action: {elem_action}, loop: {elem_loop_type})")
+            element_list.append(
+                f"   - {elem_id}: {elem_desc} (action: {elem_action}, loop: {elem_loop_type})"
+            )
         else:
             element_list.append(f"   - {elem_id}: {elem_desc} (action: {elem_action})")
 

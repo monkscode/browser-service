@@ -1,4 +1,5 @@
-﻿"""Test that all browser_service imports work"""
+"""Test that all browser_service imports work"""
+
 import pytest
 
 
@@ -6,12 +7,14 @@ def test_imports():
     """Test basic imports"""
     from browser_service import config
     from browser_service.config import BrowserServiceConfig
+
     assert config is not None
 
 
 def test_version():
     """Test version is available"""
     from browser_service import __version__
+
     assert __version__ is not None
     assert isinstance(__version__, str)
 

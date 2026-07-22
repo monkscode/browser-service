@@ -59,17 +59,17 @@ class D2FakeCtx:
 
     async def evaluate(self, js, arg=None):
         return {
-            'role': 'dialog',
-            'accessibleName': DIALOG_NAME_RAW,
-            'tagName': 'dialog',
-            'isCollection': False,
-            'id': None,
-            'className': 'announcement-modal',
+            "role": "dialog",
+            "accessibleName": DIALOG_NAME_RAW,
+            "tagName": "dialog",
+            "isCollection": False,
+            "id": None,
+            "className": "announcement-modal",
         }
 
     def locator(self, selector: str):
         self.probed.append(selector)
-        return D2FakeLocator(1 if selector.startswith('role=dialog[name=') else 0)
+        return D2FakeLocator(1 if selector.startswith("role=dialog[name=") else 0)
 
 
 @pytest.mark.asyncio
@@ -78,14 +78,16 @@ async def test_accessible_name_is_whitespace_normalized():
     variable line truncates at it and the selector dies at runtime."""
     ctx = D2FakeCtx()
     result = await _find_element_via_accessibility(
-        page=ctx, x=X, y=Y,
+        page=ctx,
+        x=X,
+        y=Y,
         element_description="announcement",  # no table keywords
-        expected_text=None,                   # skip 2.5a
+        expected_text=None,  # skip 2.5a
         search_context=ctx,
     )
     assert result is not None
-    assert '\n' not in result['locator']
-    assert result['locator'] == f'role=dialog[name="{DIALOG_NAME_NORM}"]'
+    assert "\n" not in result["locator"]
+    assert result["locator"] == f'role=dialog[name="{DIALOG_NAME_NORM}"]'
 
 
 # ======================================================================
@@ -111,7 +113,7 @@ class LenientLocator:
 
 
 class LenientPage:
-    url = 'https://sujal.astppbilling.org/'
+    url = "https://sujal.astppbilling.org/"
 
     def locator(self, selector: str):
         return LenientLocator(0)
@@ -122,67 +124,66 @@ class LenientPage:
 
 def _dialog_fallback_result(name: str) -> dict:
     return {
-        'locator': f'role=dialog[name="{name}"]',
-        'count': 1,
-        'unique': True,
-        'role': 'dialog',
-        'accessible_name': name,
-        'element_type': 'dialog',
-        'strategy': 'accessibility_role',
+        "locator": f'role=dialog[name="{name}"]',
+        "count": 1,
+        "unique": True,
+        "role": "dialog",
+        "accessible_name": name,
+        "element_type": "dialog",
+        "strategy": "accessibility_role",
     }
 
 
 class TestD1MismatchReject:
-
     @pytest.mark.asyncio
     async def test_detected_mismatch_is_rejected(self, caplog):
         """The clobber replay: expected 'Sign In', fallback found the
         dialog — the mismatched result must NOT be returned."""
         dialog = _dialog_fallback_result(DIALOG_NAME_NORM)
         with patch(
-            'browser_service.locators.smart_locator.'
-            '_find_element_via_accessibility',
+            "browser_service.locators.smart_locator._find_element_via_accessibility",
             new=AsyncMock(return_value=dialog),
         ):
             with caplog.at_level(logging.INFO):
                 result = await find_unique_locator_action(
-                    x=X, y=Y,
-                    element_id='elem_3',
+                    x=X,
+                    y=Y,
+                    element_id="elem_3",
                     element_description=SIGNIN_DESC,
-                    expected_text='Sign In',
+                    expected_text="Sign In",
                     candidate_locator=None,
                     element_data=None,
                     page=LenientPage(),
                     is_collection=False,
                 )
-        assert 'accessibility-mismatch-rejected' in caplog.text
-        assert result.get('best_locator') != dialog['locator']
+        assert "accessibility-mismatch-rejected" in caplog.text
+        assert result.get("best_locator") != dialog["locator"]
 
     @pytest.mark.asyncio
     async def test_compatible_name_still_accepted(self):
         """Regression pin: containment match ('Sign In' in 'Sign In
         button') keeps today's accept."""
-        ok = _dialog_fallback_result('Sign In button')
-        ok['role'] = 'button'
-        ok['locator'] = 'role=button[name="Sign In button"]'
+        ok = _dialog_fallback_result("Sign In button")
+        ok["role"] = "button"
+        ok["locator"] = 'role=button[name="Sign In button"]'
         with patch(
-            'browser_service.locators.smart_locator.'
-            '_find_element_via_accessibility',
+            "browser_service.locators.smart_locator._find_element_via_accessibility",
             new=AsyncMock(return_value=ok),
         ):
             result = await find_unique_locator_action(
-                x=X, y=Y,
-                element_id='elem_3',
+                x=X,
+                y=Y,
+                element_id="elem_3",
                 element_description=SIGNIN_DESC,
-                expected_text='Sign In',
+                expected_text="Sign In",
                 candidate_locator=None,
                 element_data=None,
                 page=LenientPage(),
                 is_collection=False,
             )
-        assert result['found'] is True
-        assert result['best_locator'] == 'role=button[name="Sign In button"]'
-        assert result['semantic_match'] is True
+        assert result["found"] is True
+        assert result["best_locator"] == 'role=button[name="Sign In button"]'
+        assert result["semantic_match"] is True
 
     @pytest.mark.asyncio
     async def test_no_expected_text_accept_unchanged(self):
@@ -190,13 +191,13 @@ class TestD1MismatchReject:
         (paste-mode and icon-only flows unchanged)."""
         dialog = _dialog_fallback_result(DIALOG_NAME_NORM)
         with patch(
-            'browser_service.locators.smart_locator.'
-            '_find_element_via_accessibility',
+            "browser_service.locators.smart_locator._find_element_via_accessibility",
             new=AsyncMock(return_value=dialog),
         ):
             result = await find_unique_locator_action(
-                x=X, y=Y,
-                element_id='elem_3',
+                x=X,
+                y=Y,
+                element_id="elem_3",
                 element_description=SIGNIN_DESC,
                 expected_text=None,
                 candidate_locator=None,
@@ -204,5 +205,5 @@ class TestD1MismatchReject:
                 page=LenientPage(),
                 is_collection=False,
             )
-        assert result['found'] is True
-        assert result['best_locator'] == dialog['locator']
+        assert result["found"] is True
+        assert result["best_locator"] == dialog["locator"]

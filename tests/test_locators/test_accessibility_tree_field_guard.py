@@ -37,8 +37,9 @@ LABEL_TEXT = "Email *"
 class FakeMatch:
     """Stand-in for a get_by_* Locator: count() + first.evaluate()."""
 
-    def __init__(self, count: int, tag: str = 'LABEL', ce: bool = False,
-                 el_id: str = '', name: str = ''):
+    def __init__(
+        self, count: int, tag: str = "LABEL", ce: bool = False, el_id: str = "", name: str = ""
+    ):
         self._count = count
         self._tag = tag
         self._ce = ce
@@ -49,15 +50,15 @@ class FakeMatch:
         return self._count
 
     @property
-    def first(self) -> 'FakeMatch':
+    def first(self) -> "FakeMatch":
         return self
 
     async def evaluate(self, js: str):
         return {
-            'tag': self._tag,
-            'isContentEditable': self._ce,
-            'id': self._id,
-            'name': self._name,
+            "tag": self._tag,
+            "isContentEditable": self._ce,
+            "id": self._id,
+            "name": self._name,
         }
 
 
@@ -66,9 +67,12 @@ class FakeTreePage:
     text/label searches configurable, locator() for the resolved-control
     uniqueness check."""
 
-    def __init__(self, text_match: FakeMatch = None,
-                 label_match: FakeMatch = None,
-                 unique_selectors: set = None):
+    def __init__(
+        self,
+        text_match: FakeMatch = None,
+        label_match: FakeMatch = None,
+        unique_selectors: set = None,
+    ):
         self._text = text_match or FakeMatch(0)
         self._label = label_match or FakeMatch(0)
         self._unique = unique_selectors or set()
@@ -93,59 +97,51 @@ async def test_field_description_rejects_bare_text_node(caplog):
     """The q05 shape: text search finds the LABEL — reject it and resolve
     through get_by_label to the control's own attributes."""
     page = FakeTreePage(
-        text_match=FakeMatch(1, tag='LABEL'),
-        label_match=FakeMatch(1, tag='INPUT', el_id='', name='email'),
+        text_match=FakeMatch(1, tag="LABEL"),
+        label_match=FakeMatch(1, tag="INPUT", el_id="", name="email"),
         unique_selectors={'input[name="email"]'},
     )
     with caplog.at_level(logging.INFO):
-        result = await _find_element_via_accessibility_tree(
-            page, LABEL_TEXT, FIELD_DESC
-        )
-    assert 'text-node-rejected-for-field-description' in caplog.text
+        result = await _find_element_via_accessibility_tree(page, LABEL_TEXT, FIELD_DESC)
+    assert "text-node-rejected-for-field-description" in caplog.text
     assert result is not None
-    assert result['locator'] == 'input[name="email"]'
-    assert 'label=' not in result['locator']
-    assert 'text=' not in result['locator']
+    assert result["locator"] == 'input[name="email"]'
+    assert "label=" not in result["locator"]
+    assert "text=" not in result["locator"]
 
 
 @pytest.mark.asyncio
 async def test_non_field_description_keeps_text_emission():
     """Regression pin: clicking visible text is exactly what get_by_text
     is for — descriptions without field/input wording are untouched."""
-    page = FakeTreePage(text_match=FakeMatch(1, tag='SPAN'))
-    result = await _find_element_via_accessibility_tree(
-        page, 'Customer', CLICK_TEXT_DESC
-    )
+    page = FakeTreePage(text_match=FakeMatch(1, tag="SPAN"))
+    result = await _find_element_via_accessibility_tree(page, "Customer", CLICK_TEXT_DESC)
     assert result is not None
-    assert result['locator'] == 'text="Customer"'
+    assert result["locator"] == 'text="Customer"'
 
 
 @pytest.mark.asyncio
 async def test_field_description_accepts_form_control_text_match():
     """getByText can match an input by its value — a form-control match
     for a field description is legitimate and stays accepted."""
-    page = FakeTreePage(text_match=FakeMatch(1, tag='INPUT'))
-    result = await _find_element_via_accessibility_tree(
-        page, LABEL_TEXT, FIELD_DESC
-    )
+    page = FakeTreePage(text_match=FakeMatch(1, tag="INPUT"))
+    result = await _find_element_via_accessibility_tree(page, LABEL_TEXT, FIELD_DESC)
     assert result is not None
-    assert result['locator'] == f'text="{LABEL_TEXT}"'
+    assert result["locator"] == f'text="{LABEL_TEXT}"'
 
 
 @pytest.mark.asyncio
 async def test_label_match_resolves_to_id_locator(caplog):
     """get_by_label success emits the control's id — never label=."""
     page = FakeTreePage(
-        label_match=FakeMatch(1, tag='INPUT', el_id='email_field'),
-        unique_selectors={'id=email_field'},
+        label_match=FakeMatch(1, tag="INPUT", el_id="email_field"),
+        unique_selectors={"id=email_field"},
     )
     with caplog.at_level(logging.INFO):
-        result = await _find_element_via_accessibility_tree(
-            page, LABEL_TEXT, FIELD_DESC
-        )
+        result = await _find_element_via_accessibility_tree(page, LABEL_TEXT, FIELD_DESC)
     assert result is not None
-    assert result['locator'] == 'id=email_field'
-    assert 'label-resolved-to-control' in caplog.text
+    assert result["locator"] == "id=email_field"
+    assert "label-resolved-to-control" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -153,9 +149,7 @@ async def test_label_match_without_id_or_name_returns_none():
     """No runtime-valid resolution -> None. The broken label= string is
     never emitted (Unknown engine \"label\" at runtime)."""
     page = FakeTreePage(
-        label_match=FakeMatch(1, tag='INPUT', el_id='', name=''),
+        label_match=FakeMatch(1, tag="INPUT", el_id="", name=""),
     )
-    result = await _find_element_via_accessibility_tree(
-        page, LABEL_TEXT, FIELD_DESC
-    )
+    result = await _find_element_via_accessibility_tree(page, LABEL_TEXT, FIELD_DESC)
     assert result is None

@@ -77,41 +77,31 @@ def _element_data(el_id: str, placeholder: str = "") -> dict:
 async def test_label_for_text_matches_input(page):
     """<label for="email">Email address</label> must let #email pass for
     expected_text "Email address" even with no placeholder."""
-    ok, _ = await validate_semantic_match(
-        None, "Email address", page=page, locator="#email"
-    )
+    ok, _ = await validate_semantic_match(None, "Email address", page=page, locator="#email")
     assert ok
 
 
 async def test_aria_labelledby_text_matches_input(page):
-    ok, _ = await validate_semantic_match(
-        None, "Phone number", page=page, locator="#phone"
-    )
+    ok, _ = await validate_semantic_match(None, "Phone number", page=page, locator="#phone")
     assert ok
 
 
 async def test_wrapping_label_text_matches_input(page):
-    ok, _ = await validate_semantic_match(
-        None, "Nickname", page=page, locator="#nickname"
-    )
+    ok, _ = await validate_semantic_match(None, "Nickname", page=page, locator="#nickname")
     assert ok
 
 
 async def test_wrong_field_still_fails(page):
     """The doc's example: expected "Enter username" against the password
     field. Placeholder AND label both say Password — must stay a mismatch."""
-    ok, _ = await validate_semantic_match(
-        None, "Enter username", page=page, locator="#password"
-    )
+    ok, _ = await validate_semantic_match(None, "Enter username", page=page, locator="#password")
     assert not ok
 
 
 async def test_bare_input_still_fails(page):
     """No label/placeholder/aria/value: nothing to compare, check fails
     (the carve-out, not the check, handles this case)."""
-    ok, _ = await validate_semantic_match(
-        None, "First name", page=page, locator="#first_name"
-    )
+    ok, _ = await validate_semantic_match(None, "First name", page=page, locator="#first_name")
     assert not ok
 
 
@@ -135,10 +125,7 @@ async def test_carveout_acceptance_reports_semantic_match_false(page):
     assert result["best_locator"] == "#password"
     assert result["semantic_match"] is False
     assert result["all_locators"][0]["semantic_match"] is False
-    assert (
-        result["validation_summary"]["validation_method"]
-        == "form_control_structural"
-    )
+    assert result["validation_summary"]["validation_method"] == "form_control_structural"
 
 
 async def test_bare_input_rescue_survives_reported_honestly(page):
@@ -155,10 +142,7 @@ async def test_bare_input_rescue_survives_reported_honestly(page):
     assert result is not None and result["found"] is True
     assert result["best_locator"] == "#first_name"
     assert result["semantic_match"] is False
-    assert (
-        result["validation_summary"]["validation_method"]
-        == "form_control_structural"
-    )
+    assert result["validation_summary"]["validation_method"] == "form_control_structural"
 
 
 async def test_labeled_input_passes_without_carveout(page):

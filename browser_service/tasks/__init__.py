@@ -40,7 +40,7 @@ Usage:
     status = task_processor.get_task_status(task_id)
 """
 
-from .workflow import process_workflow_task
 from .processor import TaskProcessor
+from .workflow import process_workflow_task
 
-__all__ = ['process_workflow_task', 'TaskProcessor']
+__all__ = ["process_workflow_task", "TaskProcessor"]

@@ -14,6 +14,7 @@ Tests:
 """
 
 import pytest
+
 from browser_service.browser.session import BrowserSessionManager
 
 

@@ -26,6 +26,7 @@ Tests cover:
 """
 
 import pytest
+
 from browser_service.prompts.system import build_system_prompt
 from browser_service.prompts.workflow import build_workflow_prompt
 
@@ -245,10 +246,15 @@ class TestVisionOffContract:
 
     def test_sequential_processing_rules_untouched(self):
         from browser_service.prompts.templates import SEQUENTIAL_PROCESSING_RULES
+
         assert "Process elements IN THE ORDER THEY ARE LISTED" in SEQUENTIAL_PROCESSING_RULES
         assert "FALLBACK REQUIRED" in SEQUENTIAL_PROCESSING_RULES
         assert "Always provide element_index" in SEQUENTIAL_PROCESSING_RULES
 
     def test_expected_text_mandate_untouched(self):
         from browser_service.prompts.templates import CUSTOM_ACTION_PARAMETERS_EXTENDED
-        assert "PROVIDE THIS whenever the element has visible text" in CUSTOM_ACTION_PARAMETERS_EXTENDED
+
+        assert (
+            "PROVIDE THIS whenever the element has visible text"
+            in CUSTOM_ACTION_PARAMETERS_EXTENDED
+        )

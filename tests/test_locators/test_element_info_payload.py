@@ -42,9 +42,7 @@ async def page():
         browser = await p.chromium.launch(headless=True)
         ctx = await browser.new_context(viewport={"width": 1280, "height": 900})
         page_obj = await ctx.new_page()
-        await page_obj.goto(
-            (FIXTURES_DIR / "stability_ids.html").resolve().as_uri()
-        )
+        await page_obj.goto((FIXTURES_DIR / "stability_ids.html").resolve().as_uri())
         try:
             yield page_obj
         finally:
@@ -52,18 +50,17 @@ async def page():
 
 
 class TestElementInfoPayloadContract:
-
     def test_class_name_in_payload(self):
-        assert "'className': element_data['className']" in SRC
+        assert '"className": element_data["className"]' in SRC
 
     def test_aria_invalid_in_payload(self):
-        assert "'ariaInvalid': element_data.get('ariaInvalid', '')" in SRC
+        assert '"ariaInvalid": element_data.get("ariaInvalid", "")' in SRC
 
     def test_parent_class_in_payload(self):
         """Bootstrap-3-style sites mark errors on the PARENT div — nlrf's
         marker scan reads element_info.parentClassName to assert
         `${locator} >> xpath=..` instead of falling to the placeholder."""
-        assert "'parentClassName': element_data.get('parentClassName', '')" in SRC
+        assert '"parentClassName": element_data.get("parentClassName", "")' in SRC
 
 
 @pytest.mark.integration

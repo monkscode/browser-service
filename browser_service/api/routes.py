@@ -18,17 +18,19 @@ Routes:
 import logging
 import time
 import uuid
-from flask import Flask, request, jsonify
 from typing import Any
 
+from flask import Flask, jsonify, request
+
 from browser_service.api.handlers import (
-    validate_workflow_request,
-    format_task_response,
     format_error_response,
-    format_task_list_response
+    format_task_list_response,
+    format_task_response,
+    validate_workflow_request,
 )
 from browser_service.config import config
 from browser_service.tasks import process_workflow_task
+
 try:
     from src.backend.core.config import settings as _nl_settings
 except ImportError:
@@ -51,69 +53,76 @@ def register_routes(app: Flask, task_processor: Any) -> None:
         >>> register_routes(app, task_processor)
     """
 
-    @app.route('/', methods=['GET'])
+    @app.route("/", methods=["GET"])
     def root():
         """Root endpoint to verify service is running."""
-        return jsonify({
-            "service": "Enhanced Browser Use Service with Vision-Based Locators",
-            "status": "running",
-            "version": "4.0.0",
-            "improvements": [
-                "Vision AI for element identification (built-in browser-use)",
-                "Structured JSON locator output",
-                "Multiple locator strategies (10+ options)",
-                "Locator stability scoring",
-                "Validation and uniqueness checking",
-                "Smart fallback mechanisms",
-                "Better encoding handling",
-                "Proper session cleanup",
-                "NEW: Batch processing mode for multiple elements in one session",
-                "NEW: Persistent browser session across element lookups",
-                "NEW: Context-aware popup handling"
-            ],
-            "endpoints": [
-                "GET / - This endpoint",
-                "GET /health - Health check",
-                "GET /probe - Legacy health check",
-                "POST /workflow - Process workflow task (unified session, RECOMMENDED)",
-                "POST /batch - Deprecated alias for /workflow (backward compatible)",
-                "GET /query/<task_id> - Query task status",
-                "GET /tasks - List all tasks"
-            ]
-        }), 200
+        return jsonify(
+            {
+                "service": "Enhanced Browser Use Service with Vision-Based Locators",
+                "status": "running",
+                "version": "4.0.0",
+                "improvements": [
+                    "Vision AI for element identification (built-in browser-use)",
+                    "Structured JSON locator output",
+                    "Multiple locator strategies (10+ options)",
+                    "Locator stability scoring",
+                    "Validation and uniqueness checking",
+                    "Smart fallback mechanisms",
+                    "Better encoding handling",
+                    "Proper session cleanup",
+                    "NEW: Batch processing mode for multiple elements in one session",
+                    "NEW: Persistent browser session across element lookups",
+                    "NEW: Context-aware popup handling",
+                ],
+                "endpoints": [
+                    "GET / - This endpoint",
+                    "GET /health - Health check",
+                    "GET /probe - Legacy health check",
+                    "POST /workflow - Process workflow task (unified session, RECOMMENDED)",
+                    "POST /batch - Deprecated alias for /workflow (backward compatible)",
+                    "GET /query/<task_id> - Query task status",
+                    "GET /tasks - List all tasks",
+                ],
+            }
+        ), 200
 
-    @app.route('/health', methods=['GET'])
+    @app.route("/health", methods=["GET"])
     def health():
         """Health check endpoint with capacity information."""
         active_count = task_processor.count_active_tasks()
         max_tasks = config.max_concurrent_tasks
-        return jsonify({
-            "status": "healthy",
-            "service": "enhanced_browser_use_service",
-            "timestamp": time.time(),
-            "active_tasks": active_count,
-            "max_tasks": max_tasks,
-            "available_slots": max_tasks - active_count,
-            "tasks_submitted": task_processor.tasks_submitted_count(),
-            "encoding": "utf-8",
-            "model_provider": config.llm.model_provider,
-            "headless": config.headless,
-            "google_api_configured": (
-                bool(config.llm.google_api_key and config.llm.google_api_key != "your_api_key_here")
-                if config.llm.model_provider == "gemini"
-                else config.llm.vertexai_credentials is not None
-                if config.llm.model_provider == "vertex"
-                else False
-            )
-        }), 200
+        return jsonify(
+            {
+                "status": "healthy",
+                "service": "enhanced_browser_use_service",
+                "timestamp": time.time(),
+                "active_tasks": active_count,
+                "max_tasks": max_tasks,
+                "available_slots": max_tasks - active_count,
+                "tasks_submitted": task_processor.tasks_submitted_count(),
+                "encoding": "utf-8",
+                "model_provider": config.llm.model_provider,
+                "headless": config.headless,
+                "google_api_configured": (
+                    bool(
+                        config.llm.google_api_key
+                        and config.llm.google_api_key != "your_api_key_here"
+                    )
+                    if config.llm.model_provider == "gemini"
+                    else config.llm.vertexai_credentials is not None
+                    if config.llm.model_provider == "vertex"
+                    else False
+                ),
+            }
+        ), 200
 
-    @app.route('/probe', methods=['GET'])
+    @app.route("/probe", methods=["GET"])
     def probe():
         """Legacy probe endpoint for backward compatibility."""
         return jsonify({"status": "alive", "message": "enhanced_browser_use_service is alive"}), 200
 
-    @app.route('/workflow', methods=['POST'])
-    @app.route('/batch', methods=['POST'])  # Deprecated alias for backward compatibility
+    @app.route("/workflow", methods=["POST"])
+    @app.route("/batch", methods=["POST"])  # Deprecated alias for backward compatibility
     def workflow_submit():
         """
         Process a workflow task with multiple elements in a single browser session.
@@ -141,7 +150,7 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             }
         """
         # Log deprecation warning if /batch endpoint is used
-        if request.path == '/batch':
+        if request.path == "/batch":
             logger.warning("⚠️  /batch endpoint is deprecated. Please use /workflow instead.")
 
         logger.info(f"📥 Received workflow request via {request.path}")
@@ -164,17 +173,23 @@ def register_routes(app: Flask, task_processor: Any) -> None:
 
             # Feature flag: enable_custom_actions (defaults to config value if not provided)
             if enable_custom_actions is None:
-                if _nl_settings is not None and hasattr(_nl_settings, 'ENABLE_CUSTOM_ACTIONS'):
+                if _nl_settings is not None and hasattr(_nl_settings, "ENABLE_CUSTOM_ACTIONS"):
                     enable_custom_actions = _nl_settings.ENABLE_CUSTOM_ACTIONS
                 else:
                     enable_custom_actions = config.enable_custom_actions
-                logger.info(f"🔧 enable_custom_actions not provided in request, using config default: {enable_custom_actions}")
+                logger.info(
+                    f"🔧 enable_custom_actions not provided in request, using config default: {enable_custom_actions}"
+                )
             else:
-                logger.info(f"🔧 enable_custom_actions provided in request: {enable_custom_actions}")
-            
+                logger.info(
+                    f"🔧 enable_custom_actions provided in request: {enable_custom_actions}"
+                )
+
             # Log parent_workflow_id if provided
             if parent_workflow_id:
-                logger.info(f"📎 Parent workflow ID provided: {parent_workflow_id} (will skip duplicate metrics)")
+                logger.info(
+                    f"📎 Parent workflow ID provided: {parent_workflow_id} (will skip duplicate metrics)"
+                )
 
             # All tasks are processed as unified workflows
             logger.info("✅ Using unified workflow mode (all tasks processed as workflows)")
@@ -183,9 +198,13 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             task_id = str(uuid.uuid4())
 
             # Log task submission
-            logger.info(f"🚀 Workflow task {task_id} submitted with {len(elements)} elements for URL: {url}")
+            logger.info(
+                f"🚀 Workflow task {task_id} submitted with {len(elements)} elements for URL: {url}"
+            )
             logger.info("   Processing mode: Unified workflow (single Agent session)")
-            logger.info(f"📝 User query: {user_query[:100]}{'...' if len(user_query) > 100 else ''}")
+            logger.info(
+                f"📝 User query: {user_query[:100]}{'...' if len(user_query) > 100 else ''}"
+            )
 
             # Atomically check capacity and submit — prevents TOCTOU race where
             # concurrent requests both pass a separate count check then both submit.
@@ -202,34 +221,38 @@ def register_routes(app: Flask, task_processor: Any) -> None:
                 task_processor,
                 parent_workflow_id,  # Pass parent_workflow_id to prevent duplicate metrics
                 org_id,
-                user_id
+                user_id,
             )
             if not accepted:
                 active_count = task_processor.count_active_tasks()
-                return jsonify({
-                    "status": "busy",
-                    "message": (
-                        f"Service is at capacity ({active_count}/{config.max_concurrent_tasks} "
-                        f"active tasks). Please try again later."
-                    ),
-                    "active_tasks": active_count,
-                    "max_tasks": config.max_concurrent_tasks
-                }), 429
+                return jsonify(
+                    {
+                        "status": "busy",
+                        "message": (
+                            f"Service is at capacity ({active_count}/{config.max_concurrent_tasks} "
+                            f"active tasks). Please try again later."
+                        ),
+                        "active_tasks": active_count,
+                        "max_tasks": config.max_concurrent_tasks,
+                    }
+                ), 429
 
             # Return the task ID immediately
-            return jsonify({
-                "status": "processing",
-                "task_id": task_id,
-                "message": f"Workflow task submitted with {len(elements)} elements (unified session)",
-                "elements_count": len(elements),
-                "mode": "workflow"
-            }), 202
+            return jsonify(
+                {
+                    "status": "processing",
+                    "task_id": task_id,
+                    "message": f"Workflow task submitted with {len(elements)} elements (unified session)",
+                    "elements_count": len(elements),
+                    "mode": "workflow",
+                }
+            ), 202
 
         except Exception as e:
             logger.error(f"Error in workflow submit endpoint: {e}", exc_info=True)
             return format_error_response(f"Internal server error: {str(e)}", 500)
 
-    @app.route('/query/<task_id>', methods=['GET'])
+    @app.route("/query/<task_id>", methods=["GET"])
     def query(task_id: str):
         """Query the status of a specific task."""
         try:
@@ -251,7 +274,9 @@ def register_routes(app: Flask, task_processor: Any) -> None:
 
             elif status == "completed":
                 response = format_task_response(task, include_results=True, truncate_objective=200)
-                logger.info(f"Task {task_id} query completed: {task.get('results', {}).get('success', False)}")
+                logger.info(
+                    f"Task {task_id} query completed: {task.get('results', {}).get('success', False)}"
+                )
                 return jsonify(response), 200
 
             else:
@@ -262,7 +287,7 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             logger.error(f"Error in query endpoint: {e}", exc_info=True)
             return format_error_response(f"Internal server error: {str(e)}", 500)
 
-    @app.route('/tasks', methods=['GET'])
+    @app.route("/tasks", methods=["GET"])
     def list_tasks():
         """List all tasks with their status."""
         try:
@@ -277,25 +302,25 @@ def register_routes(app: Flask, task_processor: Any) -> None:
     @app.errorhandler(404)
     def not_found(error):
         """Handle 404 errors."""
-        return jsonify({
-            "status": "error",
-            "message": "Endpoint not found",
-            "available_endpoints": [
-                "GET / - Service info",
-                "GET /health - Health check",
-                "GET /probe - Legacy health check",
-                "POST /workflow - Process workflow task (RECOMMENDED)",
-                "POST /batch - Deprecated alias for /workflow",
-                "GET /query/<task_id> - Query task",
-                "GET /tasks - List tasks"
-            ]
-        }), 404
+        return jsonify(
+            {
+                "status": "error",
+                "message": "Endpoint not found",
+                "available_endpoints": [
+                    "GET / - Service info",
+                    "GET /health - Health check",
+                    "GET /probe - Legacy health check",
+                    "POST /workflow - Process workflow task (RECOMMENDED)",
+                    "POST /batch - Deprecated alias for /workflow",
+                    "GET /query/<task_id> - Query task",
+                    "GET /tasks - List tasks",
+                ],
+            }
+        ), 404
 
     @app.errorhandler(500)
     def internal_error(error):
         """Handle 500 errors."""
-        return jsonify({
-            "status": "error",
-            "message": "Internal server error",
-            "error": str(error)
-        }), 500
+        return jsonify(
+            {"status": "error", "message": "Internal server error", "error": str(error)}
+        ), 500

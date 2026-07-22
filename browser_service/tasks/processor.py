@@ -7,11 +7,11 @@ This module provides the TaskProcessor class which handles:
 - Task result management
 """
 
-import time
-import threading
-from typing import Dict, Any, Callable, Optional
-from concurrent.futures import ThreadPoolExecutor
 import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -63,22 +63,16 @@ class TaskProcessor:
             return
         cutoff = time.time() - self.completed_task_ttl
         stale = [
-            tid for tid, t in self.tasks.items()
-            if t.get('status') == 'completed'
-            and t.get('completed_at', float('inf')) < cutoff
+            tid
+            for tid, t in self.tasks.items()
+            if t.get("status") == "completed" and t.get("completed_at", float("inf")) < cutoff
         ]
         for tid in stale:
             del self.tasks[tid]
         if stale:
             logger.debug(f"Evicted {len(stale)} completed tasks (TTL={self.completed_task_ttl}s)")
 
-    def submit_task(
-        self,
-        task_id: str,
-        task_function: Callable,
-        *args,
-        **kwargs
-    ) -> None:
+    def submit_task(self, task_id: str, task_function: Callable, *args, **kwargs) -> None:
         """
         Submit a task for background execution.
 
@@ -92,7 +86,7 @@ class TaskProcessor:
             self.tasks[task_id] = {
                 "status": "processing",
                 "created_at": time.time(),
-                "objective": f"Task {task_id}"
+                "objective": f"Task {task_id}",
             }
             self._tasks_submitted += 1
 
@@ -106,12 +100,7 @@ class TaskProcessor:
             raise
 
     def try_submit_task(
-        self,
-        max_concurrent: int,
-        task_id: str,
-        task_function: Callable,
-        *args,
-        **kwargs
+        self, max_concurrent: int, task_id: str, task_function: Callable, *args, **kwargs
     ) -> bool:
         """
         Atomically check capacity and submit a task if under the limit.
@@ -133,15 +122,14 @@ class TaskProcessor:
         with self._lock:
             self._evict_completed()
             active = sum(
-                1 for t in self.tasks.values()
-                if t.get('status') in ['processing', 'running']
+                1 for t in self.tasks.values() if t.get("status") in ["processing", "running"]
             )
             if active >= max_concurrent:
                 return False
             self.tasks[task_id] = {
                 "status": "processing",
                 "created_at": time.time(),
-                "objective": f"Task {task_id}"
+                "objective": f"Task {task_id}",
             }
             self._tasks_submitted += 1
 
@@ -180,10 +168,7 @@ class TaskProcessor:
             List of task dictionaries with status information
         """
         with self._lock:
-            return [
-                {"task_id": task_id, **task_data}
-                for task_id, task_data in self.tasks.items()
-            ]
+            return [{"task_id": task_id, **task_data} for task_id, task_data in self.tasks.items()]
 
     def count_active_tasks(self) -> int:
         """
@@ -197,8 +182,7 @@ class TaskProcessor:
         with self._lock:
             self._evict_completed()
             return sum(
-                1 for t in self.tasks.values()
-                if t.get('status') in ['processing', 'running']
+                1 for t in self.tasks.values() if t.get("status") in ["processing", "running"]
             )
 
     def update_task(self, task_id: str, updates: Dict[str, Any]) -> None:

@@ -9,22 +9,21 @@ Functions:
     - setup_logging: Configure logging with UTF-8 support and return configured logger
 """
 
-import sys
-import os
 import io
 import logging
+import os
+import sys
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
 # Browser service log file rotation settings
 BROWSER_USE_LOG_FILE = "logs/browser_use.log"
 BROWSER_USE_LOG_MAX_BYTES = 50 * 1024 * 1024  # 50MB per file
-BROWSER_USE_LOG_BACKUP_COUNT = 7               # 7 backups = 350MB max
+BROWSER_USE_LOG_BACKUP_COUNT = 7  # 7 backups = 350MB max
 
 
 def setup_logging(
-    log_level: int = logging.INFO,
-    logger_name: Optional[str] = None
+    log_level: int = logging.INFO, logger_name: Optional[str] = None
 ) -> logging.Logger:
     """
     Configure logging with UTF-8 support for Windows compatibility.
@@ -52,19 +51,21 @@ def setup_logging(
     # ========================================
     # UNICODE FIX - Force UTF-8 encoding on Windows
     # ========================================
-    if sys.platform.startswith('win'):
+    if sys.platform.startswith("win"):
         # Set environment variables for UTF-8
-        os.environ['PYTHONIOENCODING'] = 'utf-8'
-        os.environ['PYTHONUTF8'] = '1'
+        os.environ["PYTHONIOENCODING"] = "utf-8"
+        os.environ["PYTHONUTF8"] = "1"
 
         # Reconfigure stdout/stderr with UTF-8 (only if not already wrapped)
         try:
-            if hasattr(sys.stdout, 'buffer') and not isinstance(sys.stdout, io.TextIOWrapper):
+            if hasattr(sys.stdout, "buffer") and not isinstance(sys.stdout, io.TextIOWrapper):
                 sys.stdout = io.TextIOWrapper(
-                    sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
-            if hasattr(sys.stderr, 'buffer') and not isinstance(sys.stderr, io.TextIOWrapper):
+                    sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True
+                )
+            if hasattr(sys.stderr, "buffer") and not isinstance(sys.stderr, io.TextIOWrapper):
                 sys.stderr = io.TextIOWrapper(
-                    sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+                    sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True
+                )
         except (ValueError, AttributeError):
             # If reconfiguration fails, just continue with default encoding
             pass
@@ -74,23 +75,25 @@ def setup_logging(
     # ========================================
     # Create a custom handler with UTF-8 encoding
     # CRITICAL: Must explicitly set encoding='utf-8' and errors='replace' for Windows compatibility
-    if sys.platform.startswith('win'):
+    if sys.platform.startswith("win"):
         # For Windows, create a StreamHandler with explicit UTF-8 encoding
         log_handler = logging.StreamHandler(sys.stdout)
         log_handler.stream = io.TextIOWrapper(
             sys.stdout.buffer,
-            encoding='utf-8',
-            errors='replace',  # Replace unencodable characters instead of crashing
-            line_buffering=True
+            encoding="utf-8",
+            errors="replace",  # Replace unencodable characters instead of crashing
+            line_buffering=True,
         )
     else:
         # For Unix-like systems, default encoding is usually UTF-8
         log_handler = logging.StreamHandler(sys.stdout)
 
-    log_handler.setFormatter(logging.Formatter(
-        "%(asctime)s,%(msecs)03d - %(levelname)-8s [%(name)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    ))
+    log_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s,%(msecs)03d - %(levelname)-8s [%(name)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
 
     # File handler - rotates logs to prevent unbounded growth
     file_handler = None
@@ -100,12 +103,12 @@ def setup_logging(
             BROWSER_USE_LOG_FILE,
             maxBytes=BROWSER_USE_LOG_MAX_BYTES,
             backupCount=BROWSER_USE_LOG_BACKUP_COUNT,
-            encoding='utf-8'
+            encoding="utf-8",
         )
         file_handler.setLevel(log_level)
-        file_handler.setFormatter(logging.Formatter(
-            "%(asctime)s - %(levelname)-8s [%(name)s] %(message)s"
-        ))
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(levelname)-8s [%(name)s] %(message)s")
+        )
     except (OSError, IOError) as e:
         print(f"Warning: Could not initialize browser_use.log file handler: {e}", file=sys.stderr)
 

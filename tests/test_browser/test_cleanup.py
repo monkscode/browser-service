@@ -13,8 +13,9 @@ Tests:
   count_chrome_processes: mocked tasklist output
 """
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 
 
 class TestStoreCdpPort:
@@ -22,7 +23,12 @@ class TestStoreCdpPort:
 
     def test_valid_cdp_url(self):
         """Extracts port from standard CDP URL and stores it."""
-        from browser_service.browser.cleanup import store_cdp_port, get_stored_cdp_port, clear_stored_cdp_port
+        from browser_service.browser.cleanup import (
+            clear_stored_cdp_port,
+            get_stored_cdp_port,
+            store_cdp_port,
+        )
+
         # Clean state
         clear_stored_cdp_port()
 
@@ -37,7 +43,8 @@ class TestStoreCdpPort:
 
     def test_none_url(self):
         """None URL → returns None, stores nothing."""
-        from browser_service.browser.cleanup import store_cdp_port, clear_stored_cdp_port
+        from browser_service.browser.cleanup import clear_stored_cdp_port, store_cdp_port
+
         clear_stored_cdp_port()
 
         result = store_cdp_port(None)
@@ -45,7 +52,8 @@ class TestStoreCdpPort:
 
     def test_invalid_url(self):
         """URL without port pattern → returns None."""
-        from browser_service.browser.cleanup import store_cdp_port, clear_stored_cdp_port
+        from browser_service.browser.cleanup import clear_stored_cdp_port, store_cdp_port
+
         clear_stored_cdp_port()
 
         result = store_cdp_port("not-a-cdp-url")
@@ -58,6 +66,7 @@ class TestClearStoredCdpPort:
     def test_clear_resets_both(self):
         """clear_stored_cdp_port resets both port and PID to None."""
         from browser_service.browser import cleanup
+
         cleanup._tracked_cdp_port = "9222"
         cleanup._tracked_browser_pid = 12345
 
@@ -81,6 +90,7 @@ class TestGetPidFromPort:
         )
 
         from browser_service.browser.cleanup import _get_pid_from_port
+
         pid = _get_pid_from_port("9222")
         assert pid == 5678
 
@@ -102,9 +112,11 @@ class TestCleanupResourcesPidRouting:
         cleanup._tracked_browser_pid = 5678
         cleanup._tracked_cdp_port = "9222"
 
-        with patch("browser_service.browser.cleanup.get_browser_process_id") as mock_get_pid, \
-             patch("browser_service.browser.cleanup.count_chrome_processes", return_value=(0, [])), \
-             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_proc:
+        with (
+            patch("browser_service.browser.cleanup.get_browser_process_id") as mock_get_pid,
+            patch("browser_service.browser.cleanup.count_chrome_processes", return_value=(0, [])),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_proc,
+        ):
             mock_proc_obj = MagicMock()
             mock_proc_obj.wait = AsyncMock(return_value=0)
             mock_proc_obj.returncode = 0
@@ -130,7 +142,6 @@ class TestCleanupResourcesPidRouting:
         cleanup._tracked_browser_pid = None
         cleanup._tracked_cdp_port = None
 
-
     @pytest.mark.asyncio
     async def test_fallback_path_logs_warning(self):
         """When browser_pid is None and session provided, a warning is logged."""
@@ -138,10 +149,12 @@ class TestCleanupResourcesPidRouting:
 
         mock_session = MagicMock()
 
-        with patch("browser_service.browser.cleanup.get_browser_process_id", return_value=9999), \
-             patch("browser_service.browser.cleanup.count_chrome_processes", return_value=(0, [])), \
-             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_proc, \
-             patch.object(cleanup.logger, "warning") as mock_warn:
+        with (
+            patch("browser_service.browser.cleanup.get_browser_process_id", return_value=9999),
+            patch("browser_service.browser.cleanup.count_chrome_processes", return_value=(0, [])),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_proc,
+            patch.object(cleanup.logger, "warning") as mock_warn,
+        ):
             mock_proc_obj = MagicMock()
             mock_proc_obj.wait = AsyncMock(return_value=0)
             mock_proc_obj.returncode = 0
@@ -172,8 +185,10 @@ class TestAtomicCleanupOwnership:
         cleanup._tracked_cdp_port = "9222"
         cleanup._tracked_browser_pid = 1234
 
-        with patch("browser_service.browser.cleanup.count_chrome_processes", return_value=(0, [])), \
-             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_proc:
+        with (
+            patch("browser_service.browser.cleanup.count_chrome_processes", return_value=(0, [])),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_proc,
+        ):
             mock_proc_obj = MagicMock()
             mock_proc_obj.wait = AsyncMock(return_value=0)
             mock_proc_obj.returncode = 0
@@ -201,8 +216,10 @@ class TestAtomicCleanupOwnership:
         cleanup._tracked_cdp_port = "9333"
         cleanup._tracked_browser_pid = 5678  # belongs to another task
 
-        with patch("browser_service.browser.cleanup.count_chrome_processes", return_value=(0, [])), \
-             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_proc:
+        with (
+            patch("browser_service.browser.cleanup.count_chrome_processes", return_value=(0, [])),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_proc,
+        ):
             mock_proc_obj = MagicMock()
             mock_proc_obj.wait = AsyncMock(return_value=0)
             mock_proc_obj.returncode = 0
@@ -230,9 +247,10 @@ class TestAtomicCleanupOwnership:
         cleanup._tracked_cdp_port = "9444"
         cleanup._tracked_browser_pid = 7890
 
-        with patch("browser_service.browser.cleanup.count_chrome_processes", return_value=(0, [])), \
-             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock):
-
+        with (
+            patch("browser_service.browser.cleanup.count_chrome_processes", return_value=(0, [])),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock),
+        ):
             await cleanup.cleanup_browser_resources(browser_pid=None)
 
         # No PID provided — cannot claim ownership, state must remain.
@@ -274,7 +292,9 @@ class TestCaptureSessionPid:
         session = MagicMock(spec=["cdp_url"])  # no _local_browser_watchdog attr
         session.cdp_url = "ws://127.0.0.1:9222/devtools/browser/abc"
 
-        with patch("browser_service.browser.cleanup._get_pid_from_port", return_value=555) as mock_netstat:
+        with patch(
+            "browser_service.browser.cleanup._get_pid_from_port", return_value=555
+        ) as mock_netstat:
             pid = capture_session_pid(session)
 
         assert pid == 555
@@ -289,7 +309,9 @@ class TestCaptureSessionPid:
         session._local_browser_watchdog.browser_pid = None
         session.cdp_url = "ws://127.0.0.1:9333/devtools/browser/def"
 
-        with patch("browser_service.browser.cleanup._get_pid_from_port", return_value=777) as mock_netstat:
+        with patch(
+            "browser_service.browser.cleanup._get_pid_from_port", return_value=777
+        ) as mock_netstat:
             pid = capture_session_pid(session)
 
         assert pid == 777
@@ -310,6 +332,7 @@ class TestCountChromeProcesses:
         )
 
         from browser_service.browser.cleanup import count_chrome_processes
+
         count, pids = count_chrome_processes()
         assert count == 2
         assert 1234 in pids

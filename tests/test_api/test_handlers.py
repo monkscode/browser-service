@@ -15,14 +15,15 @@ Tests:
 """
 
 import time
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
+
 from browser_service.api.handlers import (
-    validate_workflow_request,
-    format_task_response,
     format_error_response,
     format_task_list_response,
+    format_task_response,
+    validate_workflow_request,
 )
 
 
@@ -39,10 +40,12 @@ class TestValidateWorkflowRequest:
 
     def test_valid_request(self):
         """Minimum valid request with elements and url."""
-        req = _make_flask_request({
-            "elements": [{"id": "e1", "description": "btn", "action": "click"}],
-            "url": "https://example.com",
-        })
+        req = _make_flask_request(
+            {
+                "elements": [{"id": "e1", "description": "btn", "action": "click"}],
+                "url": "https://example.com",
+            }
+        )
         is_valid, error, data = validate_workflow_request(req)
         assert is_valid is True
         assert error is None
@@ -75,10 +78,12 @@ class TestValidateWorkflowRequest:
 
     def test_optional_fields_default(self):
         """Missing optional fields (user_query, session_config) get defaults."""
-        req = _make_flask_request({
-            "elements": [{"id": "e1", "description": "btn", "action": "click"}],
-            "url": "https://example.com",
-        })
+        req = _make_flask_request(
+            {
+                "elements": [{"id": "e1", "description": "btn", "action": "click"}],
+                "url": "https://example.com",
+            }
+        )
         is_valid, _, data = validate_workflow_request(req)
         assert is_valid is True
         assert data["user_query"] == ""
@@ -155,7 +160,14 @@ class TestFormatTaskListResponse:
     def test_list_multiple_tasks(self):
         """Multiple tasks with active count."""
         tasks = [
-            {"task_id": "t1", "status": "completed", "objective": "Find", "created_at": 1.0, "completed_at": 2.0, "results": {"success": True}},
+            {
+                "task_id": "t1",
+                "status": "completed",
+                "objective": "Find",
+                "created_at": 1.0,
+                "completed_at": 2.0,
+                "results": {"success": True},
+            },
             {"task_id": "t2", "status": "processing", "objective": "Running", "created_at": 3.0},
         ]
         resp = format_task_list_response(tasks)

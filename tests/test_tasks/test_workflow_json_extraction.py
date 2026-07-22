@@ -12,6 +12,7 @@ Tests:
 """
 
 import pytest
+
 from browser_service.utils.json_parser import (
     extract_json_for_element,
     extract_workflow_json,

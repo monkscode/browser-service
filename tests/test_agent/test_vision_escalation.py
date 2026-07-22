@@ -17,14 +17,16 @@ The registered handler is exercised through the real browser-use Tools registry
 locator engine and Playwright connection mocked — no browser, no LLM.
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from browser_service.agent.registration import register_custom_actions
 
 
 class FakeBrowserSession:
     """Minimal browser_session stand-in: CDP URL present, empty selector map."""
+
     cdp_url = "ws://127.0.0.1:9222/devtools/browser/00000000-0000-0000-0000-000000000000"
     cdp_client = None
     is_cdp_connected = True
@@ -40,6 +42,7 @@ class FakeBrowserSession:
 
 class FakeDeadBrowserSession:
     """No CDP URL anywhere — _ensure_playwright must raise the terminal error."""
+
     cdp_url = None
     cdp_client = None
     is_cdp_connected = False
@@ -89,10 +92,13 @@ async def _invoke(engine_result, element_index, browser_session=None):
     if element_index is not None:
         params["element_index"] = element_index
 
-    with patch(
-        "browser_service.agent.actions.find_unique_locator_action",
-        new=AsyncMock(return_value=engine_result),
-    ), patch("playwright.async_api.async_playwright", new=_fake_playwright()):
+    with (
+        patch(
+            "browser_service.agent.actions.find_unique_locator_action",
+            new=AsyncMock(return_value=engine_result),
+        ),
+        patch("playwright.async_api.async_playwright", new=_fake_playwright()),
+    ):
         assert register_custom_actions(agent, elements=ELEMENTS) is True
         return await agent.tools.registry.execute_action(
             "find_unique_locator", params, browser_session=session
@@ -173,9 +179,8 @@ class TestSchemaContract:
         contract (templates.py: 'element_index (int, required)')."""
         agent = FakeAgent()
         assert register_custom_actions(agent, elements=ELEMENTS) is True
-        field = (
-            agent.tools.registry.registry.actions["find_unique_locator"]
-            .param_model.model_fields["element_index"]
-        )
+        field = agent.tools.registry.registry.actions[
+            "find_unique_locator"
+        ].param_model.model_fields["element_index"]
         assert "REQUIRED" in field.description
         assert "HIGHLY RECOMMENDED" not in field.description

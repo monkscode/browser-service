@@ -23,7 +23,7 @@ directly — no file I/O occurs per request.
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -68,13 +68,15 @@ class LocatorConfig:
     custom_action_timeout: int = 5
 
     # Coordinate offsets to try (pixels)
-    coordinate_offsets: List[Dict[str, Any]] = field(default_factory=lambda: [
-        {"x": 100, "y": 0, "reason": "escape sidebar/left panel"},
-        {"x": 200, "y": 0, "reason": "escape wide sidebar"},
-        {"x": 50, "y": 0, "reason": "slight right adjustment"},
-        {"x": 0, "y": 20, "reason": "move down slightly"},
-        {"x": 100, "y": 20, "reason": "diagonal adjustment"}
-    ])
+    coordinate_offsets: List[Dict[str, Any]] = field(
+        default_factory=lambda: [
+            {"x": 100, "y": 0, "reason": "escape sidebar/left panel"},
+            {"x": 200, "y": 0, "reason": "escape wide sidebar"},
+            {"x": 50, "y": 0, "reason": "slight right adjustment"},
+            {"x": 0, "y": 20, "reason": "move down slightly"},
+            {"x": 100, "y": 20, "reason": "diagonal adjustment"},
+        ]
+    )
 
 
 @dataclass
@@ -92,7 +94,6 @@ class LLMConfig:
     # Loaded once at startup from vertexai_credentials_path.
     # google-auth handles OAuth2 token refresh on this object automatically.
     vertexai_credentials: object | None = None
-
 
 
 class BrowserServiceConfig:
@@ -115,7 +116,7 @@ class BrowserServiceConfig:
         self.batch = BatchConfig(
             max_agent_steps=self._int_env("MAX_AGENT_STEPS", 15),
             max_retries_per_element=self._int_env("MAX_RETRIES_PER_ELEMENT", 2),
-            element_timeout=self._int_env("ELEMENT_TIMEOUT", 120)
+            element_timeout=self._int_env("ELEMENT_TIMEOUT", 120),
         )
 
         # Locator extraction configuration
@@ -124,7 +125,7 @@ class BrowserServiceConfig:
             coordinate_based_retries=self._int_env("COORDINATE_BASED_RETRIES", 7),
             element_type_retries=self._int_env("ELEMENT_TYPE_RETRIES", 5),
             coordinate_offset_attempts=self._int_env("COORDINATE_OFFSET_ATTEMPTS", 7),
-            custom_action_timeout=self._int_env("CUSTOM_ACTION_TIMEOUT", 5)
+            custom_action_timeout=self._int_env("CUSTOM_ACTION_TIMEOUT", 5),
         )
 
         # LLM configuration
@@ -133,6 +134,7 @@ class BrowserServiceConfig:
         if not model_provider:
             try:
                 from src.backend.core.config import settings
+
                 model_provider = settings.MODEL_PROVIDER or "vertex"
             except (ImportError, AttributeError):
                 model_provider = "vertex"
@@ -143,6 +145,7 @@ class BrowserServiceConfig:
         if not google_api_key:
             try:
                 from src.backend.core.config import settings
+
                 google_api_key = settings.GEMINI_API_KEY or ""
             except (ImportError, AttributeError):
                 pass
@@ -154,8 +157,13 @@ class BrowserServiceConfig:
         if not vertexai_project or not vertexai_location:
             try:
                 from src.backend.core.config import settings
-                vertexai_project = vertexai_project or getattr(settings, "VERTEXAI_PROJECT", "") or ""
-                vertexai_location = vertexai_location or getattr(settings, "VERTEXAI_LOCATION", "") or ""
+
+                vertexai_project = (
+                    vertexai_project or getattr(settings, "VERTEXAI_PROJECT", "") or ""
+                )
+                vertexai_location = (
+                    vertexai_location or getattr(settings, "VERTEXAI_LOCATION", "") or ""
+                )
                 # VERTEXAI_CREDENTIALS is not a Settings field — it is a raw env var loaded
                 # into os.environ by load_dotenv("src/backend/.env"). os.getenv() above already
                 # captures it; no settings fallback is needed.
@@ -176,9 +184,12 @@ class BrowserServiceConfig:
         if model_provider == "vertex" and vertexai_credentials_path:
             try:
                 from google.oauth2 import service_account
-                self.llm.vertexai_credentials = service_account.Credentials.from_service_account_file(
-                    vertexai_credentials_path,
-                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
+
+                self.llm.vertexai_credentials = (
+                    service_account.Credentials.from_service_account_file(
+                        vertexai_credentials_path,
+                        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                    )
                 )
                 logger.info(f"🔑 Vertex AI credentials loaded from: {vertexai_credentials_path}")
             except Exception as e:
@@ -199,9 +210,7 @@ class BrowserServiceConfig:
                 "the setting or set ROBOT_LIBRARY=browser."
             )
         if self.robot_library != "browser":
-            raise ValueError(
-                f"ROBOT_LIBRARY must be 'browser', got '{self.robot_library}'"
-            )
+            raise ValueError(f"ROBOT_LIBRARY must be 'browser', got '{self.robot_library}'")
 
         # Browser headless mode
         # When true: Browser runs without UI (faster, for CI/CD)
@@ -217,8 +226,7 @@ class BrowserServiceConfig:
         self.agent_vision_mode = os.getenv("AGENT_VISION_MODE", "auto").lower()
         if self.agent_vision_mode not in ("auto", "on"):
             raise ValueError(
-                f"AGENT_VISION_MODE must be 'auto' or 'on', "
-                f"got '{self.agent_vision_mode}'"
+                f"AGENT_VISION_MODE must be 'auto' or 'on', got '{self.agent_vision_mode}'"
             )
 
         # Feature flags
@@ -240,9 +248,7 @@ class BrowserServiceConfig:
         try:
             return int(raw)
         except ValueError:
-            self._parse_errors.append(
-                f"{name} must be an integer, got '{raw}'"
-            )
+            self._parse_errors.append(f"{name} must be an integer, got '{raw}'")
             return default
 
     def _get_google_model(self) -> str:
@@ -257,6 +263,7 @@ class BrowserServiceConfig:
         """
         try:
             from src.backend.core.config import settings
+
             model = settings.ONLINE_MODEL if hasattr(settings, "ONLINE_MODEL") else None
             if model:
                 return model.split("/", 1)[-1] if "/" in model else model
@@ -273,7 +280,9 @@ class BrowserServiceConfig:
         Returns:
             List of error messages. Empty list if configuration is valid.
         """
-        errors = list(getattr(self, '_parse_errors', []))  # include any non-numeric parse errors from __init__
+        errors = list(
+            getattr(self, "_parse_errors", [])
+        )  # include any non-numeric parse errors from __init__
 
         # Validate LLM configuration (provider-specific)
         if self.llm.model_provider == "gemini":
@@ -314,32 +323,42 @@ class BrowserServiceConfig:
             errors.append(f"MAX_AGENT_STEPS must be >= 1, got {self.batch.max_agent_steps}")
 
         if self.batch.max_retries_per_element < 0:
-            errors.append(f"MAX_RETRIES_PER_ELEMENT must be >= 0, got {self.batch.max_retries_per_element}")
+            errors.append(
+                f"MAX_RETRIES_PER_ELEMENT must be >= 0, got {self.batch.max_retries_per_element}"
+            )
 
         if self.batch.element_timeout < 1:
             errors.append(f"ELEMENT_TIMEOUT must be >= 1, got {self.batch.element_timeout}")
 
         # Validate locator configuration
         if self.locator.content_based_retries < 0:
-            errors.append(f"CONTENT_BASED_RETRIES must be >= 0, got {self.locator.content_based_retries}")
+            errors.append(
+                f"CONTENT_BASED_RETRIES must be >= 0, got {self.locator.content_based_retries}"
+            )
 
         if self.locator.coordinate_based_retries < 0:
-            errors.append(f"COORDINATE_BASED_RETRIES must be >= 0, got {self.locator.coordinate_based_retries}")
+            errors.append(
+                f"COORDINATE_BASED_RETRIES must be >= 0, got {self.locator.coordinate_based_retries}"
+            )
 
         if self.locator.element_type_retries < 0:
-            errors.append(f"ELEMENT_TYPE_RETRIES must be >= 0, got {self.locator.element_type_retries}")
+            errors.append(
+                f"ELEMENT_TYPE_RETRIES must be >= 0, got {self.locator.element_type_retries}"
+            )
 
         if self.locator.coordinate_offset_attempts < 0:
-            errors.append(f"COORDINATE_OFFSET_ATTEMPTS must be >= 0, got {self.locator.coordinate_offset_attempts}")
+            errors.append(
+                f"COORDINATE_OFFSET_ATTEMPTS must be >= 0, got {self.locator.coordinate_offset_attempts}"
+            )
 
         if self.locator.custom_action_timeout < 1:
-            errors.append(f"CUSTOM_ACTION_TIMEOUT must be >= 1, got {self.locator.custom_action_timeout}")
+            errors.append(
+                f"CUSTOM_ACTION_TIMEOUT must be >= 1, got {self.locator.custom_action_timeout}"
+            )
 
         # Validate concurrency configuration
         if self.max_concurrent_tasks < 1:
-            errors.append(
-                f"MAX_CONCURRENT_TASKS must be >= 1, got {self.max_concurrent_tasks}"
-            )
+            errors.append(f"MAX_CONCURRENT_TASKS must be >= 1, got {self.max_concurrent_tasks}")
 
         return errors
 

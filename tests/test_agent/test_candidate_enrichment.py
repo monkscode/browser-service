@@ -25,8 +25,9 @@ Tests:
   Skips: bare <select> (but select_id set), <tr>, vision hints, Tier-1
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 @pytest.fixture
@@ -51,7 +52,8 @@ async def _accept_candidate(page, element_data, candidate="id=field-1", **kwargs
 
     result = await find_unique_locator_action(
         page=page,
-        x=100, y=200,
+        x=100,
+        y=200,
         element_id="elem_1",
         element_description=kwargs.pop("element_description", "form field"),
         candidate_locator=candidate,
@@ -98,9 +100,7 @@ class TestElementInfoCopy:
     @pytest.mark.asyncio
     async def test_partial_element_data_tolerated(self, mock_playwright_page):
         """element_data producers vary — missing keys must not raise."""
-        result = await _accept_candidate(
-            mock_playwright_page, element_data={"tagName": "input"}
-        )
+        result = await _accept_candidate(mock_playwright_page, element_data={"tagName": "input"})
         assert result["element_info"]["tagName"] == "input"
 
 
@@ -108,9 +108,7 @@ class TestTier0ClassifierStamp:
     """Tier-0 verdicts with attribute evidence stamp routing fields."""
 
     @pytest.mark.asyncio
-    async def test_flatpickr_stamps_datepicker_and_clears_dropdown(
-        self, mock_playwright_page
-    ):
+    async def test_flatpickr_stamps_datepicker_and_clears_dropdown(self, mock_playwright_page):
         """The G4 case: readonly flatpickr input must route to the setDate
         idiom, and dropdown_framework must be explicit-empty (Task D guard)."""
         result = await _accept_candidate(
@@ -141,9 +139,7 @@ class TestTier0ClassifierStamp:
         assert not result.get("dropdown_framework")
 
     @pytest.mark.asyncio
-    async def test_tom_select_class_stamps_dropdown_framework(
-        self, mock_playwright_page
-    ):
+    async def test_tom_select_class_stamps_dropdown_framework(self, mock_playwright_page):
         """Framework className evidence → dropdown/tom-select; the control div
         is not a <select>, so select_id stays unset."""
         result = await _accept_candidate(
@@ -184,9 +180,7 @@ class TestStampSkips:
     """Bare-tagName and Tier-1 verdicts must NOT stamp (full-path parity)."""
 
     @pytest.mark.asyncio
-    async def test_bare_select_not_stamped_but_select_id_set(
-        self, mock_playwright_page
-    ):
+    async def test_bare_select_not_stamped_but_select_id_set(self, mock_playwright_page):
         """<select id=...>: tagName flows via element_info (nlrf's fallback
         routes TYPE 1), no element_type stamp — but select_id is the element's
         own id, per the Option B clause."""

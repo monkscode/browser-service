@@ -19,6 +19,7 @@ class TestExtractFromResultLines:
 
     def _fn(self, text):
         from browser_service.tasks.workflow import _extract_from_result_lines
+
         return _extract_from_result_lines(text)
 
     def test_extracts_single_json(self):
@@ -31,7 +32,7 @@ class TestExtractFromResultLines:
     def test_extracts_multiple_jsons(self):
         text = (
             'Result: {"element_id": "elem_1", "best_locator": "#btn"}\n'
-            'Some log line\n'
+            "Some log line\n"
             'Result: {"element_id": "elem_2", "best_locator": "text=Submit"}'
         )
         results = self._fn(text)
@@ -79,6 +80,7 @@ class TestExtractAllElementJsons:
 
     def _fn(self, text):
         from browser_service.tasks.workflow import _extract_all_element_jsons
+
         return _extract_all_element_jsons(text)
 
     def test_extracts_element_id_json(self):
@@ -97,8 +99,7 @@ class TestExtractAllElementJsons:
 
     def test_extracts_multiple_unique_jsons(self):
         text = (
-            '{"element_id": "e1", "locator": "#btn"} '
-            '{"element_id": "e2", "locator": "text=Submit"}'
+            '{"element_id": "e1", "locator": "#btn"} {"element_id": "e2", "locator": "text=Submit"}'
         )
         results = self._fn(text)
         assert len(results) == 2
@@ -123,6 +124,7 @@ class TestProcessWorkflowTaskGuards:
     def _make_processor(self, task_id: str):
         """Return a TaskProcessor with task_id pre-seeded."""
         from browser_service.tasks.processor import TaskProcessor
+
         tp = TaskProcessor(ThreadPoolExecutor(max_workers=1))
         tp.submit_task(task_id, lambda: None)
         return tp
@@ -227,6 +229,7 @@ class TestProcessWorkflowTaskGuards:
 # Helpers shared by TestCustomActionCallCounting
 # ---------------------------------------------------------------------------
 
+
 def _make_action_result(metadata=None, error=None, extracted_content=None):
     """Build a minimal ActionResult-like mock."""
     r = MagicMock()
@@ -273,17 +276,19 @@ def _run_counter(steps):
     execute_js_calls = 0
 
     for step in steps:
-        if hasattr(step, 'result') and step.result:
+        if hasattr(step, "result") and step.result:
             for action_result in step.result:
-                if (hasattr(action_result, 'metadata')
-                        and isinstance(action_result.metadata, dict)
-                        and action_result.metadata.get('element_id')
-                        and action_result.metadata.get('found')
-                        and action_result.metadata.get('best_locator')):
+                if (
+                    hasattr(action_result, "metadata")
+                    and isinstance(action_result.metadata, dict)
+                    and action_result.metadata.get("element_id")
+                    and action_result.metadata.get("found")
+                    and action_result.metadata.get("best_locator")
+                ):
                     custom_action_calls += 1
         if step.model_output and step.model_output.action:
             for action_model in step.model_output.action:
-                if 'execute_js' in action_model.model_fields_set:
+                if "execute_js" in action_model.model_fields_set:
                     execute_js_calls += 1
 
     return custom_action_calls, execute_js_calls
@@ -306,9 +311,9 @@ class TestCustomActionCallCounting:
     def test_successful_custom_action_counts_one(self):
         """A single successful find_unique_locator call increments the counter to 1."""
         metadata = {
-            'element_id': 'elem_1',
-            'found': True,
-            'best_locator': '#my-button',
+            "element_id": "elem_1",
+            "found": True,
+            "best_locator": "#my-button",
         }
         step = _make_step(action_results=[_make_action_result(metadata=metadata)])
         custom, execute_js = _run_counter([step])
@@ -317,16 +322,19 @@ class TestCustomActionCallCounting:
 
     def test_two_successful_custom_actions_count_two(self):
         """Two successful calls in separate steps produce count == 2."""
+
         def _success(elem_id, locator):
-            return _make_action_result(metadata={
-                'element_id': elem_id,
-                'found': True,
-                'best_locator': locator,
-            })
+            return _make_action_result(
+                metadata={
+                    "element_id": elem_id,
+                    "found": True,
+                    "best_locator": locator,
+                }
+            )
 
         steps = [
-            _make_step(action_results=[_success('elem_1', '#btn1')]),
-            _make_step(action_results=[_success('elem_2', '#btn2')]),
+            _make_step(action_results=[_success("elem_1", "#btn1")]),
+            _make_step(action_results=[_success("elem_2", "#btn2")]),
         ]
         custom, _ = _run_counter(steps)
         assert custom == 2
@@ -342,11 +350,13 @@ class TestCustomActionCallCounting:
     def test_retry_then_success_counts_one(self):
         """Retry scenario: failed result followed by successful result = 1 count."""
         failed = _make_action_result(metadata=None, error="retry")
-        success = _make_action_result(metadata={
-            'element_id': 'elem_1',
-            'found': True,
-            'best_locator': '#btn',
-        })
+        success = _make_action_result(
+            metadata={
+                "element_id": "elem_1",
+                "found": True,
+                "best_locator": "#btn",
+            }
+        )
         # Both results can appear in the same step's result list
         step = _make_step(action_results=[failed, success])
         custom, _ = _run_counter([step])
@@ -355,11 +365,15 @@ class TestCustomActionCallCounting:
     def test_metadata_missing_element_id_not_counted(self):
         """Metadata without element_id (unexpected source) must not be counted."""
         step = _make_step(
-            action_results=[_make_action_result(metadata={
-                'found': True,
-                'best_locator': '#btn',
-                # element_id deliberately absent
-            })]
+            action_results=[
+                _make_action_result(
+                    metadata={
+                        "found": True,
+                        "best_locator": "#btn",
+                        # element_id deliberately absent
+                    }
+                )
+            ]
         )
         custom, _ = _run_counter([step])
         assert custom == 0
@@ -367,11 +381,15 @@ class TestCustomActionCallCounting:
     def test_metadata_found_false_not_counted(self):
         """Metadata with found=False (action ran but located nothing) must not be counted."""
         step = _make_step(
-            action_results=[_make_action_result(metadata={
-                'element_id': 'elem_1',
-                'found': False,
-                'best_locator': None,
-            })]
+            action_results=[
+                _make_action_result(
+                    metadata={
+                        "element_id": "elem_1",
+                        "found": False,
+                        "best_locator": None,
+                    }
+                )
+            ]
         )
         custom, _ = _run_counter([step])
         assert custom == 0
@@ -379,11 +397,15 @@ class TestCustomActionCallCounting:
     def test_metadata_best_locator_none_not_counted(self):
         """Metadata with best_locator=None must not be counted even if found=True."""
         step = _make_step(
-            action_results=[_make_action_result(metadata={
-                'element_id': 'elem_1',
-                'found': True,
-                'best_locator': None,
-            })]
+            action_results=[
+                _make_action_result(
+                    metadata={
+                        "element_id": "elem_1",
+                        "found": True,
+                        "best_locator": None,
+                    }
+                )
+            ]
         )
         custom, _ = _run_counter([step])
         assert custom == 0
@@ -407,7 +429,7 @@ class TestCustomActionCallCounting:
         """execute_js is a native Pydantic action — model_fields_set detects it correctly."""
         step = _make_step(
             action_results=[],
-            model_output_actions=[_make_native_action('execute_js')],
+            model_output_actions=[_make_native_action("execute_js")],
         )
         _, execute_js = _run_counter([step])
         assert execute_js == 1
@@ -415,16 +437,20 @@ class TestCustomActionCallCounting:
     def test_execute_js_and_custom_action_in_same_workflow(self):
         """Both counters increment independently when both actions appear."""
         custom_step = _make_step(
-            action_results=[_make_action_result(metadata={
-                'element_id': 'elem_1',
-                'found': True,
-                'best_locator': '#btn',
-            })],
-            model_output_actions=[_make_native_action('click')],
+            action_results=[
+                _make_action_result(
+                    metadata={
+                        "element_id": "elem_1",
+                        "found": True,
+                        "best_locator": "#btn",
+                    }
+                )
+            ],
+            model_output_actions=[_make_native_action("click")],
         )
         js_step = _make_step(
             action_results=[],
-            model_output_actions=[_make_native_action('execute_js')],
+            model_output_actions=[_make_native_action("execute_js")],
         )
         custom, execute_js = _run_counter([custom_step, js_step])
         assert custom == 1
@@ -434,7 +460,7 @@ class TestCustomActionCallCounting:
         """Native actions other than execute_js do not affect either counter."""
         step = _make_step(
             action_results=[],
-            model_output_actions=[_make_native_action('click')],
+            model_output_actions=[_make_native_action("click")],
         )
         custom, execute_js = _run_counter([step])
         assert custom == 0
@@ -444,6 +470,7 @@ class TestCustomActionCallCounting:
 # ---------------------------------------------------------------------------
 # LLM branching tests — ChatGoogle instantiation per provider
 # ---------------------------------------------------------------------------
+
 
 class TestWorkflowLLMBranching:
     """
@@ -504,9 +531,7 @@ class TestWorkflowLLMBranching:
                         thinking_budget=0,
                     )
                 elif cfg.llm.model_provider == "local":
-                    raise RuntimeError(
-                        "MODEL_PROVIDER=local is not supported by browser-service."
-                    )
+                    raise RuntimeError("MODEL_PROVIDER=local is not supported by browser-service.")
                 else:
                     _FakeChatGoogle(
                         model=cfg.llm.google_model,
@@ -529,7 +554,9 @@ class TestWorkflowLLMBranching:
 
     def test_vertex_path_no_file_io(self):
         """Vertex path: from_service_account_file is NOT called during workflow execution."""
-        with patch("google.oauth2.service_account.Credentials.from_service_account_file") as mock_load:
+        with patch(
+            "google.oauth2.service_account.Credentials.from_service_account_file"
+        ) as mock_load:
             self._run_llm_branch("vertex")
             mock_load.assert_not_called()
 
@@ -562,6 +589,7 @@ class TestCleanupOffCriticalPath:
     def _make_processor(self, task_id: str):
         """Return a TaskProcessor with task_id pre-seeded."""
         from browser_service.tasks.processor import TaskProcessor
+
         tp = TaskProcessor(ThreadPoolExecutor(max_workers=1))
         tp.submit_task(task_id, lambda: None)
         return tp
@@ -581,8 +609,11 @@ class TestCleanupOffCriticalPath:
 
     def _run(self, task_id, tp, cleanup_mock, session):
         from browser_service.tasks.workflow import process_workflow_task
-        with patch("browser_use.browser.session.BrowserSession", return_value=session), \
-             patch("browser_service.tasks.workflow.cleanup_browser_resources", cleanup_mock):
+
+        with (
+            patch("browser_use.browser.session.BrowserSession", return_value=session),
+            patch("browser_service.tasks.workflow.cleanup_browser_resources", cleanup_mock),
+        ):
             process_workflow_task(
                 task_id=task_id,
                 elements=[{"id": "e1", "description": "button", "action": "click"}],
@@ -629,6 +660,7 @@ class TestCleanupOffCriticalPath:
 
     def test_cleanup_failure_does_not_clobber_published_results(self):
         """A cleanup crash must not replace already-published results."""
+
         async def boom(**kwargs):
             raise RuntimeError("cleanup boom")
 
@@ -658,10 +690,12 @@ class TestAgentVisionModeWiring:
 
     def test_resolve_use_vision_on_maps_to_true(self):
         from browser_service.tasks.workflow import _resolve_use_vision
+
         assert _resolve_use_vision("on", custom_actions_enabled=True) is True
 
     def test_resolve_use_vision_auto_passthrough(self):
         from browser_service.tasks.workflow import _resolve_use_vision
+
         assert _resolve_use_vision("auto", custom_actions_enabled=True) == "auto"
 
     def test_resolve_use_vision_auto_without_custom_actions_is_full_vision(self):
@@ -669,16 +703,19 @@ class TestAgentVisionModeWiring:
         action — the legacy JS workflow has no find_unique_locator, so 'auto'
         there would mean permanently blind. Legacy keeps full vision."""
         from browser_service.tasks.workflow import _resolve_use_vision
+
         assert _resolve_use_vision("auto", custom_actions_enabled=False) is True
 
     def test_resolve_use_vision_on_without_custom_actions_is_full_vision(self):
         from browser_service.tasks.workflow import _resolve_use_vision
+
         assert _resolve_use_vision("on", custom_actions_enabled=False) is True
 
     def test_apply_vision_mode_excludes_screenshot_in_auto(self):
         """'auto' mode drops the screenshot action from the model-facing schema
         (browser-use only auto-excludes it when use_vision != 'auto')."""
         from browser_service.tasks.workflow import _apply_vision_mode
+
         agent = MagicMock()
         _apply_vision_mode(agent, "auto")
         agent.tools.exclude_action.assert_called_once_with("screenshot")
@@ -686,6 +723,7 @@ class TestAgentVisionModeWiring:
     def test_apply_vision_mode_noop_in_full_vision(self):
         """use_vision=True: browser-use excludes the action itself — no double work."""
         from browser_service.tasks.workflow import _apply_vision_mode
+
         agent = MagicMock()
         _apply_vision_mode(agent, True)
         agent.tools.exclude_action.assert_not_called()
@@ -697,6 +735,7 @@ class TestAgentVisionModeWiring:
         import inspect
 
         import browser_service.tasks.workflow as wf
+
         src = inspect.getsource(wf.process_workflow_task)
         assert "_resolve_use_vision(config.agent_vision_mode, enable_custom_actions_flag)" in src
         assert "_apply_vision_mode(agent, use_vision)" in src
@@ -710,6 +749,7 @@ class TestAgentVisionModeWiring:
         import inspect
 
         import browser_service.tasks.workflow as wf
+
         src = inspect.getsource(wf.process_workflow_task)
         assert "agent.settings.use_vision = True" in src
 
@@ -735,13 +775,16 @@ class TestRunUnifiedWorkflowPageBinding:
 
         tree = ast.parse(textwrap.dedent(inspect.getsource(wf.process_workflow_task)))
         for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and \
-                    node.name == "run_unified_workflow":
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == "run_unified_workflow"
+            ):
                 return node
         raise AssertionError("run_unified_workflow not found in process_workflow_task")
 
     def test_page_is_bound_before_use(self):
         import ast
+
         fn = self._run_unified_workflow_node()
         loads = any(
             isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id == "page"

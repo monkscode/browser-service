@@ -28,6 +28,7 @@ Usage:
     from browser_service.api import register_routes
     from browser_service.utils import setup_logging, record_workflow_metrics
 """
+
 import logging
 import logging.handlers
 import os
@@ -40,8 +41,8 @@ import sys
 # point is imported, so this block owns the root logger configuration.
 # ---------------------------------------------------------------------------
 _LOG_FILE = os.path.join(os.environ.get("BROWSER_USE_LOG_DIR", "logs"), "browser_use.log")
-_LOG_MAX_BYTES = 50 * 1024 * 1024   # 50 MB
-_LOG_BACKUP_COUNT = 7               # 7 backups = 350 MB max
+_LOG_MAX_BYTES = 50 * 1024 * 1024  # 50 MB
+_LOG_BACKUP_COUNT = 7  # 7 backups = 350 MB max
 
 try:
     import structlog
@@ -76,9 +77,9 @@ try:
     # Ensure UTF-8 on Windows without replacing sys.stdout: reconfigure() mutates
     # the existing object in-place (Python 3.7+), preserving references held by
     # test frameworks (pytest capsys), log handlers, or embedded hosts.
-    if sys.platform.startswith('win') and hasattr(sys.stdout, 'reconfigure'):
+    if sys.platform.startswith("win") and hasattr(sys.stdout, "reconfigure"):
         try:
-            sys.stdout.reconfigure(encoding='utf-8', errors='replace', line_buffering=True)
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
         except (ValueError, AttributeError):
             pass
 
@@ -140,9 +141,7 @@ if _obs_backend != "none" and _otlp_endpoint:
     except ImportError:
         pass  # traceloop-sdk not installed — no tracing
     except Exception as e:
-        logging.getLogger(__name__).warning(
-            "[OBSERVABILITY] Init failed (non-fatal): %s", e
-        )
+        logging.getLogger(__name__).warning("[OBSERVABILITY] Init failed (non-fatal): %s", e)
 
 # Single source of truth for the version: the installed package metadata
 # (pyproject [project].version). Falls back when running from an uninstalled
@@ -166,12 +165,11 @@ from browser_service.config import (
 
 __all__ = [
     # Version
-    '__version__',
-
+    "__version__",
     # Configuration
-    'config',
-    'BrowserServiceConfig',
-    'BatchConfig',
-    'LocatorConfig',
-    'LLMConfig',
+    "config",
+    "BrowserServiceConfig",
+    "BatchConfig",
+    "LocatorConfig",
+    "LLMConfig",
 ]

@@ -26,9 +26,9 @@ mocked.
 """
 
 import logging
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from browser_service.agent.registration import register_custom_actions
 
@@ -83,7 +83,7 @@ STRONG_A = {
     "valid": True,
     "validation_method": "playwright",
 }
-STRONG_B = {**STRONG_A, "best_locator": "text=\"Sign In\"", "semantic_match": True}
+STRONG_B = {**STRONG_A, "best_locator": 'text="Sign In"', "semantic_match": True}
 WEAK_DIALOG = {
     **STRONG_A,
     "best_locator": 'role=dialog[name="Smarter Support Starts Here"]',
@@ -101,15 +101,17 @@ async def _run_sequence(first: dict, second: dict):
     agent = FakeAgent()
     session = FakeBrowserSession()
     engine = AsyncMock(side_effect=[dict(first), dict(second)])
-    with patch(
-        "browser_service.agent.actions.find_unique_locator_action", new=engine
-    ), patch("playwright.async_api.async_playwright", new=_fake_playwright()):
+    with (
+        patch("browser_service.agent.actions.find_unique_locator_action", new=engine),
+        patch("playwright.async_api.async_playwright", new=_fake_playwright()),
+    ):
         assert register_custom_actions(agent, elements=ELEMENTS) is True
         results = []
         for _ in range(2):
             results.append(
                 await agent.tools.registry.execute_action(
-                    "find_unique_locator", dict(PARAMS),
+                    "find_unique_locator",
+                    dict(PARAMS),
                     browser_session=session,
                 )
             )
@@ -117,7 +119,6 @@ async def _run_sequence(first: dict, second: dict):
 
 
 class TestDowngradeBlocked:
-
     @pytest.mark.asyncio
     async def test_weak_requery_does_not_replace_validated(self, caplog):
         """The clobber replay: strong accept, then a semantic_match=False

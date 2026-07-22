@@ -13,13 +13,14 @@ These tests exercise validate_semantic_match directly (unit) and the Change C
 fast-path integration via find_unique_locator_action (integration/mocked).
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _make_node(
     tag="input",
@@ -64,6 +65,7 @@ def _make_page_with_evaluate(evaluate_result):
 # Test: no `if not expected_text: return True` short-circuit
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestEmptyExpectedText:
     """Bare-input case: expected_text is absent. Old code silently returned True."""
 
@@ -100,12 +102,15 @@ class TestEmptyExpectedText:
         node = _make_node(tag="div", ax_name="", meaningful_text="")
 
         is_match, _ = await validate_semantic_match(node, "")
-        assert is_match, "Anonymous element (empty haystack) with empty expected_text should be accepted"
+        assert is_match, (
+            "Anonymous element (empty haystack) with empty expected_text should be accepted"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test: icon / aria-only buttons (probe 16 case)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestIconAriaOnlyButton:
     """ax_node.name is the sole semantic surface — probe 16 icon case."""
@@ -149,6 +154,7 @@ class TestIconAriaOnlyButton:
 # Test: probe 18 carve-out (SVG icon buttons with empty haystacks)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestProbe18Carveout:
     """
     demoqa.com/webtables pattern: SVG-only icon button, no text/aria-label/placeholder.
@@ -186,6 +192,7 @@ class TestProbe18Carveout:
 # Test: legacy fallback (page + locator, no node)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestLegacyFallback:
     """
     When node=None, the function falls back to a single page.locator(sel).evaluate()
@@ -201,14 +208,16 @@ class TestLegacyFallback:
         """
         from browser_service.locators.smart_locator import validate_semantic_match
 
-        page = _make_page_with_evaluate({
-            "tag": "input",
-            "textContent": "",
-            "innerText": "",
-            "placeholder": "Search the site",
-            "ariaLabel": "",
-            "value": "",
-        })
+        page = _make_page_with_evaluate(
+            {
+                "tag": "input",
+                "textContent": "",
+                "innerText": "",
+                "placeholder": "Search the site",
+                "ariaLabel": "",
+                "value": "",
+            }
+        )
 
         is_match, observed = await validate_semantic_match(
             None, "Search products", page=page, locator="#search-input"
@@ -224,14 +233,16 @@ class TestLegacyFallback:
         """
         from browser_service.locators.smart_locator import validate_semantic_match
 
-        page = _make_page_with_evaluate({
-            "tag": "input",
-            "textContent": "",
-            "innerText": "",
-            "placeholder": "Search products",
-            "ariaLabel": "",
-            "value": "",
-        })
+        page = _make_page_with_evaluate(
+            {
+                "tag": "input",
+                "textContent": "",
+                "innerText": "",
+                "placeholder": "Search products",
+                "ariaLabel": "",
+                "value": "",
+            }
+        )
 
         is_match, _ = await validate_semantic_match(
             None, "Search products", page=page, locator="#product-search"
@@ -242,6 +253,7 @@ class TestLegacyFallback:
 # ─────────────────────────────────────────────────────────────────────────────
 # Test: Change C fast-path integration — semantic mismatch falls through
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestChangeCFastPath:
     """
@@ -263,14 +275,16 @@ class TestChangeCFastPath:
         # Mock page: count=1 (unique), evaluate returns the WRONG element's text
         locator_mock = AsyncMock()
         locator_mock.count = AsyncMock(return_value=1)
-        locator_mock.evaluate = AsyncMock(return_value={
-            "tag": "input",
-            "textContent": "",
-            "innerText": "",
-            "placeholder": "Search the site",  # wrong element
-            "ariaLabel": "",
-            "value": "",
-        })
+        locator_mock.evaluate = AsyncMock(
+            return_value={
+                "tag": "input",
+                "textContent": "",
+                "innerText": "",
+                "placeholder": "Search the site",  # wrong element
+                "ariaLabel": "",
+                "value": "",
+            }
+        )
 
         page = MagicMock()
         page.url = "https://example.com"
@@ -280,12 +294,18 @@ class TestChangeCFastPath:
         # actions.py does: from browser_service.locators import find_unique_locator_at_coordinates
         with patch(
             "browser_service.locators.find_unique_locator_at_coordinates",
-            new=AsyncMock(return_value={"found": False, "element_id": "elem_1",
-                                        "description": "search input",
-                                        "error": "Semantic mismatch in test"})
+            new=AsyncMock(
+                return_value={
+                    "found": False,
+                    "element_id": "elem_1",
+                    "description": "search input",
+                    "error": "Semantic mismatch in test",
+                }
+            ),
         ):
             result = await find_unique_locator_action(
-                x=100, y=200,
+                x=100,
+                y=200,
                 element_id="elem_1",
                 element_description="search products input",
                 expected_text="Search products",
@@ -315,7 +335,8 @@ class TestChangeCFastPath:
         page.locator = MagicMock(return_value=locator_mock)
 
         result = await find_unique_locator_action(
-            x=100, y=200,
+            x=100,
+            y=200,
             element_id="elem_1",
             element_description="some button",
             expected_text=None,
@@ -336,21 +357,24 @@ class TestChangeCFastPath:
 
         locator_mock = AsyncMock()
         locator_mock.count = AsyncMock(return_value=1)
-        locator_mock.evaluate = AsyncMock(return_value={
-            "tag": "input",
-            "textContent": "",
-            "innerText": "",
-            "placeholder": "Search products",
-            "ariaLabel": "",
-            "value": "",
-        })
+        locator_mock.evaluate = AsyncMock(
+            return_value={
+                "tag": "input",
+                "textContent": "",
+                "innerText": "",
+                "placeholder": "Search products",
+                "ariaLabel": "",
+                "value": "",
+            }
+        )
 
         page = MagicMock()
         page.url = "https://example.com"
         page.locator = MagicMock(return_value=locator_mock)
 
         result = await find_unique_locator_action(
-            x=100, y=200,
+            x=100,
+            y=200,
             element_id="elem_1",
             element_description="product search input",
             expected_text="Search products",
@@ -365,6 +389,7 @@ class TestChangeCFastPath:
 # ─────────────────────────────────────────────────────────────────────────────
 # Test: word-level soft match — per-field, not combined haystack
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestWordLevelSoftMatch:
     """
@@ -430,6 +455,7 @@ class TestWordLevelSoftMatch:
 # Test: container rejection
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestContainerRejection:
     """
     Verifies that elements whose text surface far exceeds the search term are
@@ -460,15 +486,17 @@ class TestContainerRejection:
         """
         from browser_service.locators.smart_locator import validate_semantic_match
 
-        page = _make_page_with_evaluate({
-            "tag": "div",
-            "textContent": "Submit",        # sliced view contains expected text
-            "textContentLength": 800,       # full length reveals container
-            "innerText": "",
-            "placeholder": "",
-            "ariaLabel": "",
-            "value": "",
-        })
+        page = _make_page_with_evaluate(
+            {
+                "tag": "div",
+                "textContent": "Submit",  # sliced view contains expected text
+                "textContentLength": 800,  # full length reveals container
+                "innerText": "",
+                "placeholder": "",
+                "ariaLabel": "",
+                "value": "",
+            }
+        )
 
         is_match, _ = await validate_semantic_match(
             None, "Submit", page=page, locator="div.content"
@@ -486,15 +514,17 @@ class TestContainerRejection:
         """
         from browser_service.locators.smart_locator import validate_semantic_match
 
-        page = _make_page_with_evaluate({
-            "tag": "input",
-            "textContent": "",
-            "innerText": "",
-            "placeholder": "Submit",
-            "ariaLabel": "",
-            "value": "",
-            # no textContentLength key
-        })
+        page = _make_page_with_evaluate(
+            {
+                "tag": "input",
+                "textContent": "",
+                "innerText": "",
+                "placeholder": "Submit",
+                "ariaLabel": "",
+                "value": "",
+                # no textContentLength key
+            }
+        )
 
         is_match, _ = await validate_semantic_match(
             None, "Submit", page=page, locator="#submit-btn"
@@ -522,19 +552,19 @@ class TestContainerRejection:
         """
         from browser_service.locators.smart_locator import validate_semantic_match
 
-        page = _make_page_with_evaluate({
-            "tag": "button",
-            "textContent": "Submit products",
-            "textContentLength": 100,
-            "innerText": "Submit products",
-            "placeholder": "",
-            "ariaLabel": "",
-            "value": "",
-        })
-
-        is_match, _ = await validate_semantic_match(
-            None, "Submit", page=page, locator="#btn"
+        page = _make_page_with_evaluate(
+            {
+                "tag": "button",
+                "textContent": "Submit products",
+                "textContentLength": 100,
+                "innerText": "Submit products",
+                "placeholder": "",
+                "ariaLabel": "",
+                "value": "",
+            }
         )
+
+        is_match, _ = await validate_semantic_match(None, "Submit", page=page, locator="#btn")
         assert is_match
 
     @pytest.mark.asyncio
@@ -546,25 +576,26 @@ class TestContainerRejection:
         """
         from browser_service.locators.smart_locator import validate_semantic_match
 
-        page = _make_page_with_evaluate({
-            "tag": "div",
-            "textContent": "Submit more products",
-            "textContentLength": 500,
-            "innerText": "Submit more products",
-            "placeholder": "",
-            "ariaLabel": "",
-            "value": "",
-        })
-
-        is_match, _ = await validate_semantic_match(
-            None, "Submit", page=page, locator="div.btn"
+        page = _make_page_with_evaluate(
+            {
+                "tag": "div",
+                "textContent": "Submit more products",
+                "textContentLength": 500,
+                "innerText": "Submit more products",
+                "placeholder": "",
+                "ariaLabel": "",
+                "value": "",
+            }
         )
+
+        is_match, _ = await validate_semantic_match(None, "Submit", page=page, locator="div.btn")
         assert is_match
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test: CDP fallback node fast path gate
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestCDPFallbackFastPathGate:
     """
@@ -628,6 +659,7 @@ class TestCDPFallbackFastPathGate:
         `resolved_node is not None and resolved_node.children_nodes is not None`.
         Verify it correctly separates CDP fallback nodes from cache-hit nodes.
         """
+
         def _uses_fast_path(node):
             return node is not None and node.children_nodes is not None
 

@@ -12,7 +12,7 @@ Functions:
 
 import json
 import logging
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -45,18 +45,18 @@ def extract_json_for_element(text: str, element_id: str) -> Optional[Dict[str, A
     if not text or not isinstance(text, str):
         logger.debug("extract_json_for_element: text is None or not a string")
         return None
-    
+
     if not element_id or not isinstance(element_id, str):
         logger.debug("extract_json_for_element: element_id is None or not a string")
         return None
-    
+
     # Find the starting position of the element_id
     # Check multiple patterns (with and without space after colon)
     search_patterns = [
         f'"element_id":"{element_id}"',  # No space (common in minified JSON)
         f'"element_id": "{element_id}"',  # With space
         f"'element_id':'{element_id}'",  # Single quotes, no space
-        f"'element_id': '{element_id}'"   # Single quotes, with space
+        f"'element_id': '{element_id}'",  # Single quotes, with space
     ]
 
     start_pos = -1
@@ -70,21 +70,21 @@ def extract_json_for_element(text: str, element_id: str) -> Optional[Dict[str, A
 
     if start_pos == -1:
         logger.debug(
-            f"extract_json_for_element: '{element_id}' not found in text (tried {len(search_patterns)} patterns)")
+            f"extract_json_for_element: '{element_id}' not found in text (tried {len(search_patterns)} patterns)"
+        )
         return None
 
     logger.debug(
-        f"extract_json_for_element: Found '{element_id}' at position {start_pos} using pattern '{pattern_used}'")
+        f"extract_json_for_element: Found '{element_id}' at position {start_pos} using pattern '{pattern_used}'"
+    )
 
     # Find the opening brace before element_id
-    brace_pos = text.rfind('{', 0, start_pos)
+    brace_pos = text.rfind("{", 0, start_pos)
     if brace_pos == -1:
-        logger.debug(
-            f"extract_json_for_element: No opening brace found before '{element_id}'")
+        logger.debug(f"extract_json_for_element: No opening brace found before '{element_id}'")
         return None
 
-    logger.debug(
-        f"extract_json_for_element: Opening brace at position {brace_pos}")
+    logger.debug(f"extract_json_for_element: Opening brace at position {brace_pos}")
 
     # Now match braces to find the closing brace
     brace_count = 0
@@ -99,7 +99,7 @@ def extract_json_for_element(text: str, element_id: str) -> Optional[Dict[str, A
             escape_next = False
             continue
 
-        if char == '\\':
+        if char == "\\":
             escape_next = True
             continue
 
@@ -112,16 +112,17 @@ def extract_json_for_element(text: str, element_id: str) -> Optional[Dict[str, A
             continue
 
         # Count braces
-        if char == '{':
+        if char == "{":
             brace_count += 1
-        elif char == '}':
+        elif char == "}":
             brace_count -= 1
 
             # Found matching closing brace
             if brace_count == 0:
-                json_str = text[brace_pos:i+1]
+                json_str = text[brace_pos : i + 1]
                 logger.debug(
-                    f"extract_json_for_element: Found complete JSON for '{element_id}' ({len(json_str)} chars)")
+                    f"extract_json_for_element: Found complete JSON for '{element_id}' ({len(json_str)} chars)"
+                )
 
                 # CRITICAL FIX: Unescape double-escaped quotes before parsing
                 # The JavaScript returns valid JSON, but when embedded in Python strings,
@@ -131,12 +132,14 @@ def extract_json_for_element(text: str, element_id: str) -> Optional[Dict[str, A
                     # First attempt: Parse as-is
                     parsed = json.loads(json_str)
                     logger.debug(
-                        f"extract_json_for_element: Successfully parsed JSON for '{element_id}'")
+                        f"extract_json_for_element: Successfully parsed JSON for '{element_id}'"
+                    )
                     return parsed
                 except json.JSONDecodeError:
                     # Second attempt: Fix escaped quotes and try again
                     logger.debug(
-                        "extract_json_for_element: First parse failed, trying to fix escaped quotes...")
+                        "extract_json_for_element: First parse failed, trying to fix escaped quotes..."
+                    )
                     try:
                         # Replace double-escaped quotes with single-escaped quotes
                         # \\" -> \"
@@ -146,19 +149,18 @@ def extract_json_for_element(text: str, element_id: str) -> Optional[Dict[str, A
 
                         parsed = json.loads(fixed_json_str)
                         logger.debug(
-                            f"extract_json_for_element: Successfully parsed JSON after fixing escapes for '{element_id}'")
+                            f"extract_json_for_element: Successfully parsed JSON after fixing escapes for '{element_id}'"
+                        )
                         return parsed
                     except json.JSONDecodeError as e2:
                         logger.error(
-                            f"extract_json_for_element: Failed to parse JSON for {element_id} even after fixing escapes: {e2}")
-                        logger.error(
-                            f"Original JSON (first 500 chars): {json_str[:500]}...")
-                        logger.error(
-                            f"Fixed JSON (first 500 chars): {fixed_json_str[:500]}...")
+                            f"extract_json_for_element: Failed to parse JSON for {element_id} even after fixing escapes: {e2}"
+                        )
+                        logger.error(f"Original JSON (first 500 chars): {json_str[:500]}...")
+                        logger.error(f"Fixed JSON (first 500 chars): {fixed_json_str[:500]}...")
                         return None
 
-    logger.debug(
-        f"extract_json_for_element: No matching closing brace found for '{element_id}'")
+    logger.debug(f"extract_json_for_element: No matching closing brace found for '{element_id}'")
     return None
 
 
@@ -174,7 +176,7 @@ def extract_workflow_json(text: str) -> Optional[Dict[str, Any]]:
 
     Returns:
         Parsed JSON dict if found and valid, None otherwise
-    
+
     Edge cases handled:
         - Empty or None text
         - Invalid text types
@@ -191,7 +193,7 @@ def extract_workflow_json(text: str) -> Optional[Dict[str, Any]]:
     if not text or not isinstance(text, str):
         logger.debug("extract_workflow_json: text is None or not a string")
         return None
-    
+
     # Find the starting position of workflow_completed
     search_pattern = '"workflow_completed"'
     start_pos = text.find(search_pattern)
@@ -200,7 +202,7 @@ def extract_workflow_json(text: str) -> Optional[Dict[str, Any]]:
         return None
 
     # Find the opening brace before workflow_completed
-    brace_pos = text.rfind('{', 0, start_pos)
+    brace_pos = text.rfind("{", 0, start_pos)
     if brace_pos == -1:
         return None
 
@@ -217,7 +219,7 @@ def extract_workflow_json(text: str) -> Optional[Dict[str, Any]]:
             escape_next = False
             continue
 
-        if char == '\\':
+        if char == "\\":
             escape_next = True
             continue
 
@@ -230,18 +232,18 @@ def extract_workflow_json(text: str) -> Optional[Dict[str, Any]]:
             continue
 
         # Count braces
-        if char == '{':
+        if char == "{":
             brace_count += 1
-        elif char == '}':
+        elif char == "}":
             brace_count -= 1
 
             # Found matching closing brace
             if brace_count == 0:
-                json_str = text[brace_pos:i+1]
+                json_str = text[brace_pos : i + 1]
                 try:
                     parsed = json.loads(json_str)
                     # Verify it has the expected structure
-                    if 'workflow_completed' in parsed and 'results' in parsed:
+                    if "workflow_completed" in parsed and "results" in parsed:
                         return parsed
                 except json.JSONDecodeError as e:
                     logger.debug(f"Failed to parse workflow JSON: {e}")

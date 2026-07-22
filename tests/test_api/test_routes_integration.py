@@ -15,9 +15,10 @@ Tests:
   GET /tasks      → 200, list of tasks
 """
 
-import pytest
 from contextlib import contextmanager
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 from flask import Flask
 
 
@@ -35,14 +36,17 @@ def app_and_processor():
     mock_processor.list_tasks.return_value = []
     mock_processor.get_task_status.return_value = None
 
-    with patch("browser_service.api.routes.config") as mock_config, \
-         patch("browser_service.api.routes._nl_settings") as mock_settings, \
-         patch("browser_service.api.routes.process_workflow_task"):
+    with (
+        patch("browser_service.api.routes.config") as mock_config,
+        patch("browser_service.api.routes._nl_settings") as mock_settings,
+        patch("browser_service.api.routes.process_workflow_task"),
+    ):
         mock_config.llm.google_api_key = "test-key"
         mock_config.max_concurrent_tasks = 10
         mock_settings.ENABLE_CUSTOM_ACTIONS = True
 
         from browser_service.api.routes import register_routes
+
         register_routes(app, mock_processor)
 
     return app, mock_processor
@@ -92,11 +96,14 @@ class TestWorkflowSubmit:
 
     def test_valid_workflow_submit(self, client, processor):
         """Valid workflow request returns 202 with task_id."""
-        resp = client.post("/workflow", json={
-            "elements": [{"id": "e1", "description": "button", "action": "click"}],
-            "url": "https://example.com",
-            "user_query": "click the button",
-        })
+        resp = client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "button", "action": "click"}],
+                "url": "https://example.com",
+                "user_query": "click the button",
+            },
+        )
         # Should be 200 or 202 — accept either
         assert resp.status_code in [200, 202]
         data = resp.get_json()
@@ -115,25 +122,33 @@ class TestWorkflowSubmit:
     def test_busy_returns_429_when_at_capacity(self, client, processor):
         """When try_submit_task returns False (at capacity), returns 429."""
         from browser_service.config import config as real_config
+
         limit = real_config.max_concurrent_tasks
         processor.try_submit_task.return_value = False
         processor.count_active_tasks.return_value = limit  # used in 429 response body
-        resp = client.post("/workflow", json={
-            "elements": [{"id": "e1", "description": "btn", "action": "click"}],
-            "url": "https://example.com",
-        })
+        resp = client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "btn", "action": "click"}],
+                "url": "https://example.com",
+            },
+        )
         assert resp.status_code == 429
 
     def test_busy_response_contains_capacity_fields(self, client, processor):
         """429 response body includes active_tasks and max_tasks fields."""
         from browser_service.config import config as real_config
+
         limit = real_config.max_concurrent_tasks
         processor.try_submit_task.return_value = False
         processor.count_active_tasks.return_value = limit
-        resp = client.post("/workflow", json={
-            "elements": [{"id": "e1", "description": "btn", "action": "click"}],
-            "url": "https://example.com",
-        })
+        resp = client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "btn", "action": "click"}],
+                "url": "https://example.com",
+            },
+        )
         assert resp.status_code == 429
         data = resp.get_json()
         assert data["active_tasks"] == limit
@@ -142,20 +157,25 @@ class TestWorkflowSubmit:
     def test_below_capacity_is_accepted(self, client, processor):
         """When try_submit_task returns True (under capacity), request is accepted."""
         processor.try_submit_task.return_value = True
-        resp = client.post("/workflow", json={
-            "elements": [{"id": "e1", "description": "btn", "action": "click"}],
-            "url": "https://example.com",
-        })
+        resp = client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "btn", "action": "click"}],
+                "url": "https://example.com",
+            },
+        )
         assert resp.status_code in [200, 202]
-
 
     def test_batch_alias_works(self, client, processor):
         """POST /batch works as alias for /workflow."""
         processor.count_active_tasks.return_value = 0
-        resp = client.post("/batch", json={
-            "elements": [{"id": "e1", "description": "btn", "action": "click"}],
-            "url": "https://example.com",
-        })
+        resp = client.post(
+            "/batch",
+            json={
+                "elements": [{"id": "e1", "description": "btn", "action": "click"}],
+                "url": "https://example.com",
+            },
+        )
         assert resp.status_code in [200, 202]
 
 
@@ -195,6 +215,7 @@ class TestTasksEndpoint:
 # Health endpoint — provider-aware fields
 # ---------------------------------------------------------------------------
 
+
 class TestHealthProviderFields:
     """
     Tests that /health returns model_provider and the correct google_api_configured
@@ -212,8 +233,9 @@ class TestHealthProviderFields:
         remain in place throughout the test.  Using a context manager guarantees
         the patch is alive for the duration of the `with` block.
         """
-        from flask import Flask
         from unittest.mock import MagicMock, patch
+
+        from flask import Flask
 
         app = Flask(__name__)
         app.config["TESTING"] = True
@@ -233,10 +255,13 @@ class TestHealthProviderFields:
         mock_cfg.max_concurrent_tasks = 10
         mock_cfg.headless = True
 
-        with patch("browser_service.api.routes.config", mock_cfg), \
-             patch("browser_service.api.routes._nl_settings", None), \
-             patch("browser_service.api.routes.process_workflow_task"):
+        with (
+            patch("browser_service.api.routes.config", mock_cfg),
+            patch("browser_service.api.routes._nl_settings", None),
+            patch("browser_service.api.routes.process_workflow_task"),
+        ):
             from browser_service.api.routes import register_routes
+
             register_routes(app, mock_processor)
             with app.test_client() as client:
                 yield client
@@ -259,7 +284,9 @@ class TestHealthProviderFields:
 
     def test_health_gemini_with_api_key(self):
         """Gemini provider with a valid API key: google_api_configured=true."""
-        with self._make_app_with_config("gemini", credentials_obj=None, api_key="real-key") as client:
+        with self._make_app_with_config(
+            "gemini", credentials_obj=None, api_key="real-key"
+        ) as client:
             resp = client.get("/health")
         data = resp.get_json()
         assert data["model_provider"] == "gemini"
@@ -354,10 +381,13 @@ class TestHealthHeadlessField:
         mock_cfg.llm.model_provider = "vertex"
         mock_cfg.llm.vertexai_credentials = object()
 
-        with patch("browser_service.api.routes.config", mock_cfg), \
-             patch("browser_service.api.routes._nl_settings", None), \
-             patch("browser_service.api.routes.process_workflow_task"):
+        with (
+            patch("browser_service.api.routes.config", mock_cfg),
+            patch("browser_service.api.routes._nl_settings", None),
+            patch("browser_service.api.routes.process_workflow_task"),
+        ):
             from browser_service.api.routes import register_routes
+
             register_routes(app, mock_processor)
             with app.test_client() as client:
                 yield client

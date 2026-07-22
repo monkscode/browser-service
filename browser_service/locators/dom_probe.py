@@ -78,10 +78,16 @@ logger = logging.getLogger(__name__)
 
 # Allowed suspected_type values. ``probe_specialized_type`` returns the
 # empty result for anything else — no JS is even executed.
-_SUPPORTED_TYPES: frozenset[str] = frozenset({
-    "dropdown", "checkbox", "radio", "collection", "file-upload",
-    "date-picker",
-})
+_SUPPORTED_TYPES: frozenset[str] = frozenset(
+    {
+        "dropdown",
+        "checkbox",
+        "radio",
+        "collection",
+        "file-upload",
+        "date-picker",
+    }
+)
 
 # Result shape returned when the probe cannot run (no page, bad type,
 # JS error). Dispatcher treats unconfirmed as "trust the classifier on
@@ -98,10 +104,9 @@ _UNCONFIRMED: dict[str, Any] = {
 # JS framework-pattern table — derived from classifier's
 # _DROPDOWN_FRAMEWORK_PATTERNS so we don't maintain two lists. JSON-
 # encoded once at import time.
-_FRAMEWORK_PATTERNS_JSON = json.dumps([
-    [name, list(patterns)]
-    for name, patterns in _DROPDOWN_FRAMEWORK_PATTERNS
-])
+_FRAMEWORK_PATTERNS_JSON = json.dumps(
+    [[name, list(patterns)] for name, patterns in _DROPDOWN_FRAMEWORK_PATTERNS]
+)
 
 
 # Single JS function. Takes (coords, suspectedType, frameworkPatterns,
@@ -462,8 +467,7 @@ async def probe_specialized_type(
         return dict(_UNCONFIRMED)
 
     args = {
-        "coords": ({"x": float(coords[0]), "y": float(coords[1])}
-                   if coords else None),
+        "coords": ({"x": float(coords[0]), "y": float(coords[1])} if coords else None),
         "suspectedType": suspected_type,
         "frameworkPatterns": json.loads(_FRAMEWORK_PATTERNS_JSON),
         "candidateXPath": candidate_xpath or None,
@@ -474,7 +478,9 @@ async def probe_specialized_type(
     except Exception as e:
         logger.warning(
             "   ⚠️  DOM probe failed for %s: %s: %s",
-            suspected_type, type(e).__name__, e,
+            suspected_type,
+            type(e).__name__,
+            e,
         )
         return dict(_UNCONFIRMED)
 

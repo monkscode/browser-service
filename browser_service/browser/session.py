@@ -8,8 +8,8 @@ The BrowserSessionManager encapsulates browser session configuration and
 provides a clean interface for session operations.
 """
 
-from typing import Optional, Dict, Any
 import logging
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +43,11 @@ class BrowserSessionManager:
                      Defaults to {'width': 1920, 'height': 1080}
         """
         self.headless = headless
-        self.viewport = viewport or {'width': 1920, 'height': 1080}
+        self.viewport = viewport or {"width": 1920, "height": 1080}
         self.session: Optional[Any] = None
-        logger.debug(f"BrowserSessionManager initialized (headless={headless}, viewport={self.viewport})")
+        logger.debug(
+            f"BrowserSessionManager initialized (headless={headless}, viewport={self.viewport})"
+        )
 
     async def create_session(self) -> Any:
         """
@@ -74,11 +76,8 @@ class BrowserSessionManager:
             from browser_use.browser.session import BrowserSession
 
             logger.info(f"Creating browser session (headless={self.headless})")
-            self.session = BrowserSession(
-                headless=self.headless,
-                viewport=self.viewport
-            )
-            
+            self.session = BrowserSession(headless=self.headless, viewport=self.viewport)
+
             # browser-use requires explicit start() call
             logger.info("Starting browser session...")
             await self.session.start()
@@ -95,7 +94,7 @@ class BrowserSessionManager:
 
         This method gracefully closes the browser session and cleans up resources.
         After calling this method, the session attribute will be set to None.
-        
+
         browser-use uses kill() method for cleanup.
 
         Example:
@@ -108,11 +107,11 @@ class BrowserSessionManager:
         try:
             logger.info("Closing browser session...")
             # browser-use uses kill() method for cleanup
-            if hasattr(self.session, 'kill'):
+            if hasattr(self.session, "kill"):
                 await self.session.kill()
-            elif hasattr(self.session, 'close'):
+            elif hasattr(self.session, "close"):
                 await self.session.close()
-            elif hasattr(self.session, 'browser') and self.session.browser:
+            elif hasattr(self.session, "browser") and self.session.browser:
                 await self.session.browser.close()
             logger.info("✅ Browser session closed")
         except Exception as e:

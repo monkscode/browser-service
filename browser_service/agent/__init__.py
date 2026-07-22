@@ -18,7 +18,4 @@ Usage:
 from browser_service.agent.actions import find_unique_locator_action
 from browser_service.agent.registration import register_custom_actions
 
-__all__ = [
-    'find_unique_locator_action',
-    'register_custom_actions'
-]
+__all__ = ["find_unique_locator_action", "register_custom_actions"]

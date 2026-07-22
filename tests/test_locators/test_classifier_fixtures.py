@@ -18,7 +18,6 @@ import pytest
 
 from browser_service.locators.classifier import classify_element_type
 
-
 # ----------------------------------------------------------------------
 # Bug 2 — astpp_create_menu_navitem.html
 # Outer ".nav-item" container must NOT be classified as a collection
@@ -135,8 +134,7 @@ def test_tom_select_no_label_for_still_classifies_as_tom_select():
 
 @pytest.mark.parametrize(
     "desc",
-    ["Country dropdown", "Currency dropdown", "Rate Group dropdown",
-     "Billing Schedule dropdown"],
+    ["Country dropdown", "Currency dropdown", "Rate Group dropdown", "Billing Schedule dropdown"],
 )
 def test_multi_instance_tom_select_each_classified_high(desc):
     info = classify_element_type(
@@ -276,8 +274,7 @@ class TestCheckboxRadioWidgets:
 
     def test_native_radio_input(self):
         info = classify_element_type(
-            element_data={"tagName": "input", "type": "radio",
-                          "name": "plan", "value": "pro"},
+            element_data={"tagName": "input", "type": "radio", "name": "plan", "value": "pro"},
             element_description="Pro plan radio",
         )
         assert info.primary_type == "radio"

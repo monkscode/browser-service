@@ -15,9 +15,10 @@ Tests:
 """
 
 import pytest
+
 from browser_service.locators.validation import (
-    is_already_playwright_selector,
     convert_to_playwright_locator,
+    is_already_playwright_selector,
 )
 
 

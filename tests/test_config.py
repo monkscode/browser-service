@@ -18,8 +18,9 @@ Each test targets a distinct code path in config.py:
 
 import os
 import sys
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 
 class TestBrowserServiceConfigDefaults:
@@ -58,6 +59,7 @@ class TestBrowserServiceConfigDefaults:
                 return_value=env.get("GOOGLE_MODEL", "gemini-2.5-flash").replace("gemini/", ""),
             ):
                 from browser_service.config import BrowserServiceConfig
+
                 return BrowserServiceConfig()
 
     # ── Default value tests ──────────────────────────────────────────
@@ -137,6 +139,7 @@ class TestAgentVisionMode:
                 return_value="gemini-2.5-flash",
             ):
                 from browser_service.config import BrowserServiceConfig
+
                 return BrowserServiceConfig()
 
     def test_default_is_auto(self):
@@ -170,12 +173,15 @@ class TestBrowserServiceConfigValidation:
 
     def _make_config_raw(self):
         """Create config without env-var mocking for manual attribute tweaking."""
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key", "MODEL_PROVIDER": "gemini"}, clear=False):
+        with patch.dict(
+            os.environ, {"GEMINI_API_KEY": "test-key", "MODEL_PROVIDER": "gemini"}, clear=False
+        ):
             with patch(
                 "browser_service.config.BrowserServiceConfig._get_google_model",
                 return_value="gemini-2.5-flash",
             ):
                 from browser_service.config import BrowserServiceConfig
+
                 return BrowserServiceConfig()
 
     def test_validate_valid_config(self):
@@ -237,9 +243,12 @@ class TestGoogleModelNormalisation:
             # _get_google_model falls back to GOOGLE_MODEL env (the path under test).
             # In the combined repo src.backend.core.config IS importable, so without
             # this stub the real settings (ONLINE_MODEL) would shadow the env path.
-            with patch.dict(sys.modules, {"src.backend.core.config": None}), \
-                 patch("browser_service.config.BrowserServiceConfig.__init__", return_value=None):
+            with (
+                patch.dict(sys.modules, {"src.backend.core.config": None}),
+                patch("browser_service.config.BrowserServiceConfig.__init__", return_value=None),
+            ):
                 from browser_service.config import BrowserServiceConfig
+
                 cfg = BrowserServiceConfig.__new__(BrowserServiceConfig)
                 # Bind the real method
                 result = BrowserServiceConfig._get_google_model(cfg)
@@ -248,9 +257,12 @@ class TestGoogleModelNormalisation:
     def test_no_prefix_unchanged(self):
         """'gemini-2.5-flash' stays 'gemini-2.5-flash'."""
         with patch.dict(os.environ, {"GOOGLE_MODEL": "gemini-2.5-flash"}, clear=False):
-            with patch.dict(sys.modules, {"src.backend.core.config": None}), \
-                 patch("browser_service.config.BrowserServiceConfig.__init__", return_value=None):
+            with (
+                patch.dict(sys.modules, {"src.backend.core.config": None}),
+                patch("browser_service.config.BrowserServiceConfig.__init__", return_value=None),
+            ):
                 from browser_service.config import BrowserServiceConfig
+
                 cfg = BrowserServiceConfig.__new__(BrowserServiceConfig)
                 result = BrowserServiceConfig._get_google_model(cfg)
                 assert result == "gemini-2.5-flash"
@@ -258,9 +270,12 @@ class TestGoogleModelNormalisation:
     def test_strips_vertex_ai_prefix(self):
         """'vertex_ai/gemini-2.5-flash' → 'gemini-2.5-flash'."""
         with patch.dict(os.environ, {"GOOGLE_MODEL": "vertex_ai/gemini-2.5-flash"}, clear=False):
-            with patch.dict(sys.modules, {"src.backend.core.config": None}), \
-                 patch("browser_service.config.BrowserServiceConfig.__init__", return_value=None):
+            with (
+                patch.dict(sys.modules, {"src.backend.core.config": None}),
+                patch("browser_service.config.BrowserServiceConfig.__init__", return_value=None),
+            ):
                 from browser_service.config import BrowserServiceConfig
+
                 cfg = BrowserServiceConfig.__new__(BrowserServiceConfig)
                 result = BrowserServiceConfig._get_google_model(cfg)
                 assert result == "gemini-2.5-flash"
@@ -269,6 +284,7 @@ class TestGoogleModelNormalisation:
 # ---------------------------------------------------------------------------
 # Vertex AI provider tests
 # ---------------------------------------------------------------------------
+
 
 class TestVertexAIProviderConfig:
     """Tests for MODEL_PROVIDER=vertex path in BrowserServiceConfig."""
@@ -294,19 +310,26 @@ class TestVertexAIProviderConfig:
         sentinel = object()  # unique object to assert identity
 
         with patch.dict(os.environ, env, clear=False):
-            with patch("browser_service.config.BrowserServiceConfig._get_google_model",
-                       return_value="gemini-2.5-flash"):
-                with patch("browser_service.config.BrowserServiceConfig.__init__.__globals__",
-                           {}, create=True):
+            with patch(
+                "browser_service.config.BrowserServiceConfig._get_google_model",
+                return_value="gemini-2.5-flash",
+            ):
+                with patch(
+                    "browser_service.config.BrowserServiceConfig.__init__.__globals__",
+                    {},
+                    create=True,
+                ):
                     # Block NL-repo settings import
                     pass
                 if mock_credentials:
                     with patch(
                         "browser_service.config.service_account"
-                        if False else "google.oauth2.service_account.Credentials.from_service_account_file",
+                        if False
+                        else "google.oauth2.service_account.Credentials.from_service_account_file",
                         return_value=sentinel,
                     ) as mock_load:
                         from browser_service.config import BrowserServiceConfig
+
                         with patch(
                             "google.oauth2.service_account.Credentials.from_service_account_file",
                             return_value=sentinel,
@@ -315,6 +338,7 @@ class TestVertexAIProviderConfig:
                             return cfg, mock_load2
                 else:
                     from browser_service.config import BrowserServiceConfig
+
                     cfg = BrowserServiceConfig()
                     return cfg
 
@@ -334,11 +358,16 @@ class TestVertexAIProviderConfig:
         fake_creds = object()
 
         with patch.dict(os.environ, env, clear=False):
-            with patch("browser_service.config.BrowserServiceConfig._get_google_model",
-                       return_value="gemini-2.5-flash"):
-                with patch("google.oauth2.service_account.Credentials.from_service_account_file",
-                           return_value=fake_creds) as mock_load:
+            with patch(
+                "browser_service.config.BrowserServiceConfig._get_google_model",
+                return_value="gemini-2.5-flash",
+            ):
+                with patch(
+                    "google.oauth2.service_account.Credentials.from_service_account_file",
+                    return_value=fake_creds,
+                ) as mock_load:
                     from browser_service.config import BrowserServiceConfig
+
                     cfg = BrowserServiceConfig()
                     return cfg, mock_load, fake_creds
 
@@ -371,10 +400,15 @@ class TestVertexAIProviderConfig:
             "GOOGLE_MODEL": "gemini-2.5-flash",
         }
         with patch.dict(os.environ, env, clear=False):
-            with patch("browser_service.config.BrowserServiceConfig._get_google_model",
-                       return_value="gemini-2.5-flash"):
-                with patch("google.oauth2.service_account.Credentials.from_service_account_file") as mock_load:
+            with patch(
+                "browser_service.config.BrowserServiceConfig._get_google_model",
+                return_value="gemini-2.5-flash",
+            ):
+                with patch(
+                    "google.oauth2.service_account.Credentials.from_service_account_file"
+                ) as mock_load:
                     from browser_service.config import BrowserServiceConfig
+
                     BrowserServiceConfig()
                     mock_load.assert_not_called()
 
@@ -388,9 +422,12 @@ class TestVertexAIProviderConfig:
             "GOOGLE_MODEL": "gemini-2.5-flash",
         }
         with patch.dict(os.environ, env, clear=False):
-            with patch("browser_service.config.BrowserServiceConfig._get_google_model",
-                       return_value="gemini-2.5-flash"):
+            with patch(
+                "browser_service.config.BrowserServiceConfig._get_google_model",
+                return_value="gemini-2.5-flash",
+            ):
                 from browser_service.config import BrowserServiceConfig
+
                 cfg = BrowserServiceConfig()
         assert cfg.llm.vertexai_credentials is None
 
@@ -404,13 +441,16 @@ class TestVertexAIProviderConfig:
             "GOOGLE_MODEL": "gemini-2.5-flash",
         }
         with patch.dict(os.environ, env, clear=False):
-            with patch("browser_service.config.BrowserServiceConfig._get_google_model",
-                       return_value="gemini-2.5-flash"):
+            with patch(
+                "browser_service.config.BrowserServiceConfig._get_google_model",
+                return_value="gemini-2.5-flash",
+            ):
                 with patch(
                     "google.oauth2.service_account.Credentials.from_service_account_file",
                     side_effect=ValueError("bad JSON"),
                 ):
                     from browser_service.config import BrowserServiceConfig
+
                     cfg = BrowserServiceConfig()
         assert cfg.llm.vertexai_credentials is None
 
@@ -421,6 +461,7 @@ class TestVertexAIValidation:
     def _base_vertex_cfg(self):
         """Return a BrowserServiceConfig with all vertex fields set to valid values."""
         from browser_service.config import BrowserServiceConfig, LLMConfig
+
         cfg = BrowserServiceConfig.__new__(BrowserServiceConfig)
         cfg.llm = LLMConfig(
             model_provider="vertex",
@@ -430,6 +471,7 @@ class TestVertexAIValidation:
             vertexai_credentials=object(),  # non-None = successfully loaded
         )
         from browser_service.config import BatchConfig, LocatorConfig
+
         cfg.batch = BatchConfig()
         cfg.locator = LocatorConfig()
         cfg.headless = True
@@ -514,6 +556,7 @@ class TestCustomActionTimeoutConfig:
             return_value="gemini-2.5-flash",
         ):
             from browser_service.config import BrowserServiceConfig
+
             return BrowserServiceConfig()
 
     def test_default_is_5_when_unset(self, monkeypatch):

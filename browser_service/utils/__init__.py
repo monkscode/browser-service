@@ -8,12 +8,12 @@ Shared utility functions for the browser service including:
 """
 
 from .json_parser import extract_json_for_element, extract_workflow_json
-from .metrics import record_workflow_metrics
 from .logging_setup import setup_logging
+from .metrics import record_workflow_metrics
 
 __all__ = [
-    'extract_json_for_element',
-    'extract_workflow_json',
-    'record_workflow_metrics',
-    'setup_logging',
+    "extract_json_for_element",
+    "extract_workflow_json",
+    "record_workflow_metrics",
+    "setup_logging",
 ]

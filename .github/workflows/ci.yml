@@ -84,14 +84,20 @@ jobs:
           if-no-files-found: warn
       - name: Upload coverage to Codecov
         if: ${{ env.CODECOV_TOKEN != '' }}
-        uses: codecov/codecov-action@v7
+        # Third-party actions are pinned to a commit SHA, not a mutable tag:
+        # retagging upstream would otherwise run new code in a job that holds
+        # our tokens. Bump the SHA and the trailing comment together.
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
-          fail_ci_if_error: true
+          # Codecov availability is not a code-quality signal. An upload blip
+          # must not red the merge gate — the coverage artifact and the Sonar
+          # scan below still carry the numbers.
+          fail_ci_if_error: false
       - name: SonarCloud scan
         if: ${{ env.SONAR_TOKEN != '' }}
-        uses: SonarSource/sonarqube-scan-action@v6
+        uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6.0.0
 
   fixture-tests:
     name: Fixture tests (chromium)

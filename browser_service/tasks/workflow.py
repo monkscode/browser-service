@@ -1244,9 +1244,9 @@ def process_workflow_task(
 
                                 if validated_unique:
                                     # Found valid unique locators - select best by priority
-                                    best_locator = sorted(
+                                    best_locator = min(
                                         validated_unique, key=lambda x: x["priority"]
-                                    )[0]["locator"]
+                                    )["locator"]
                                     logger.info(
                                         f"   ✅ Selected VALID unique locator: {best_locator}"
                                     )
@@ -1483,7 +1483,7 @@ def process_workflow_task(
                                     results_list.append(elem_data)
                                     logger.info(f"   ✅ Extracted {elem_id} from result string")
                         except Exception as e:
-                            logger.error(f"   ❌ Exception extracting {elem_id}: {e}")
+                            logger.exception(f"   ❌ Exception extracting {elem_id}: {e}")
                 else:
                     logger.info(
                         "   ⏭️  String-based extraction skipped (all elements already found)"

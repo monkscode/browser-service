@@ -15,6 +15,7 @@ Tests:
   GET /tasks      → 200, list of tasks
 """
 
+import logging
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
@@ -442,3 +443,80 @@ class TestHealthHeadlessField:
         with self._make_app_with_headless(False) as client:
             resp = client.get("/health")
         assert resp.get_json()["headless"] is False
+
+
+class TestErrorResponsesDoNotLeakInternals:
+    """A 500 body must not carry the exception text.
+
+    Exception messages routinely embed absolute paths, CDP endpoints, config
+    values and upstream API payloads. The detail belongs in the server log —
+    which every one of these handlers already writes with exc_info=True — not
+    in a response any caller can read.
+    """
+
+    SECRET = "postgresql://user:hunter2@10.0.0.4:5432/internal"
+
+    def _assert_scrubbed(self, resp, caplog):
+        assert resp.status_code == 500
+        body = resp.get_data(as_text=True)
+        assert self.SECRET not in body, f"exception text leaked into 500 body: {body}"
+        assert resp.get_json()["message"] == "Internal server error"
+        assert self.SECRET in caplog.text, "detail must still reach the server log"
+
+    def test_workflow_submit_500_is_scrubbed(self, client, processor, caplog):
+        processor.try_submit_task.side_effect = RuntimeError(self.SECRET)
+        with caplog.at_level(logging.ERROR, logger="browser_service.api.routes"):
+            resp = client.post(
+                "/workflow",
+                json={
+                    "elements": [{"id": "e1", "description": "button", "action": "click"}],
+                    "url": "https://example.com",
+                    "user_query": "click the button",
+                },
+            )
+        self._assert_scrubbed(resp, caplog)
+
+    def test_query_500_is_scrubbed(self, client, processor, caplog):
+        processor.get_task_status.side_effect = RuntimeError(self.SECRET)
+        with caplog.at_level(logging.ERROR, logger="browser_service.api.routes"):
+            resp = client.get("/query/t1")
+        self._assert_scrubbed(resp, caplog)
+
+    def test_list_tasks_500_is_scrubbed(self, client, processor, caplog):
+        processor.list_tasks.side_effect = RuntimeError(self.SECRET)
+        with caplog.at_level(logging.ERROR, logger="browser_service.api.routes"):
+            resp = client.get("/tasks")
+        self._assert_scrubbed(resp, caplog)
+
+    def test_unhandled_exception_handler_omits_error_field(self, caplog):
+        """The app-wide 500 handler returns no `error` key and logs the cause.
+
+        TESTING/PROPAGATE_EXCEPTIONS must be off, otherwise Flask re-raises past
+        the handler and this asserts nothing.
+        """
+        app = Flask(__name__)
+        app.config["PROPAGATE_EXCEPTIONS"] = False
+
+        mock_processor = MagicMock()
+        with (
+            patch("browser_service.api.routes.config") as mock_config,
+            patch("browser_service.api.routes._nl_settings", None),
+            patch("browser_service.api.routes.process_workflow_task"),
+        ):
+            mock_config.max_concurrent_tasks = 10
+            from browser_service.api.routes import register_routes
+
+            register_routes(app, mock_processor)
+
+        @app.route("/boom")
+        def boom():
+            raise RuntimeError(self.SECRET)
+
+        with caplog.at_level(logging.ERROR, logger="browser_service.api.routes"):
+            resp = app.test_client().get("/boom")
+
+        assert resp.status_code == 500
+        data = resp.get_json()
+        assert "error" not in data, f"500 handler still exposes an error field: {data}"
+        assert data["message"] == "Internal server error"
+        assert self.SECRET in caplog.text, "the 500 handler must log the cause"

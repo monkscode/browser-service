@@ -29,24 +29,51 @@ jobs:
         with:
           fetch-depth: 0  # Fetch all history for version calculation
           token: ${{ secrets.GITHUB_TOKEN }}
-      - id: extract_tag  
-        name: Extract or generate version  
+      - id: extract_tag
+        name: Extract or generate version
+        # Inputs and refs reach the shell through env, never through ${{ }}
+        # expansion into the script text. An expanded value is substituted
+        # before bash parses the line, so metacharacters in it would execute
+        # here — and this version is consumed downstream by a job holding
+        # id-token: write for PyPI trusted publishing.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_VERSION"
+          elif [ "${REF#refs/tags/}" != "$REF" ]; then
+            VERSION="${REF#refs/tags/}"
           else
-            NEW_VERSION=$(python3 .github/scripts/resolve_version.py)
-            echo "tag=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
-          fi  
+            VERSION="$(python3 .github/scripts/resolve_version.py)"
+          fi
+
+          # Releases may be tagged 1.2.3 or v1.2.3; pyproject must carry the
+          # bare version either way (resolve_version.py strips it the same way).
+          VERSION="${VERSION#v}"
+
+          # Reject anything that is not a PEP 440 public version. This is what
+          # actually contains an untrusted workflow_dispatch input: it blocks
+          # shell metacharacters and embedded newlines, the latter otherwise
+          # letting a caller forge extra entries in $GITHUB_OUTPUT.
+          if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$ ]]; then
+            echo "::error::Refusing to publish: '${VERSION}' is not a valid PEP 440 version"
+            exit 1
+          fi
+
+          echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
 
   test:
     name: Gate on tests
     runs-on: ubuntu-latest
+    # Explicit least privilege: without this the job inherits the repository's
+    # default GITHUB_TOKEN scope, which may be read/write. Running the test
+    # suite needs nothing but read.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -78,12 +105,19 @@ jobs:
       - name: Install build tooling
         run: python3 -m pip install --upgrade build twine
       - name: Update version in pyproject.toml
-        run: sed -i 's/^version = "[^"]*"/version = "${{ needs.extract-tag.outputs.version }}"/' pyproject.toml
+        # Same rule as extract-tag: through env, not through ${{ }} expansion
+        # into the sed script. extract-tag has already validated the value
+        # against PEP 440, so it cannot carry a sed delimiter either.
+        env:
+          NEW_VERSION: ${{ needs.extract-tag.outputs.version }}
+        run: sed -i "s/^version = \"[^\"]*\"/version = \"${NEW_VERSION}\"/" pyproject.toml
       - name: Build sdist + wheel
         run: python3 -m build
       - name: Check distribution metadata
         run: python3 -m twine check dist/*
       - name: Publish distribution 📦 to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with: 
+        # SHA-pinned: `release/v1` is a moving branch, so an upstream compromise
+        # would run in the job that holds id-token: write. Bump SHA + comment together.
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+        with:
           attestations: false

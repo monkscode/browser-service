@@ -38,6 +38,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# The only 5xx text a caller ever sees. Exception detail stays in the log —
+# messages carry absolute paths, CDP endpoints and upstream payloads.
+INTERNAL_ERROR_MESSAGE = "Internal server error"
+
 
 def register_routes(app: Flask, task_processor: Any) -> None:
     """
@@ -250,7 +254,7 @@ def register_routes(app: Flask, task_processor: Any) -> None:
 
         except Exception as e:
             logger.error(f"Error in workflow submit endpoint: {e}", exc_info=True)
-            return format_error_response(f"Internal server error: {str(e)}", 500)
+            return format_error_response(INTERNAL_ERROR_MESSAGE, 500)
 
     @app.route("/query/<task_id>", methods=["GET"])
     def query(task_id: str):
@@ -285,7 +289,7 @@ def register_routes(app: Flask, task_processor: Any) -> None:
 
         except Exception as e:
             logger.error(f"Error in query endpoint: {e}", exc_info=True)
-            return format_error_response(f"Internal server error: {str(e)}", 500)
+            return format_error_response(INTERNAL_ERROR_MESSAGE, 500)
 
     @app.route("/tasks", methods=["GET"])
     def list_tasks():
@@ -297,7 +301,7 @@ def register_routes(app: Flask, task_processor: Any) -> None:
 
         except Exception as e:
             logger.error(f"Error in list_tasks endpoint: {e}", exc_info=True)
-            return format_error_response(f"Internal server error: {str(e)}", 500)
+            return format_error_response(INTERNAL_ERROR_MESSAGE, 500)
 
     @app.errorhandler(404)
     def not_found(error):
@@ -320,7 +324,11 @@ def register_routes(app: Flask, task_processor: Any) -> None:
 
     @app.errorhandler(500)
     def internal_error(error):
-        """Handle 500 errors."""
-        return jsonify(
-            {"status": "error", "message": "Internal server error", "error": str(error)}
-        ), 500
+        """Handle 500 errors.
+
+        The cause goes to the log, not to the caller. `str(error)` here is only
+        werkzeug's canned InternalServerError text, so returning it told the
+        client nothing while leaving the real exception unlogged.
+        """
+        logger.error(f"Unhandled 500 error: {error}", exc_info=True)
+        return jsonify({"status": "error", "message": INTERNAL_ERROR_MESSAGE}), 500

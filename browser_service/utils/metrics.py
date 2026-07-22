@@ -2,7 +2,7 @@
 Metrics Recording Utility
 
 This module provides functionality for recording workflow metrics to the backend API.
-Metrics include execution time, success rates, LLM usage, and cost estimates.
+Metrics include execution time, success rates, LLM usage, and actual cost.
 
 Functions:
     - record_workflow_metrics: Record workflow metrics to the API endpoint
@@ -60,8 +60,13 @@ def record_workflow_metrics(
         success_rate = summary.get("success_rate", 0.0)
         total_llm_calls = summary.get("total_llm_calls", 0)
         avg_llm_calls_per_element = summary.get("avg_llm_calls_per_element", 0.0)
-        total_cost = summary.get("estimated_total_cost", 0.0)
-        avg_cost_per_element = summary.get("estimated_cost_per_element", 0.0)
+        # `actual_cost` is the only cost key the workflow summary emits (real
+        # spend reported by browser-use, not an estimate). Reading anything else
+        # persists total_cost=0.0 for every workflow without failing anywhere.
+        # There is no per-element cost key upstream — derive it, matching the
+        # backend's own aggregate formula (total_cost / total_elements).
+        total_cost = summary.get("actual_cost", 0.0)
+        avg_cost_per_element = total_cost / total_elements if total_elements else 0.0
         custom_actions_enabled = summary.get("custom_actions_enabled", False)
 
         # Count custom action usage from results

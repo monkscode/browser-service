@@ -25,6 +25,10 @@ from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Port of a CDP endpoint URL, e.g. http://127.0.0.1:9222/devtools/browser/<id>.
+# Compiled once and shared by the three call sites that parse a cdp_url.
+CDP_PORT_RE = re.compile(r":(\d+)/")
+
 
 def count_chrome_processes() -> Tuple[int, List[int]]:
     """
@@ -154,7 +158,7 @@ def store_cdp_port(cdp_url: str) -> Optional[str]:
         return None
 
     # Extract port from CDP URL
-    match = re.search(r":(\d+)/", cdp_url)
+    match = CDP_PORT_RE.search(cdp_url)
     if not match:
         return None
 
@@ -231,7 +235,7 @@ def capture_session_pid(session) -> Optional[int]:
         cdp_url = getattr(session, "cdp_url", None)
         if not cdp_url:
             return None
-        match = re.search(r":(\d+)/", cdp_url)
+        match = CDP_PORT_RE.search(cdp_url)
         if not match:
             return None
         port = match.group(1)
@@ -278,7 +282,7 @@ def get_browser_process_id(session) -> Optional[int]:
         port = None
         if cdp_url_value:
             logger.info(f"   🔍 cdp_url value: {cdp_url_value[:60]}...")
-            match = re.search(r":(\d+)/", cdp_url_value)
+            match = CDP_PORT_RE.search(cdp_url_value)
             if match:
                 port = match.group(1)
 

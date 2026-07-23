@@ -247,7 +247,7 @@ async def find_unique_locator_action(
         logger.info(f'   Expected text: "{expected_text}"')
     if element_data:
         logger.info(
-            f'   Element data from index: tag=<{element_data.get("tagName", "?")}>, text="{element_data.get("textContent", "")[:30]}..."'
+            f'   Element data from index: tag=<{element_data.get("tagName", "?")}>, text="{(element_data.get("textContent") or "")[:30]}..."'
         )
     if candidate_locator:
         logger.info(f"   Candidate locator: {candidate_locator}")

@@ -275,6 +275,104 @@ class TestFindUniqueLocatorAction:
         assert result == CASCADE_RESULT
 
     @pytest.mark.asyncio
+    async def test_candidate_invalid_selector_falls_through(self, mock_playwright_page, cascade):
+        """An invalid CSS candidate (e.g. numeric #123) raises in Playwright →
+        the RuntimeError is classified and the search falls through to the cascade."""
+        from browser_service.agent.actions import find_unique_locator_action
+
+        mock_playwright_page.locator.return_value.count = AsyncMock(
+            side_effect=RuntimeError("'#123' is not a valid selector")
+        )
+
+        result = await find_unique_locator_action(
+            page=mock_playwright_page,
+            x=100,
+            y=200,
+            element_id="elem_1",
+            element_description="numeric id element",
+            candidate_locator="#123",
+        )
+
+        cascade.assert_called_once()
+        assert result == CASCADE_RESULT
+
+    @pytest.mark.asyncio
+    async def test_candidate_runtimeerror_non_selector_falls_through(
+        self, mock_playwright_page, cascade
+    ):
+        """A non-selector RuntimeError takes the generic branch and still falls through."""
+        from browser_service.agent.actions import find_unique_locator_action
+
+        mock_playwright_page.locator.return_value.count = AsyncMock(
+            side_effect=RuntimeError("some other playwright failure")
+        )
+
+        result = await find_unique_locator_action(
+            page=mock_playwright_page,
+            x=100,
+            y=200,
+            element_id="elem_1",
+            element_description="element",
+            candidate_locator="id=x",
+        )
+
+        cascade.assert_called_once()
+        assert result == CASCADE_RESULT
+
+    @pytest.mark.asyncio
+    async def test_cascade_cancelled_returns_typed_error(self, mock_playwright_page, cascade):
+        """A CancelledError from the cascade (browser closed) → typed error, not a raise."""
+        import asyncio
+
+        from browser_service.agent.actions import find_unique_locator_action
+
+        cascade.side_effect = asyncio.CancelledError()
+
+        result = await find_unique_locator_action(
+            page=mock_playwright_page,
+            x=100,
+            y=200,
+            element_id="elem_1",
+            element_description="element",
+        )
+        assert result["found"] is False
+        assert result["error_type"] == "CancelledError"
+
+    @pytest.mark.asyncio
+    async def test_cascade_runtimeerror_returns_typed_error(self, mock_playwright_page, cascade):
+        """A RuntimeError from the cascade is caught and reported, not raised."""
+        from browser_service.agent.actions import find_unique_locator_action
+
+        cascade.side_effect = RuntimeError("event loop closed")
+
+        result = await find_unique_locator_action(
+            page=mock_playwright_page,
+            x=100,
+            y=200,
+            element_id="elem_1",
+            element_description="element",
+        )
+        assert result["found"] is False
+        assert result["error_type"] == "RuntimeError"
+
+    @pytest.mark.asyncio
+    async def test_cascade_generic_error_returns_typed_error(self, mock_playwright_page, cascade):
+        """Any other cascade exception is caught and reported with its type name."""
+        from browser_service.agent.actions import find_unique_locator_action
+
+        cascade.side_effect = ValueError("unexpected")
+
+        result = await find_unique_locator_action(
+            page=mock_playwright_page,
+            x=100,
+            y=200,
+            element_id="elem_1",
+            element_description="element",
+        )
+        assert result["found"] is False
+        assert result["error_type"] == "ValueError"
+
+    @pytest.mark.asyncio
     async def test_element_data_forwarded_to_cascade(self, mock_playwright_page, cascade):
         """element_data reaches the cascade intact — dropping it silently degrades locators."""
         from browser_service.agent.actions import find_unique_locator_action
@@ -301,6 +399,27 @@ class TestFindUniqueLocatorAction:
         assert kwargs["element_id"] == "elem_2"
         assert kwargs["x"] == 500
         assert kwargs["y"] == 300
+        assert result == CASCADE_RESULT
+
+    @pytest.mark.asyncio
+    async def test_none_text_content_does_not_abort_search(self, mock_playwright_page, cascade):
+        """A text-less element (icon button, image) can carry textContent=None.
+
+        The diagnostic log line slices textContent[:30]; a None value must not
+        raise TypeError and abort the search before the cascade runs.
+        """
+        from browser_service.agent.actions import find_unique_locator_action
+
+        result = await find_unique_locator_action(
+            page=mock_playwright_page,
+            x=500,
+            y=300,
+            element_id="elem_icon",
+            element_description="icon button",
+            element_data={"tagName": "button", "textContent": None},
+        )
+
+        cascade.assert_called_once()
         assert result == CASCADE_RESULT
 
     @pytest.mark.asyncio

@@ -1392,14 +1392,16 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             # Extract element attributes for locator generation
                             element_data_from_index = _extract_dom_node_attributes(dom_node)
 
-                            # Get text content from the element
+                            # Get text content from the element. Default to ""
+                            # so a text-less node (icon button, image) never
+                            # stores None — a downstream log line slices this.
                             if hasattr(dom_node, "get_meaningful_text_for_llm"):
                                 element_data_from_index["textContent"] = (
-                                    dom_node.get_meaningful_text_for_llm()
+                                    dom_node.get_meaningful_text_for_llm() or ""
                                 )
                             elif hasattr(dom_node, "get_all_children_text"):
                                 element_data_from_index["textContent"] = (
-                                    dom_node.get_all_children_text()
+                                    dom_node.get_all_children_text() or ""
                                 )
 
                             # Get confirmed coordinates from bounding box
@@ -1519,14 +1521,14 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                 # Extract element attributes
                                 element_data_from_index = _extract_dom_node_attributes(dom_node)
 
-                                # Get text content
+                                # Get text content ("" when text-less, never None)
                                 if hasattr(dom_node, "get_meaningful_text_for_llm"):
                                     element_data_from_index["textContent"] = (
-                                        dom_node.get_meaningful_text_for_llm()
+                                        dom_node.get_meaningful_text_for_llm() or ""
                                     )
                                 elif hasattr(dom_node, "get_all_children_text"):
                                     element_data_from_index["textContent"] = (
-                                        dom_node.get_all_children_text()
+                                        dom_node.get_all_children_text() or ""
                                     )
 
                                 # Get confirmed coordinates from bounding box
@@ -1642,13 +1644,14 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
 
                                     # Update element_data_from_index with the correct element
                                     element_data_from_index = _extract_dom_node_attributes(dom_node)
+                                    # "" when text-less, never None (sliced downstream)
                                     if hasattr(dom_node, "get_meaningful_text_for_llm"):
                                         element_data_from_index["textContent"] = (
-                                            dom_node.get_meaningful_text_for_llm()
+                                            dom_node.get_meaningful_text_for_llm() or ""
                                         )
                                     elif hasattr(dom_node, "get_all_children_text"):
                                         element_data_from_index["textContent"] = (
-                                            dom_node.get_all_children_text()
+                                            dom_node.get_all_children_text() or ""
                                         )
 
                                     logger.info(
@@ -1727,9 +1730,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                 f"— keeping the validated locator {_prev_locator} "
                                 f"(signal: repeat-of-completed-element-blocked)"
                             )
-                            _blocked_reason = (
-                                "The interaction for this element already completed."
-                            )
+                            _blocked_reason = "The interaction for this element already completed."
                         else:
                             logger.info(
                                 f"   ⛔ Re-query for {params.element_id} returned a "

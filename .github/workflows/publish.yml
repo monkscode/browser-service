@@ -17,6 +17,19 @@ on:
         required: true
         type: string
 
+# One publish at a time, and never cancel one in flight. resolve_version.py
+# derives the next version by reading the latest release off PyPI and bumping
+# it, so two runs that overlap read the SAME base and compute the SAME version
+# — the second then dies on PyPI's duplicate-file rejection, after the tests
+# and build have already run. Serialising removes that race.
+#
+# cancel-in-progress is deliberately false, unlike ci.yml: cancelling mid-run
+# can kill a job between the PyPI upload and the end of the workflow, which
+# would leave the release published but the run recorded as cancelled.
+concurrency:
+  group: publish-pypi
+  cancel-in-progress: false
+
 jobs:
   extract-tag:  
     runs-on: ubuntu-latest

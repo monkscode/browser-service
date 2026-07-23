@@ -76,6 +76,22 @@ class TestExtractElementJson:
         assert result is not None
         assert "xpath=" in result["locator"]
 
+    def test_no_opening_brace_before_element_id(self):
+        """A match with no '{' before it cannot be a JSON object → None."""
+        text = 'noise "element_id": "elem_1", "found": true — no object here'
+        assert extract_json_for_element(text, "elem_1") is None
+
+    def test_unbalanced_braces_return_none(self):
+        """An opening brace with no matching close yields None, not a partial parse."""
+        text = '{"element_id": "elem_1", "element_info": {"tagName": "input"'
+        assert extract_json_for_element(text, "elem_1") is None
+
+    def test_balanced_but_invalid_json_returns_none(self):
+        """A balanced {...} that still won't parse (even after the escape-fix retry)
+        yields None rather than raising."""
+        text = '{"element_id": "elem_1", "x": }'  # matched braces, invalid value
+        assert extract_json_for_element(text, "elem_1") is None
+
 
 class TestExtractWorkflowResult:
     """Tests for extracting workflow result JSON."""

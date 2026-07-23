@@ -101,6 +101,20 @@ class TestBuildWorkflowPrompt:
         )
         assert "search input" in prompt
 
+    def test_long_query_and_description_are_truncated(self):
+        """Over-long caller inputs are capped so the prompt stays bounded."""
+        prompt = build_workflow_prompt(
+            url="https://example.com",
+            user_query="q" * 600,
+            elements=[{"id": "elem_1", "description": "d" * 300, "action": "get_text"}],
+        )
+        # query capped at 500 + ellipsis; full 600 never appears
+        assert "q" * 500 + "..." in prompt
+        assert "q" * 600 not in prompt
+        # description capped at 200 + ellipsis
+        assert "d" * 200 + "..." in prompt
+        assert "d" * 300 not in prompt
+
     def test_empty_elements_raises(self):
         """Empty elements list raises ValueError — nothing to process."""
         with pytest.raises((ValueError, Exception)):

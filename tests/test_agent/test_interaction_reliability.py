@@ -178,6 +178,21 @@ class TestTomSelectWrapperEvent:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _timeout_closing_coro(coro, *args, **kwargs):
+    """Stand-in for asyncio.wait_for that times out without orphaning its argument.
+
+    The real wait_for awaits the coroutine it is handed, which is built at the
+    call site: `wait_for(browser_session.get_element_by_index(i), timeout=10)`.
+    A bare `side_effect=asyncio.TimeoutError` raises without ever awaiting that
+    coroutine, so it is left unawaited and surfaces — whenever the garbage
+    collector next runs — as a "coroutine was never awaited" RuntimeWarning
+    attributed to some unrelated test. Closing it reproduces the timeout exactly
+    and keeps the warning out of the suite.
+    """
+    coro.close()
+    raise asyncio.TimeoutError
+
+
 class TestCdpStallFallthrough:
     """A stalled get_element_by_index must not hang _do_interaction — Playwright handles it."""
 
@@ -203,7 +218,7 @@ class TestCdpStallFallthrough:
 
         with patch(
             "browser_service.agent.registration.asyncio.wait_for",
-            side_effect=asyncio.TimeoutError,
+            side_effect=_timeout_closing_coro,
         ):
             note, status, action, value = await _do_interaction(
                 browser_session=mock_bs,

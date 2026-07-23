@@ -9,6 +9,7 @@ Purpose: registration.py contains pure helper functions that extract DOM node
 
 Tests:
   _extract_dom_node_attributes: full attrs, missing, no attributes attr
+  _dom_node_text: preferred accessor / fallback / None-defaulting / neither present
   _detect_iframe_context: inside/outside/by-name/ordinal/empty
   _extract_cdp_host_port: standard / no devtools
   _get_cdp_url_from_session: direct / client / search / None / no shared-state side-effects
@@ -161,6 +162,70 @@ class TestExtractDomNodeAttributes:
         node.parent_node = parent
         result = self._get_fn()(node)
         assert result["parentClassName"] == ""
+
+
+class TestDomNodeText:
+    """Tests for _dom_node_text.
+
+    browser-use returns None from both text accessors for a text-less node
+    (icon button, image). Three call sites store the result as textContent and
+    a downstream log line slices it, so None crashes the extraction. The
+    contract this pins is narrow and total: the return is ALWAYS a str.
+    """
+
+    def _get_fn(self):
+        from browser_service.agent.registration import _dom_node_text
+
+        return _dom_node_text
+
+    def test_meaningful_text_returned(self):
+        node = MagicMock(spec=["get_meaningful_text_for_llm"])
+        node.get_meaningful_text_for_llm.return_value = "Sign in"
+        assert self._get_fn()(node) == "Sign in"
+
+    def test_meaningful_text_none_becomes_empty_string(self):
+        """The None-crash this helper exists to prevent."""
+        node = MagicMock(spec=["get_meaningful_text_for_llm"])
+        node.get_meaningful_text_for_llm.return_value = None
+        assert self._get_fn()(node) == ""
+
+    def test_falls_back_to_children_text(self):
+        node = MagicMock(spec=["get_all_children_text"])
+        node.get_all_children_text.return_value = "Add to cart"
+        assert self._get_fn()(node) == "Add to cart"
+
+    def test_children_text_none_becomes_empty_string(self):
+        node = MagicMock(spec=["get_all_children_text"])
+        node.get_all_children_text.return_value = None
+        assert self._get_fn()(node) == ""
+
+    def test_meaningful_text_wins_when_both_present(self):
+        """Mirrors the if/elif the three call sites used: the fallback is only
+        consulted when the preferred accessor is absent, NOT when it is empty."""
+        node = MagicMock(spec=["get_meaningful_text_for_llm", "get_all_children_text"])
+        node.get_meaningful_text_for_llm.return_value = ""
+        node.get_all_children_text.return_value = "children text"
+        assert self._get_fn()(node) == ""
+        node.get_all_children_text.assert_not_called()
+
+    def test_neither_accessor_returns_empty_string(self):
+        """A node exposing neither accessor must still yield a str, not None."""
+        assert self._get_fn()(MagicMock(spec=[])) == ""
+
+    @pytest.mark.parametrize(
+        "spec, value",
+        [
+            (["get_meaningful_text_for_llm"], None),
+            (["get_all_children_text"], None),
+            ([], None),
+        ],
+    )
+    def test_return_is_always_str(self, spec, value):
+        """The one invariant every call site depends on."""
+        node = MagicMock(spec=spec)
+        for name in spec:
+            getattr(node, name).return_value = value
+        assert isinstance(self._get_fn()(node), str)
 
 
 class TestDetectIframeContext:

@@ -120,6 +120,28 @@ def _extract_dom_node_attributes(dom_node) -> dict:
     }
 
 
+def _dom_node_text(dom_node) -> str:
+    """Text content for a DOM node, "" when the node is text-less.
+
+    Both browser-use accessors return None for a node carrying no text (an icon
+    button, an image). Every caller stores this as ``textContent``, which a
+    downstream log line slices — so the default belongs here, in one place,
+    rather than being re-derived at each call site where a miss reintroduces the
+    crash.
+
+    The preferred accessor wins whenever it EXISTS, mirroring the if/elif this
+    replaced: an empty meaningful text is an answer, not a reason to fall back.
+
+    Returns:
+        The node's text, always a str — never None.
+    """
+    if hasattr(dom_node, "get_meaningful_text_for_llm"):
+        return dom_node.get_meaningful_text_for_llm() or ""
+    if hasattr(dom_node, "get_all_children_text"):
+        return dom_node.get_all_children_text() or ""
+    return ""
+
+
 def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
     """
     Detect if element coordinates are inside an iframe's bounding box.
@@ -1392,17 +1414,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             # Extract element attributes for locator generation
                             element_data_from_index = _extract_dom_node_attributes(dom_node)
 
-                            # Get text content from the element. Default to ""
-                            # so a text-less node (icon button, image) never
-                            # stores None — a downstream log line slices this.
-                            if hasattr(dom_node, "get_meaningful_text_for_llm"):
-                                element_data_from_index["textContent"] = (
-                                    dom_node.get_meaningful_text_for_llm() or ""
-                                )
-                            elif hasattr(dom_node, "get_all_children_text"):
-                                element_data_from_index["textContent"] = (
-                                    dom_node.get_all_children_text() or ""
-                                )
+                            element_data_from_index["textContent"] = _dom_node_text(dom_node)
 
                             # Get confirmed coordinates from bounding box
                             if (
@@ -1521,15 +1533,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                 # Extract element attributes
                                 element_data_from_index = _extract_dom_node_attributes(dom_node)
 
-                                # Get text content ("" when text-less, never None)
-                                if hasattr(dom_node, "get_meaningful_text_for_llm"):
-                                    element_data_from_index["textContent"] = (
-                                        dom_node.get_meaningful_text_for_llm() or ""
-                                    )
-                                elif hasattr(dom_node, "get_all_children_text"):
-                                    element_data_from_index["textContent"] = (
-                                        dom_node.get_all_children_text() or ""
-                                    )
+                                element_data_from_index["textContent"] = _dom_node_text(dom_node)
 
                                 # Get confirmed coordinates from bounding box
                                 if (
@@ -1644,15 +1648,9 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
 
                                     # Update element_data_from_index with the correct element
                                     element_data_from_index = _extract_dom_node_attributes(dom_node)
-                                    # "" when text-less, never None (sliced downstream)
-                                    if hasattr(dom_node, "get_meaningful_text_for_llm"):
-                                        element_data_from_index["textContent"] = (
-                                            dom_node.get_meaningful_text_for_llm() or ""
-                                        )
-                                    elif hasattr(dom_node, "get_all_children_text"):
-                                        element_data_from_index["textContent"] = (
-                                            dom_node.get_all_children_text() or ""
-                                        )
+                                    element_data_from_index["textContent"] = _dom_node_text(
+                                        dom_node
+                                    )
 
                                     logger.info(
                                         f"   📝 Element id: {element_data_from_index.get('id', 'N/A')}"

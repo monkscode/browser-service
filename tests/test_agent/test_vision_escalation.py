@@ -11,6 +11,10 @@ Purpose: With use_vision='auto' the agent runs vision-off; browser-use 0.12.6
            - failure messages tell the model to re-examine the attached screenshot
            - the terminal dead-browser path does NOT escalate (run is over)
            - the success path metadata (the result dict) is not polluted
+           - BOTH failure ActionResults also carry the engine's failure payload,
+             which is how workflow.py learns why a locator is missing. metadata
+             is observability-only in browser-use (ActionResult.metadata is read
+             for include_screenshot and nothing else), so this costs no tokens.
 
 The registered handler is exercised through the real browser-use Tools registry
 (register_custom_actions on a fake agent, then registry.execute_action) with the
@@ -139,6 +143,46 @@ class TestEscalationOnValidationFailure:
     async def test_failure_with_index_message_mentions_screenshot(self):
         result = await _invoke(ENGINE_FAILURE, element_index=42)
         assert "screenshot" in result.error.lower()
+
+
+ENGINE_FAILURE_DETAILED = {
+    "element_id": "elem_1",
+    "description": "submit button",
+    "found": False,
+    "error": "Semantic mismatch: expected 'Submit' but none of the 3 unique locators matched",
+    "error_type": "SemanticMismatch",
+    "semantic_match": False,
+    "candidates_found": 3,
+}
+
+
+class TestFailurePayloadIsPublished:
+    """The engine's reason must reach metadata, not just the agent-facing prose.
+
+    workflow.py drops rejected payloads out of its results list, so metadata is
+    the only channel that can tell it why an element has no locator. Without
+    this the reason exists solely in the log.
+    """
+
+    @pytest.mark.asyncio
+    async def test_failure_with_index_carries_engine_payload(self):
+        result = await _invoke(ENGINE_FAILURE_DETAILED, element_index=42)
+
+        assert result.metadata["element_id"] == "elem_1"
+        assert result.metadata["found"] is False
+        assert result.metadata["error"] == ENGINE_FAILURE_DETAILED["error"]
+        assert result.metadata["error_type"] == "SemanticMismatch"
+        # The escalation flag rides alongside it, not instead of it.
+        assert result.metadata["include_screenshot"] is True
+
+    @pytest.mark.asyncio
+    async def test_retry_without_index_carries_engine_payload(self):
+        result = await _invoke(ENGINE_FAILURE_DETAILED, element_index=None)
+
+        assert result.metadata["element_id"] == "elem_1"
+        assert result.metadata["found"] is False
+        assert result.metadata["error"] == ENGINE_FAILURE_DETAILED["error"]
+        assert result.metadata["include_screenshot"] is True
 
 
 class TestNoEscalationOnOtherPaths:

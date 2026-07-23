@@ -37,7 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It was measured against the elements the agent reported rather than the
   elements that were requested, so a run that found 1 of 2 reported success.
 - Elements the agent never reported, or reported as not found, are now
-  returned as `found: false` results and counted in `summary.failed`.
+  returned as `found: false` results and counted in `summary.failed`,
+  carrying the locator engine's own reason (`error`, `error_type`,
+  `semantic_match`, …) instead of a generic message.
+- A payload claiming `found` with no `best_locator` is now rejected by every
+  extraction path. The history-scan fallback accepted it, so it could be
+  counted as a successful element whose locator was `None`.
 - CDP URL lookup no longer aborts when a session property raises: the reads
   were guarded by `hasattr()`, which only swallows `AttributeError`, so a
   reset session's `cdp_client` skipped the remaining fallback strategies.

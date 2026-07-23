@@ -1888,10 +1888,17 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         # NEXT LLM call (message_manager/service.py:444-464) —
                         # vision-off runs get sight at the moment of failure,
                         # same run, same page state.
+                        #
+                        # The engine's failure payload rides along: workflow.py
+                        # drops rejected payloads out of its results list, so
+                        # this is its only channel for WHY an element has no
+                        # locator. metadata is observability-only in browser-use
+                        # (read for include_screenshot, never sent to the model),
+                        # so carrying it costs nothing.
                         action_result = ActionResult(
                             extracted_content=retry_msg,
                             error=retry_msg,
-                            metadata={"include_screenshot": True},
+                            metadata={**result, "include_screenshot": True},
                         )
                     else:
                         # element_index WAS provided but still failed
@@ -1903,7 +1910,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                 f"the element in it and try different coordinates or description."
                             ),
                             is_done=False,  # Let agent try again with different approach
-                            metadata={"include_screenshot": True},
+                            metadata={**result, "include_screenshot": True},
                         )
 
                 return action_result

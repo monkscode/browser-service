@@ -24,6 +24,9 @@ Tests:
   - Locator results are extracted from custom-action metadata
   - An element the agent never reports is backfilled as failed, success False
   - A found=False payload is counted as a failure rather than dropped
+  - The engine's own failure reason survives into the emitted result
+  - A found payload with no locator is a failure on every extraction path
+  - A success wins over a failure for the same element, in either order
   - A locator for an unrequested id does not stand in for a missing one
   - Re-ranking promotes the stable id locator over a volatile xpath
   - max_steps scales with element count
@@ -413,6 +416,135 @@ class TestResultExtraction:
         dropped = [r for r in results["results"] if r["element_id"] == "elem_2"]
         assert dropped and dropped[0]["found"] is False
 
+    def test_not_found_payload_reason_is_preserved(self, workflow_harness):
+        """The engine's own diagnosis survives into the emitted result.
+
+        The rejected payload is the only place the reason exists — the backfill
+        would otherwise report a generic 'no result' for an element the agent
+        diagnosed precisely.
+        """
+        rejected = {
+            "element_id": "elem_2",
+            "found": False,
+            "error": "Semantic mismatch: expected 'Submit'",
+            "error_type": "SemanticMismatch",
+            "semantic_match": False,
+        }
+        arm(
+            workflow_harness,
+            [
+                FakeStep(
+                    [
+                        FakeActionResult(locator_metadata("elem_1", "id=search")),
+                        FakeActionResult(rejected),
+                    ]
+                )
+            ],
+        )
+
+        run_workflow(
+            workflow_harness,
+            elements=[
+                {"id": "elem_1", "description": "search box"},
+                {"id": "elem_2", "description": "submit button"},
+            ],
+        )
+
+        results = workflow_harness.updates[-1][1]["results"]
+        entry = next(r for r in results["results"] if r["element_id"] == "elem_2")
+        assert entry["found"] is False
+        assert entry["error"] == "Semantic mismatch: expected 'Submit'"
+        assert entry["error_type"] == "SemanticMismatch"
+        assert entry["semantic_match"] is False
+        # The request's own description stands; the payload cannot rewrite it.
+        assert entry["description"] == "submit button"
+
+    def test_unreported_element_gets_the_generic_reason(self, workflow_harness):
+        """No payload means no diagnosis to preserve — say exactly that."""
+        arm(
+            workflow_harness,
+            [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=search"))])],
+        )
+
+        run_workflow(
+            workflow_harness,
+            elements=[
+                {"id": "elem_1", "description": "search box"},
+                {"id": "elem_2", "description": "submit button"},
+            ],
+        )
+
+        results = workflow_harness.updates[-1][1]["results"]
+        entry = next(r for r in results["results"] if r["element_id"] == "elem_2")
+        assert entry["error"] == "No locator reported by the agent"
+
+    def test_found_payload_without_locator_is_a_failure(self, workflow_harness):
+        """found=True with no best_locator is rejected — and must not count as found.
+
+        The extractor's gate requires both, so such a payload is dropped. It has
+        to come back as failed, never as a found entry that carries no locator.
+        """
+        arm(
+            workflow_harness,
+            [
+                FakeStep(
+                    [
+                        FakeActionResult(
+                            {"element_id": "elem_1", "found": True, "error": "locator went missing"}
+                        )
+                    ]
+                )
+            ],
+        )
+
+        run_workflow(workflow_harness)
+
+        results = workflow_harness.updates[-1][1]["results"]
+        assert results["success"] is False
+        assert results["summary"]["successful"] == 0
+        assert results["results"][0]["found"] is False
+        assert results["results"][0]["error"] == "locator went missing"
+
+    def test_later_success_wins_over_an_earlier_failure(self, workflow_harness):
+        """A retry that succeeds must not be overwritten by the failure before it."""
+        arm(
+            workflow_harness,
+            [
+                FakeStep(
+                    [FakeActionResult({"element_id": "elem_1", "found": False, "error": "no dice"})]
+                ),
+                FakeStep([FakeActionResult(locator_metadata("elem_1", "id=search"))]),
+            ],
+        )
+
+        run_workflow(workflow_harness)
+
+        results = workflow_harness.updates[-1][1]["results"]
+        assert results["success"] is True
+        assert len(results["results"]) == 1
+        assert results["results"][0]["found"] is True
+        assert results["results"][0]["best_locator"] == "id=search"
+        assert "error" not in results["results"][0]
+
+    def test_failure_after_a_success_does_not_undo_it(self, workflow_harness):
+        """The reverse order: a late failure must not displace a locator already found."""
+        arm(
+            workflow_harness,
+            [
+                FakeStep([FakeActionResult(locator_metadata("elem_1", "id=search"))]),
+                FakeStep(
+                    [FakeActionResult({"element_id": "elem_1", "found": False, "error": "no dice"})]
+                ),
+            ],
+        )
+
+        run_workflow(workflow_harness)
+
+        results = workflow_harness.updates[-1][1]["results"]
+        assert results["success"] is True
+        assert len(results["results"]) == 1
+        assert results["results"][0]["best_locator"] == "id=search"
+
     def test_found_false_payload_is_counted_as_failed(self, workflow_harness):
         """An explicit not-found report becomes a failed result, not a dropped one.
 
@@ -477,12 +609,22 @@ class TestResultExtraction:
         assert results["success"] is False
 
     def test_no_results_at_all_is_a_failure(self, workflow_harness):
-        """Zero extracted results is the one metadata-driven route to success False."""
+        """Zero extracted results: every requested element comes back as failed."""
         arm(workflow_harness, [FakeStep([FakeActionResult(None)])])
 
-        run_workflow(workflow_harness)
+        run_workflow(
+            workflow_harness,
+            elements=[
+                {"id": "elem_1", "description": "search box"},
+                {"id": "elem_2", "description": "submit button"},
+            ],
+        )
 
-        assert workflow_harness.updates[-1][1]["results"]["success"] is False
+        results = workflow_harness.updates[-1][1]["results"]
+        assert results["success"] is False
+        assert [r["element_id"] for r in results["results"]] == ["elem_1", "elem_2"]
+        assert all(r["found"] is False for r in results["results"])
+        assert results["summary"]["failed"] == 2
 
     def test_ignores_action_results_without_metadata(self, workflow_harness):
         """Native browser-use actions carry no metadata and must not become results."""

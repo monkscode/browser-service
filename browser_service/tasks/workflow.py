@@ -741,6 +741,10 @@ def process_workflow_task(
             # When custom actions are enabled, results are stored directly in ActionResult.metadata
             # This is the FASTEST path - no coordinate parsing, no Playwright extraction needed
             results_list = []
+            # element_id -> the payload that was rejected below. Kept out of
+            # results_list so a later successful call for the same element still
+            # wins; read by the backfill to report WHY a locator is missing.
+            rejected_payloads: dict = {}
 
             if custom_actions_enabled and hasattr(agent_result, "history") and agent_result.history:
                 logger.info("🎯 Extracting results from custom action metadata (primary path)...")
@@ -786,6 +790,11 @@ def process_workflow_task(
                                             )
                                             metadata["metrics"] = {"custom_action_used": True}
                                             results_list[existing_idx] = metadata
+                                    elif elem_id:
+                                        # Not found, or found without a locator.
+                                        # Either way it carries the engine's
+                                        # reason — the only copy of it.
+                                        rejected_payloads[elem_id] = metadata
 
                 if results_list:
                     logger.info(
@@ -956,7 +965,14 @@ def process_workflow_task(
                     )
                     for direct_result in direct_results:
                         elem_id = direct_result.get("element_id")
-                        if elem_id and direct_result.get("found"):
+                        # Same gate as the primary path: a found claim without a
+                        # locator is not a result. Accepting one here would let
+                        # it be counted as successful with best_locator None.
+                        if (
+                            elem_id
+                            and direct_result.get("found")
+                            and direct_result.get("best_locator")
+                        ):
                             existing_idx = next(
                                 (
                                     i
@@ -979,6 +995,8 @@ def process_workflow_task(
                                 logger.info(
                                     f"   ✅ Direct access: {elem_id} (best_locator: {direct_result.get('best_locator')})"
                                 )
+                        elif elem_id:
+                            rejected_payloads[elem_id] = direct_result
 
                     # If we got all elements via direct access, we're completely done!
                     if len(results_list) == len(elements):
@@ -1469,7 +1487,12 @@ def process_workflow_task(
                         # Element found in result string - extract JSON data
                         try:
                             elem_data = extract_json_for_element(full_result_str, elem_id)
-                            if elem_data and elem_data.get("found"):
+                            # Same gate as the other two paths.
+                            if (
+                                elem_data
+                                and elem_data.get("found")
+                                and elem_data.get("best_locator")
+                            ):
                                 existing_idx = next(
                                     (
                                         i
@@ -1482,6 +1505,8 @@ def process_workflow_task(
                                     # First occurrence, add it
                                     results_list.append(elem_data)
                                     logger.info(f"   ✅ Extracted {elem_id} from result string")
+                            elif elem_data:
+                                rejected_payloads[elem_id] = elem_data
                         except Exception as e:
                             logger.exception(f"   ❌ Exception extracting {elem_id}: {e}")
                 else:
@@ -1489,31 +1514,11 @@ def process_workflow_task(
                         "   ⏭️  String-based extraction skipped (all elements already found)"
                     )
 
-            # If still no results, create default "not found" entries
+            # Elements still missing an entry — none extracted, or only some — are
+            # backfilled once, below, after the re-rank and validation passes (both
+            # skip not-found entries, so there is nothing for them to do here).
             if not results_list:
                 logger.error("Could not extract any element results from workflow")
-                results_list = [
-                    {
-                        "element_id": elem.get("id"),
-                        "description": elem.get("description"),
-                        "found": False,
-                        "error": "Could not extract from workflow result",
-                        # Add validation data for not found elements
-                        "validated": False,
-                        "count": 0,
-                        "unique": False,
-                        "valid": False,
-                        "validation_method": "playwright",
-                        # Add metrics data for not found elements
-                        "metrics": {
-                            "execution_time": 0,
-                            "estimated_llm_calls": 0,
-                            "estimated_cost": 0,
-                            "custom_action_used": custom_actions_enabled,
-                        },
-                    }
-                    for elem in elements
-                ]
 
             # ========================================
             # PHASE 2: POST-PROCESS LOCATOR RE-RANKING
@@ -1910,26 +1915,39 @@ def process_workflow_task(
                 elem_id = elem.get("id")
                 if elem_id in reported_ids:
                     continue
-                logger.warning(f"   ❌ {elem_id}: no result reported by the agent")
-                results_list.append(
-                    {
-                        "element_id": elem_id,
-                        "description": elem.get("description"),
-                        "found": False,
-                        "error": "No locator reported by the agent",
-                        "validated": False,
-                        "count": 0,
-                        "unique": False,
-                        "valid": False,
-                        "validation_method": "playwright",
-                        "metrics": {
-                            "execution_time": 0,
-                            "estimated_llm_calls": 0,
-                            "estimated_cost": 0,
-                            "custom_action_used": custom_actions_enabled,
-                        },
-                    }
-                )
+                record = {
+                    "element_id": elem_id,
+                    "description": elem.get("description"),
+                    "found": False,
+                    "error": "No locator reported by the agent",
+                    "validated": False,
+                    "count": 0,
+                    "unique": False,
+                    "valid": False,
+                    "validation_method": "playwright",
+                    "metrics": {
+                        "execution_time": 0,
+                        "estimated_llm_calls": 0,
+                        "estimated_cost": 0,
+                        "custom_action_used": custom_actions_enabled,
+                    },
+                }
+                rejected = rejected_payloads.get(elem_id)
+                if rejected:
+                    # Keep the engine's own diagnosis — error, error_type,
+                    # semantic_match, approach_metrics, whatever it recorded —
+                    # but never its found or identity claims: a payload rejected
+                    # for claiming found without a locator must not re-enter as
+                    # found, and the requested description is the canonical one.
+                    record.update(rejected)
+                    record["element_id"] = elem_id
+                    record["description"] = elem.get("description")
+                    record["found"] = False
+                    # A payload may carry error=None explicitly; .get(default)
+                    # downstream would not replace that, so coalesce here.
+                    record["error"] = record["error"] or "No locator reported by the agent"
+                logger.warning(f"   ❌ {elem_id}: {record['error']}")
+                results_list.append(record)
 
             # Calculate metrics
             successful = sum(1 for r in results_list if r.get("found", False))

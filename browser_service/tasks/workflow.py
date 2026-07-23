@@ -341,11 +341,6 @@ def process_workflow_task(
         connected_browser = None
         playwright_instance = None
         browser_pid = None  # Captured after session.start() for orphan cleanup
-        # Playwright/CDP page access is disabled (removed with the locator pipelines
-        # in 5867f33). The DOM-attrs validation branch below reads `page`; keep it
-        # bound to None so those `if page:` checks take the "trust browser_use" path
-        # instead of raising NameError.
-        page = None
 
         try:
             # Initialize browser session ONCE
@@ -1196,59 +1191,14 @@ def process_workflow_task(
                                                     }
                                                 )
 
-                                    # VALIDATION: If Playwright page is available, validate locators
-                                    # This confirms uniqueness and that the locator actually works
-                                    if page:
-                                        logger.info(
-                                            f"   🔍 Validating {len(generated_locators)} locators for {elem_id}..."
-                                        )
-                                        for loc in generated_locators:
-                                            # Skip if already validated by agent
-                                            if loc.get("validated") and "count" in loc:
-                                                logger.info(
-                                                    f"      {loc['type']}: {loc['locator']} → Already validated by agent"
-                                                )
-                                                continue
-
-                                            try:
-                                                # Use Playwright to count matches
-                                                count = await page.locator(loc["locator"]).count()
-                                                loc["count"] = count
-                                                loc["unique"] = count == 1
-                                                # ONLY unique locators are valid for testing
-                                                loc["valid"] = count == 1
-                                                # Successfully validated
-                                                loc["validated"] = True
-
-                                                if count == 1:
-                                                    status = "✅ VALID & UNIQUE"
-                                                elif count == 0:
-                                                    status = "❌ NOT FOUND"
-                                                else:
-                                                    status = (
-                                                        f"❌ INVALID - {count} matches (not unique)"
-                                                    )
-
-                                                logger.info(
-                                                    f"      {loc['type']}: {loc['locator']} → {status} (playwright-validated)"
-                                                )
-                                            except Exception as e:
-                                                # Validation attempt failed due to technical error (invalid syntax, etc.)
-                                                logger.warning(
-                                                    f"      ❌ {loc['type']}: {loc['locator']} → Validation error: {e}"
-                                                )
-                                                # Unknown count due to error
-                                                loc["count"] = None
-                                                loc["unique"] = False
-                                                loc["valid"] = False
-                                                # Could not validate due to error
-                                                loc["validated"] = False
-                                                # Store error for debugging
-                                                loc["validation_error"] = str(e)
-                                    else:
-                                        logger.info(
-                                            f"   ⚠️ Page not available, skipping validation for {elem_id} (trusting browser_use)"
-                                        )
+                                    # No Playwright page here to re-validate against:
+                                    # CDP page access went with the locator
+                                    # pipelines (5867f33). The locators arrive
+                                    # already validated by the browser-service
+                                    # engine, which owns that step now.
+                                    logger.info(
+                                        f"   ⚠️ Page not available, skipping validation for {elem_id} (trusting browser_use)"
+                                    )
 
                                 # Select best locator - ONLY use validated, unique, valid locators
                                 # valid=True means count=1 (unique and usable for testing)
@@ -1269,7 +1219,7 @@ def process_workflow_task(
                                         f"   ✅ Selected VALID unique locator: {best_locator}"
                                     )
                                 else:
-                                    # No valid unique locators found - try smart locator finder
+                                    # No valid unique locators found — report why.
                                     best_locator = None
 
                                     # Log why we couldn't find a valid locator
@@ -1304,60 +1254,6 @@ def process_workflow_task(
                                             )
                                     else:
                                         logger.error(f"   ❌ No locators generated for {elem_id}")
-
-                                    # SMART FALLBACK: If we have coordinates and page, try systematic locator finding
-                                    if page and parsed.get("coordinates"):
-                                        coords = parsed.get("coordinates", {})
-                                        if coords.get("x") and coords.get("y"):
-                                            logger.info(
-                                                f"   🎯 Attempting smart locator finder at coordinates ({coords['x']}, {coords['y']})"
-                                            )
-                                            try:
-                                                from browser_service.locators import (
-                                                    find_unique_locator_at_coordinates,
-                                                )
-
-                                                elem_desc = next(
-                                                    (
-                                                        e.get("description")
-                                                        for e in elements
-                                                        if e.get("id") == elem_id
-                                                    ),
-                                                    "Unknown element",
-                                                )
-
-                                                smart_result = (
-                                                    await find_unique_locator_at_coordinates(
-                                                        page=page,
-                                                        x=coords["x"],
-                                                        y=coords["y"],
-                                                        element_id=elem_id,
-                                                        element_description=elem_desc,
-                                                    )
-                                                )
-
-                                                if smart_result.get("found") and smart_result.get(
-                                                    "best_locator"
-                                                ):
-                                                    # Smart finder found a unique locator!
-                                                    best_locator = smart_result["best_locator"]
-                                                    generated_locators = smart_result[
-                                                        "all_locators"
-                                                    ]
-                                                    logger.info(
-                                                        f"   ✅ Smart finder found unique locator: {best_locator}"
-                                                    )
-                                                else:
-                                                    logger.error(
-                                                        "   ❌ Smart finder could not find unique locator"
-                                                    )
-                                            except Exception as e:
-                                                logger.error(
-                                                    f"   ❌ Smart locator finder error: {e}"
-                                                )
-                                                import traceback
-
-                                                logger.debug(traceback.format_exc())
 
                                 # Find element description
                                 elem_desc = next(
@@ -1929,7 +1825,12 @@ def process_workflow_task(
                         "execution_time": 0,
                         "estimated_llm_calls": 0,
                         "estimated_cost": 0,
-                        "custom_action_used": custom_actions_enabled,
+                        # False, not the custom_actions_enabled FLAG:
+                        # record_workflow_metrics and the NL backend's tool both
+                        # tally this key to report how many elements the custom
+                        # action resolved. An element with no result resolved
+                        # nothing, whether or not the action was available.
+                        "custom_action_used": False,
                     },
                 }
                 rejected = rejected_payloads.get(elem_id)

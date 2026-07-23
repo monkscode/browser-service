@@ -495,6 +495,37 @@ class TestResultExtraction:
         assert "approach_metrics" not in results["results"][0]
         assert results["summary"]["element_approach_metrics"] == []
 
+    def test_failed_element_does_not_claim_custom_action_usage(self, workflow_harness):
+        """A backfilled failure must not count as a custom-action success.
+
+        metrics.custom_action_used is not decoration: record_workflow_metrics
+        and the NL backend's tool both tally it to report how many elements the
+        custom-action path resolved. Stamping it from the custom_actions_enabled
+        FLAG rather than from what happened made every failure increment that
+        tally — a 2-element run resolving 1 reported 2 uses. Same class of bug
+        as test_failed_element_contributes_no_approach_metrics, other counter.
+        """
+        arm(
+            workflow_harness,
+            [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=search"))])],
+        )
+
+        run_workflow(
+            workflow_harness,
+            elements=[
+                {"id": "elem_1", "description": "search box"},
+                {"id": "elem_2", "description": "submit button"},
+            ],
+        )
+
+        results = workflow_harness.updates[-1][1]["results"]["results"]
+        by_id = {r["element_id"]: r for r in results}
+        assert by_id["elem_1"]["metrics"]["custom_action_used"] is True
+        assert by_id["elem_2"]["metrics"]["custom_action_used"] is False
+        # The tally both consumers compute must match the elements resolved.
+        tallied = sum(1 for r in results if r.get("metrics", {}).get("custom_action_used"))
+        assert tallied == 1
+
     def test_unreported_element_gets_the_generic_reason(self, workflow_harness):
         """No payload means no diagnosis to preserve — say exactly that."""
         arm(

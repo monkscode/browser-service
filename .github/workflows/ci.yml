@@ -161,12 +161,25 @@ jobs:
         run: |
           set -euo pipefail
           cp coverage-fast.dat mocked-only.dat
-          COVERAGE_FILE=mocked-only.dat coverage report --format=total > mocked-only.txt
+          COVERAGE_FILE=mocked-only.dat coverage report --format=total --fail-under=0 > mocked-only.txt
           coverage combine coverage-fast.dat coverage-fixture.dat
           coverage xml
-          coverage report
-          coverage report --format=total > combined.txt
+          coverage report --fail-under=0
+          coverage report --format=total --fail-under=0 > combined.txt
           echo "mocked-only: $(cat mocked-only.txt)%  combined: $(cat combined.txt)%"
+      - name: Coverage floor
+        # 68, three points under today's 71. Catches a collapse — a lane that
+        # silently stopped running, a large untested module landing — without
+        # redding PRs for ordinary churn.
+        #
+        # Deliberately NOT `[tool.coverage.report] fail_under` in pyproject:
+        # pytest-cov reads that same key, so the fast lane (65% alone, by
+        # design — the fixture lane carries the locator paths) would fail its
+        # own job, and `coverage report` exits 2 mid-script before combined.txt
+        # is written. Verified both: pytest exits 1, coverage report exits 2.
+        # The floor belongs to the combined dataset, so it is asserted here,
+        # after every artifact above has been produced.
+        run: coverage report --fail-under=68
       - name: Upload coverage reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -233,6 +246,18 @@ jobs:
           name: test-reports
           path: reports
         continue-on-error: true
+      - name: Download fast-lane results (fallback)
+        # The coverage job needs test + fixture-tests, so a red test lane skips
+        # it and test-reports is never produced — leaving the report showing
+        # "? run · ? failed" in exactly the run someone needs to read. junit.xml
+        # is uploaded by the test job itself under if: always(), so pull it
+        # straight from there. Same file when both exist (same job, same run),
+        # so the overwrite is a no-op rather than a conflict.
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-fast
+          path: reports
+        continue-on-error: true
       - name: Compose report
         id: compose
         env:
@@ -281,7 +306,11 @@ jobs:
           else
             FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
           fi
-          NCHANGED=$(printf '%s\n' "$FILES" | grep -c . || echo 0)
+          # `|| true`, not `|| echo 0`: grep -c prints its count AND exits 1 on
+          # zero matches, so the fallback would append a second line and make
+          # NCHANGED "0\n0" — which then errors the -gt test below.
+          NCHANGED=$(printf '%s\n' "$FILES" | grep -c . || true)
+          NCHANGED=${NCHANGED:-0}
           FILELIST=$(printf '%s\n' "$FILES" | grep . | head -20 | sed 's/^/- `/;s/$/`/' || echo "")
           [ "$NCHANGED" -gt 20 ] && FILELIST="${FILELIST}"$'\n'"- …and $((NCHANGED-20)) more"
 
@@ -331,3 +360,19 @@ jobs:
             } else {
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
+      - name: Fail if any gate job did not succeed
+        # Last step on purpose: the report and the sticky comment are published
+        # first, so a red run still explains itself. Without this the report job
+        # is green whenever its own steps are, which makes it look like an
+        # aggregate check while gating nothing — pick it as the single required
+        # check in branch protection and every red PR would merge. With it,
+        # "PR report" is the one check worth requiring.
+        if: >-
+          needs.quality.result != 'success' ||
+          needs.test.result != 'success' ||
+          needs.fixture-tests.result != 'success' ||
+          needs.coverage.result != 'success' ||
+          needs.build.result != 'success'
+        run: |
+          echo "::error::One or more CI gate jobs did not succeed — see the summary table."
+          exit 1

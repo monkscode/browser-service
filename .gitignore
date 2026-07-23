@@ -45,6 +45,8 @@ htmlcov/
 nosetests.xml
 coverage.xml
 junit.xml
+cov.json
+coverage-*.dat
 *.cover
 *.py,cover
 .hypothesis/

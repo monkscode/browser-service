@@ -525,17 +525,70 @@ class TestErrorResponsesDoNotLeakInternals:
 class TestLogSanitization:
     """Caller-controlled values must not be able to forge log entries (CWE-117).
 
-    Scope, stated honestly: log forging via task_id is NOT reachable today.
-    Werkzeug strips CR/LF from the path before the view runs (verified: a
-    "aaa\\r\\nWARNING x" path arrives as "aaaWARNING x"), and the value must
-    also match a server-generated UUID key to reach the log line at all.
-    The sanitizer is defence in depth plus the fix for the SonarCloud finding
-    holding Security Rating on New Code below A.
+    Two different reachability stories, and the distinction is the point:
 
-    These are unit tests of the sanitizer itself. An end-to-end test through
-    the Flask client would assert nothing, because werkzeug has already
-    removed the CR/LF by the time the value reaches the route.
+    - task_id is a PATH segment. Werkzeug strips CR/LF before the view runs
+      (verified: "aaa\\r\\nWARNING x" arrives as "aaaWARNING x") and the value
+      must match a server-generated UUID key to reach the log line at all.
+      Forging through it is not reachable; sanitizing it is defence in depth
+      and the fix for the SonarCloud finding.
+    - parent_workflow_id, url and user_query are JSON BODY fields. Nothing
+      strips them — validate_workflow_request does no newline checking — so a
+      newline in the body reached the log record verbatim and forged an entry.
+      That WAS reachable, in one request, and the end-to-end tests below drive
+      it through the Flask client to prove it stays closed.
     """
+
+    FORGED = "abc\r\n2026-01-01 CRITICAL forged entry"
+
+    def _assert_no_record_spans_lines(self, caplog):
+        offenders = [r.getMessage() for r in caplog.records if "\n" in r.getMessage()]
+        assert not offenders, f"log record carries a newline from caller input: {offenders}"
+
+    def test_body_parent_workflow_id_cannot_forge_a_log_entry(self, client, caplog):
+        caplog.set_level(logging.INFO, logger="browser_service.api.routes")
+        client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "d"}],
+                "url": "https://example.com",
+                "user_query": "click",
+                "parent_workflow_id": self.FORGED,
+            },
+        )
+        assert "forged entry" in caplog.text, "the value must still be logged, just flattened"
+        self._assert_no_record_spans_lines(caplog)
+
+    def test_body_url_and_query_cannot_forge_a_log_entry(self, client, caplog):
+        caplog.set_level(logging.INFO, logger="browser_service.api.routes")
+        client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "d"}],
+                "url": f"https://example.com/{self.FORGED}",
+                "user_query": self.FORGED,
+            },
+        )
+        self._assert_no_record_spans_lines(caplog)
+
+    def test_long_url_is_not_truncated_to_the_default_cap(self, client, caplog):
+        """Sanitizing must not cost debuggability.
+
+        URLs routinely run past the 80-char default (ASTPP query strings), and
+        the submission log line is the one place the target URL is recorded.
+        Flattening is the requirement; truncating to 80 is not.
+        """
+        caplog.set_level(logging.INFO, logger="browser_service.api.routes")
+        long_url = "https://example.com/" + "a" * 150
+        client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "d"}],
+                "url": long_url,
+                "user_query": "click",
+            },
+        )
+        assert long_url in caplog.text
 
     def test_crlf_in_logged_value_is_neutralised(self):
         from browser_service.api.routes import _sanitize_for_log

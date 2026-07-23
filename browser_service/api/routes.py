@@ -50,10 +50,20 @@ def _sanitize_for_log(value: object, limit: int = 80) -> str:
     """Neutralise a caller-controlled value before it reaches a log line.
 
     A value carrying CR/LF lets its sender append fabricated entries to the
-    log (CWE-117). Path segments like task_id are caller-controlled even when
-    a lookup upstream means only server-generated UUIDs get far enough to be
-    logged — this keeps that a property of the log call, not of the distance
-    to the nearest validation.
+    log (CWE-117). Two classes of value reach log lines here, and both go
+    through this:
+
+    - Path segments (task_id): werkzeug already strips CR/LF and the value
+      must match a server-generated UUID to be logged at all, so this is
+      defence in depth — a property of the log call rather than of the
+      distance to the nearest validation.
+    - JSON body fields (parent_workflow_id, url, user_query): nothing strips
+      these. A newline in the body reached the log record verbatim, which is
+      the reachable case.
+
+    `limit` caps identifier-shaped values at a sane width. Callers logging a
+    value whose tail carries meaning — a URL with a query string — pass a
+    larger one: flattening is the security property, truncation is not.
     """
     return _LOG_UNSAFE_RE.sub(" ", str(value))[:limit]
 
@@ -207,7 +217,8 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             # Log parent_workflow_id if provided
             if parent_workflow_id:
                 logger.info(
-                    f"📎 Parent workflow ID provided: {parent_workflow_id} (will skip duplicate metrics)"
+                    f"📎 Parent workflow ID provided: {_sanitize_for_log(parent_workflow_id)} "
+                    f"(will skip duplicate metrics)"
                 )
 
             # All tasks are processed as unified workflows
@@ -217,12 +228,18 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             task_id = str(uuid.uuid4())
 
             # Log task submission
+            # task_id is a freshly minted uuid4, not caller input. url and
+            # user_query are body fields: flattened, but given limits wide
+            # enough that the log keeps saying what it used to say — a query
+            # string is exactly the part of a URL worth reading in a failure.
             logger.info(
-                f"🚀 Workflow task {task_id} submitted with {len(elements)} elements for URL: {url}"
+                f"🚀 Workflow task {task_id} submitted with {len(elements)} elements "
+                f"for URL: {_sanitize_for_log(url, limit=500)}"
             )
             logger.info("   Processing mode: Unified workflow (single Agent session)")
             logger.info(
-                f"📝 User query: {user_query[:100]}{'...' if len(user_query) > 100 else ''}"
+                f"📝 User query: {_sanitize_for_log(user_query, limit=100)}"
+                f"{'...' if len(user_query) > 100 else ''}"
             )
 
             # Atomically check capacity and submit — prevents TOCTOU race where

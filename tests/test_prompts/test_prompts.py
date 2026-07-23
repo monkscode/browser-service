@@ -150,19 +150,21 @@ class TestBuildWorkflowPrompt:
         assert len(prompt) > 100
 
     def test_client_hints_included(self):
-        """Client hints (from NL backend) are included when provided."""
+        """Client hints (from NL backend) are included when provided.
+
+        client_hints is a LIST of hints, as the caller passes it
+        (client_config.system_prompt_additions). Handing it a bare string
+        makes the bullet join iterate characters, so each hint has to survive
+        intact as its own line for this to mean anything.
+        """
         prompt = build_workflow_prompt(
             url="https://example.com",
             user_query="click",
             elements=self._make_elements(),
-            client_hints="Handle cookie popup first",
+            client_hints=["Handle cookie popup first", "Wait for the spinner"],
         )
-        # Hints should appear somewhere in the prompt
-        if "cookie popup" in prompt.lower() or "Handle cookie" in prompt:
-            assert True
-        else:
-            # Some implementations may not support hints yet — test should be flexible
-            assert len(prompt) > 100
+        assert "• Handle cookie popup first" in prompt
+        assert "• Wait for the spinner" in prompt
 
     def test_no_client_hints(self):
         """Prompt works without client hints."""

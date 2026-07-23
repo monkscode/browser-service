@@ -1840,7 +1840,15 @@ def process_workflow_task(
                     # or identity claims: a payload rejected for claiming found
                     # without a locator must not re-enter as found, and the
                     # requested description is the canonical one.
+                    #
+                    # metrics is the same exception as approach_metrics below:
+                    # this element resolved nothing, so custom_action_used must
+                    # stay False. A rejected payload carrying its own metrics
+                    # would otherwise ride the overlay in and re-inflate the
+                    # custom-action tally record_workflow_metrics computes.
+                    own_metrics = record["metrics"]
                     record.update(rejected)
+                    record["metrics"] = own_metrics
                     record["element_id"] = elem_id
                     record["description"] = elem.get("description")
                     record["found"] = False

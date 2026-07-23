@@ -39,6 +39,7 @@ Tests:
   - Metrics are recorded for a root workflow and skipped for a child
 """
 
+import logging
 import sys
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -523,6 +524,48 @@ class TestResultExtraction:
         assert by_id["elem_1"]["metrics"]["custom_action_used"] is True
         assert by_id["elem_2"]["metrics"]["custom_action_used"] is False
         # The tally both consumers compute must match the elements resolved.
+        tallied = sum(1 for r in results if r.get("metrics", {}).get("custom_action_used"))
+        assert tallied == 1
+
+    def test_rejected_payload_metrics_do_not_win_over_the_backfill(self, workflow_harness):
+        """A rejected payload's own `metrics` must not overwrite the backfill's.
+
+        The backfill stamps metrics.custom_action_used=False for a failed
+        element — it resolved nothing. `record.update(rejected)` overlays the
+        engine's diagnosis, but a stray metrics dict on the payload must not
+        ride along and re-inflate the custom-action tally. Same counter as
+        test_failed_element_does_not_claim_custom_action_usage, other door.
+        """
+        rejected = {
+            "element_id": "elem_2",
+            "found": False,
+            "error": "Semantic mismatch",
+            "metrics": {"custom_action_used": True},
+        }
+        arm(
+            workflow_harness,
+            [
+                FakeStep(
+                    [
+                        FakeActionResult(locator_metadata("elem_1", "id=search")),
+                        FakeActionResult(rejected),
+                    ]
+                )
+            ],
+        )
+
+        run_workflow(
+            workflow_harness,
+            elements=[
+                {"id": "elem_1", "description": "search box"},
+                {"id": "elem_2", "description": "submit button"},
+            ],
+        )
+
+        results = workflow_harness.updates[-1][1]["results"]["results"]
+        by_id = {r["element_id"]: r for r in results}
+        assert by_id["elem_2"]["found"] is False
+        assert by_id["elem_2"]["metrics"]["custom_action_used"] is False
         tallied = sum(1 for r in results if r.get("metrics", {}).get("custom_action_used"))
         assert tallied == 1
 
@@ -1031,3 +1074,72 @@ class TestMetricsRecording:
             run_workflow(workflow_harness)
 
         assert workflow_harness.statuses() == ["running", "completed"]
+
+
+class TestActionUsageAccounting:
+    """The run counts custom-action vs execute_js usage for observability."""
+
+    def test_retry_replaces_earlier_custom_action_result(self, workflow_harness):
+        """A second custom-action payload for the same element wins over the first."""
+        arm(
+            workflow_harness,
+            [
+                FakeStep(
+                    [
+                        FakeActionResult(locator_metadata("elem_1", "id=first")),
+                        FakeActionResult(locator_metadata("elem_1", "id=second")),
+                    ]
+                )
+            ],
+        )
+        run_workflow(workflow_harness)
+
+        results = workflow_harness.updates[-1][1]["results"]["results"]
+        by_id = {r["element_id"]: r for r in results}
+        assert by_id["elem_1"]["best_locator"] == "id=second"
+
+    def test_execute_js_without_custom_action_is_flagged(self, workflow_harness, caplog):
+        """An agent that reaches for execute_js instead of the custom action is warned about."""
+        js_action = types.SimpleNamespace(model_fields_set={"execute_js"})
+        arm(workflow_harness, [FakeStep(results=[], actions=[js_action])])
+
+        with caplog.at_level(logging.WARNING, logger="browser_service.tasks.workflow"):
+            run_workflow(workflow_harness)
+
+        assert any("execute_js" in r.getMessage() for r in caplog.records)
+
+
+class TestHistoryFallbackExtraction:
+    """When the primary custom-action extraction yields no results, the run falls
+    back to scanning agent history rather than dropping the element."""
+
+    def test_history_scan_runs_when_primary_yields_nothing(self, workflow_harness):
+        """A payload with element_id but no locator leaves results_list empty, so the
+        fallback history scan runs and the element is still surfaced (as a failure)."""
+        md = {"element_id": "elem_1", "found": False, "error": "not located"}
+        arm(workflow_harness, [FakeStep([FakeActionResult(md)])])
+
+        run_workflow(workflow_harness)
+
+        results = workflow_harness.updates[-1][1]["results"]["results"]
+        by_id = {r["element_id"]: r for r in results}
+        assert "elem_1" in by_id
+        assert by_id["elem_1"]["found"] is False
+
+    def test_history_scan_recovers_a_locator_bearing_payload(self, workflow_harness):
+        """If a later history payload carries a real locator, the fallback surfaces it."""
+        # Primary extraction only accepts found+best_locator in one pass; a payload
+        # missing best_locator on the first scan still reaches the history fallback.
+        md = {"element_id": "elem_1", "found": True, "best_locator": "id=late", "all_locators": []}
+        arm(
+            workflow_harness,
+            [
+                FakeStep([FakeActionResult(dict(md, found=False, best_locator=None))]),
+                FakeStep([FakeActionResult(md)]),
+            ],
+        )
+
+        run_workflow(workflow_harness)
+
+        results = workflow_harness.updates[-1][1]["results"]["results"]
+        assert any(r["element_id"] == "elem_1" for r in results)

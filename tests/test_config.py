@@ -208,6 +208,20 @@ class TestBrowserServiceConfigValidation:
         errors = cfg.validate()
         assert len(errors) >= 3
 
+    def test_validate_invalid_locator_retries(self):
+        """Negative locator retry/offset counts are each reported."""
+        cfg = self._make_config_raw()
+        cfg.llm.google_api_key = "key"
+        cfg.locator.content_based_retries = -1
+        cfg.locator.coordinate_based_retries = -1
+        cfg.locator.element_type_retries = -1
+        cfg.locator.coordinate_offset_attempts = -1
+        errors = cfg.validate()
+        assert any("CONTENT_BASED_RETRIES" in e for e in errors)
+        assert any("COORDINATE_BASED_RETRIES" in e for e in errors)
+        assert any("ELEMENT_TYPE_RETRIES" in e for e in errors)
+        assert any("COORDINATE_OFFSET_ATTEMPTS" in e for e in errors)
+
     def test_validate_max_concurrent_tasks_zero(self):
         """MAX_CONCURRENT_TASKS=0 is rejected."""
         cfg = self._make_config_raw()
@@ -314,13 +328,6 @@ class TestVertexAIProviderConfig:
                 "browser_service.config.BrowserServiceConfig._get_google_model",
                 return_value="gemini-2.5-flash",
             ):
-                with patch(
-                    "browser_service.config.BrowserServiceConfig.__init__.__globals__",
-                    {},
-                    create=True,
-                ):
-                    # Block NL-repo settings import
-                    pass
                 if mock_credentials:
                     with patch(
                         "browser_service.config.service_account"

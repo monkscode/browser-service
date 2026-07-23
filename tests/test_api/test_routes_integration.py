@@ -91,6 +91,14 @@ class TestStaticEndpoints:
         data = resp.get_json()
         assert data["status"] == "alive"
 
+    def test_unknown_path_returns_404_json(self, client):
+        """An unknown route returns the structured 404 body, not an HTML page."""
+        resp = client.get("/no-such-endpoint")
+        assert resp.status_code == 404
+        data = resp.get_json()
+        assert data["status"] == "error"
+        assert "available_endpoints" in data
+
 
 class TestWorkflowSubmit:
     """Tests for POST /workflow endpoint."""
@@ -110,6 +118,20 @@ class TestWorkflowSubmit:
         assert resp.status_code == 202
         data = resp.get_json()
         assert "task_id" in data
+
+    def test_explicit_enable_custom_actions_is_accepted(self, client):
+        """A request that sets enable_custom_actions is honoured (not just the default)."""
+        resp = client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "button", "action": "click"}],
+                "url": "https://example.com",
+                "user_query": "click the button",
+                "enable_custom_actions": True,
+            },
+        )
+        assert resp.status_code == 202
+        assert "task_id" in resp.get_json()
 
     def test_invalid_request_returns_400(self, client):
         """Request without elements returns 400."""
@@ -569,6 +591,7 @@ class TestLogSanitization:
                 "user_query": self.FORGED,
             },
         )
+        assert "forged entry" in caplog.text, "the value must still be logged, just flattened"
         self._assert_no_record_spans_lines(caplog)
 
     def test_long_url_is_not_truncated_to_the_default_cap(self, client, caplog):

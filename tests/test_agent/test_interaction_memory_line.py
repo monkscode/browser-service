@@ -186,9 +186,7 @@ class TestOutcomeIsRecorded:
 class TestRepeatOfCompletedElement:
     @pytest.mark.asyncio
     async def test_repeat_after_success_says_already_performed(self):
-        results, calls = await _run(
-            [PASSWORD, READ_ONLY], [STRONG, STRONG_ALT], ["auto_ok"]
-        )
+        results, calls = await _run([PASSWORD, READ_ONLY], [STRONG, STRONG_ALT], ["auto_ok"])
         assert results[1].long_term_memory == (
             "elem_2 ✅ already performed · validated = input[type='password']"
         )
@@ -198,9 +196,7 @@ class TestRepeatOfCompletedElement:
     @pytest.mark.asyncio
     async def test_repeat_keeps_the_first_validated_locator(self):
         """The first validation ran at the step-order-correct page state (D3)."""
-        results, _ = await _run(
-            [PASSWORD, READ_ONLY], [STRONG, STRONG_ALT], ["auto_ok"]
-        )
+        results, _ = await _run([PASSWORD, READ_ONLY], [STRONG, STRONG_ALT], ["auto_ok"])
         assert "input[type='password']" in results[1].long_term_memory
         assert "id=password" not in results[1].long_term_memory
 

@@ -218,6 +218,48 @@ class TestRepeatOfCompletedElement:
         assert results[1].long_term_memory == "elem_2 ✅ input performed · validated = id=password"
 
 
+class TestGuardrailDoesNotBreakTermination:
+    """The guardrail returns BEFORE all_elements_done is computed, so it has to be
+    impossible for a blocked repeat to swallow the is_done that ends the run."""
+
+    @pytest.mark.asyncio
+    async def test_blocked_repeat_does_not_suppress_completion(self):
+        """elem_2 performed, re-queried (blocked), then elem_3 finishes the set.
+        The final result must still carry is_done."""
+        agent = FakeAgent()
+        session = FakeBrowserSession()
+        engine = AsyncMock(side_effect=[dict(STRONG), dict(STRONG_ALT), dict(STRONG)])
+        fake_interaction, _ = _fake_interaction(["auto_ok"])
+        with (
+            patch("browser_service.agent.actions.find_unique_locator_action", new=engine),
+            patch("browser_service.agent.registration._do_interaction", new=fake_interaction),
+            patch("playwright.async_api.async_playwright", new=_fake_playwright()),
+        ):
+            assert register_custom_actions(agent, elements=[PASSWORD, READ_ONLY]) is True
+            first = await agent.tools.registry.execute_action(
+                "find_unique_locator", _params("elem_2"), browser_session=session
+            )
+            blocked = await agent.tools.registry.execute_action(
+                "find_unique_locator", _params("elem_2"), browser_session=session
+            )
+            last = await agent.tools.registry.execute_action(
+                "find_unique_locator", _params("elem_3"), browser_session=session
+            )
+        assert first.is_done is False
+        assert blocked.is_done is False
+        assert last.is_done is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_status_degrades_to_the_locator_only_line(self):
+        """Defensive: an interaction_status outside the three known values must
+        never be reported as an interaction that happened."""
+        from browser_service.agent.registration import _memory_line
+
+        assert _memory_line("elem_9", "id=x", "something_new", "input", False) == (
+            "elem_9 validated = id=x"
+        )
+
+
 class TestDowngradeBlockCarriesOutcome:
     @pytest.mark.asyncio
     async def test_blocked_downgrade_reports_the_interaction(self):

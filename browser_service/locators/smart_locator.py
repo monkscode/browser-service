@@ -2389,7 +2389,12 @@ async def _find_table_via_accessibility(
             "count": actual_count,
             "unique": False,  # Always False for table rows (collection)
             "role": "row",
-            "element_type": "table-rows",  # Triggers FOR loop generation in CrewAI
+            # Canonical collection vocabulary (same as the classifier's <tr>/<li>
+            # verdict and the collection handler). Routes the assembler's FOR-loop
+            # block and is exempt from the re-ranker's unique-locator filter and
+            # the validation gate's count==1 rule. Was "table-rows", which nothing
+            # downstream routed on.
+            "element_type": "collection",
             "strategy": f"accessibility_table_{selector_type}",
             # Additional metadata for validation
             "row_texts": row_texts,  # Actual text content of each row
@@ -4905,7 +4910,7 @@ async def find_unique_locator_at_coordinates(
                 "valid": True,
                 "semantic_match": semantic_match,
                 "validation_method": "playwright",
-                # Pass through element_type for table-rows FOR loop handling
+                # Pass through element_type for collection FOR loop handling
                 "element_type": accessibility_result.get("element_type"),
                 "row_texts": accessibility_result.get("row_texts"),
                 "validation_text": accessibility_result.get("validation_text"),

@@ -59,7 +59,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Install package + test deps
-        run: python -m pip install -e ".[test]"
+        run: python -m pip install -e ".[test]" -c requirements/test-constraints.txt
       - name: Run tests with coverage
         # `-m "not integration"` skips the live-browser / live-internet suites
         # (test_integration/ + the chromium fixture tests). The remaining suite
@@ -100,7 +100,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Install package + test deps
-        run: python -m pip install -e ".[test]"
+        run: python -m pip install -e ".[test]" -c requirements/test-constraints.txt
       - name: Cache Playwright browsers
         uses: actions/cache@v4
         with:
@@ -150,7 +150,7 @@ jobs:
       - name: Install package + test deps
         # The package itself, not just coverage: `coverage xml` resolves the
         # recorded filenames back to source, and Sonar needs the tree anyway.
-        run: python -m pip install -e ".[test]"
+        run: python -m pip install -e ".[test]" -c requirements/test-constraints.txt
       - name: Download fast-lane coverage
         uses: actions/download-artifact@v4
         with:
@@ -307,8 +307,20 @@ jobs:
           fi
 
           # --- commit details ---
-          SUBJECT=$(git log -1 --format=%s "$HEAD_SHA" 2>/dev/null || echo "")
-          AUTHOR=$(git log -1 --format='%an' "$HEAD_SHA" 2>/dev/null || echo "")
+          # Subject and author are attacker-controlled on a PR and are echoed
+          # into a comment this job posts with pull-requests: write. Strip the
+          # characters that carry markup meaning rather than trusting them:
+          #   < >   raw HTML, and the `<!-- bs-ci-report -->` sticky marker,
+          #         which would otherwise let a commit message forge the anchor
+          #         the upsert step searches for
+          #   `     code-span breakout
+          #   |     markdown table cells
+          # Newlines go too — %s and %an are single-line today, but a strip here
+          # is cheaper than depending on that. Truncated so a long subject cannot
+          # push the report out of view.
+          sanitize() { printf '%s' "$1" | tr -d '\r\n`<>|' | cut -c1-200; }
+          SUBJECT=$(sanitize "$(git log -1 --format=%s "$HEAD_SHA" 2>/dev/null || echo "")")
+          AUTHOR=$(sanitize "$(git log -1 --format='%an' "$HEAD_SHA" 2>/dev/null || echo "")")
 
           # --- changed files ---
           if [ -n "${BASE_SHA:-}" ]; then
@@ -364,7 +376,14 @@ jobs:
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
             const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
-            const existing = comments.find(c => c.body && c.body.includes(marker));
+            // Match on the marker AND on the comment being ours. Anyone who can
+            // comment on the PR can post the marker text; without the author
+            // check the upsert would then edit THEIR comment instead of this
+            // job's, and the real report would never appear. `type === 'Bot'`
+            // is not settable by a human account.
+            const existing = comments.find(
+              c => c.body && c.body.includes(marker) && c.user && c.user.type === 'Bot'
+            );
             if (existing) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
             } else {

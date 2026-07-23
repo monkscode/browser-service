@@ -27,6 +27,7 @@ jobs:
     steps:  
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0  # Fetch all history for version calculation
           token: ${{ secrets.GITHUB_TOKEN }}
       - id: extract_tag
@@ -76,6 +77,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -103,6 +106,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           token: ${{ secrets.GITHUB_TOKEN }}
       - name: Set up Python
         uses: actions/setup-python@v5

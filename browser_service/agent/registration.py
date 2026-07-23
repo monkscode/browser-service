@@ -850,6 +850,42 @@ async def _do_interaction_playwright(
         return f"\n⚠️ AUTO-ACTION FAILED ({action}): {e}", "auto_failed"
 
 
+def _memory_line(
+    element_id: str,
+    locator: str,
+    interaction_status: str,
+    action: str,
+    already_performed: bool,
+) -> str:
+    """Build the long_term_memory sticky note for one element.
+
+    browser-use 0.12.6 (agent/message_manager/service.py:327-331) is an if/elif:
+    when long_term_memory is set, extracted_content is DISCARDED. So this line is
+    the ONLY thing the model still sees about the call — and a locator-only note
+    says nothing about whether the interaction happened. For an element whose
+    action is invisible on screen (a password field shows dots) the agent then has
+    no evidence in either channel and re-queries, median 19 times, until
+    dynamic_max_steps kills the run.
+
+    Status-accurate by construction: performed_actions is added to only on
+    confirmed success (:419, :494), so auto_failed can never read as performed —
+    the agent must keep seeing that failure to attempt the native recovery.
+
+    This is a FACT about what already happened, not forward-looking guidance, so
+    it does not reopen what the April cf99834 minimal-memory rule guards against.
+    """
+    if interaction_status == "auto_ok":
+        return f"{element_id} ✅ {action} performed · validated = {locator}"
+    if interaction_status == "auto_failed":
+        return f"{element_id} ⚠️ {action} NOT performed · validated = {locator}"
+    # not_applicable is overloaded — "this action performs nothing" (get_text) and
+    # "already done". performed_actions tells them apart; _completed_elements does
+    # NOT, because it also holds elements whose interaction failed.
+    if already_performed:
+        return f"{element_id} ✅ already performed · validated = {locator}"
+    return f"{element_id} validated = {locator}"
+
+
 async def _do_interaction(
     browser_session,
     active_page,
@@ -1672,26 +1708,53 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         bool(result.get("validated")) and result.get("semantic_match") is not False
                     )
                     _prev_locator = _completed_elements.get(params.element_id)
+                    # Second short-circuit reason (2026-07-23 Stage 2): an
+                    # equal-strength repeat of an element whose interaction is
+                    # already CONFIRMED done. Gated on _performed_actions, not
+                    # _completed_elements — the latter also holds elements whose
+                    # interaction failed, and blocking their re-query would kill a
+                    # genuine recovery.
+                    _already_performed = params.element_id in _performed_actions
                     if (
                         _prev_locator is not None
                         and _completed_quality.get(params.element_id, False)
-                        and not _new_strong
+                        and (not _new_strong or _already_performed)
                     ):
-                        logger.info(
-                            f"   ⛔ Re-query for {params.element_id} returned a "
-                            f"lower-confidence result ({result.get('best_locator')}) "
-                            f"— keeping the validated locator {_prev_locator} "
-                            f"(signal: re-registration-downgrade-blocked)"
-                        )
+                        if _new_strong:
+                            logger.info(
+                                f"   ⛔ Re-query for {params.element_id} repeats an "
+                                f"element whose interaction already completed "
+                                f"— keeping the validated locator {_prev_locator} "
+                                f"(signal: repeat-of-completed-element-blocked)"
+                            )
+                            _blocked_reason = (
+                                "The interaction for this element already completed."
+                            )
+                        else:
+                            logger.info(
+                                f"   ⛔ Re-query for {params.element_id} returned a "
+                                f"lower-confidence result ({result.get('best_locator')}) "
+                                f"— keeping the validated locator {_prev_locator} "
+                                f"(signal: re-registration-downgrade-blocked)"
+                            )
+                            _blocked_reason = (
+                                "The new lower-confidence result was discarded — "
+                                "the earlier validated locator stands."
+                            )
                         return ActionResult(
                             extracted_content=(
                                 f"✅ Element {params.element_id} is already validated.\n"
                                 f"Locator: {_prev_locator}\n"
-                                f"The new lower-confidence result was discarded — "
-                                f"the earlier validated locator stands. "
+                                f"{_blocked_reason} "
                                 f"Proceed to the next element."
                             ),
-                            long_term_memory=(f"{params.element_id} validated = {_prev_locator}"),
+                            long_term_memory=_memory_line(
+                                params.element_id,
+                                _prev_locator,
+                                "not_applicable",
+                                "",
+                                _already_performed,
+                            ),
                         )
 
                     # ========================================
@@ -1818,9 +1881,17 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             f"{display_note}\n"
                             f"Proceed to the next element."
                         )
-                    # Keep long_term_memory minimal — it persists across every subsequent agent
-                    # step. Embedding action guidance here would bias future decisions.
-                    long_term = f"{params.element_id} validated = {best_locator}"
+                    # long_term_memory is the ONLY channel that survives here —
+                    # browser-use discards extracted_content whenever it is set — so
+                    # the interaction outcome rides along with the locator. See
+                    # _memory_line for why this does not reopen the cf99834 rule.
+                    long_term = _memory_line(
+                        params.element_id,
+                        best_locator,
+                        interaction_status,
+                        _action,
+                        params.element_id in _performed_actions,
+                    )
 
                     logger.info(f"✅ Custom action succeeded: {best_locator}")
                     logger.info(

@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+
 - Workflow cost metrics are no longer always zero. `record_workflow_metrics`
   read `estimated_total_cost`/`estimated_cost_per_element`, keys no producer
   emits — the summary carries `actual_cost` — so every run persisted

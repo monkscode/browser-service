@@ -20,7 +20,7 @@
 # package's own build backend from source. Verified by tampering with the wheel
 # hash — pip skipped the wheel and built from the tar.gz instead of failing.
 # One hash per package, binary-only, no source fallback: a mismatch is fatal.
-# All four are pure-Python universal wheels, so nothing needs to compile.
+# All six are pure-Python universal wheels, so nothing needs to compile.
 #
 # SCOPE — deliberately just the build backend.
 # `twine` is NOT here. It pulls 23 packages (requests, urllib3, keyring, rich,

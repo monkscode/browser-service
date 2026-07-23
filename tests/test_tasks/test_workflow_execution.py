@@ -459,6 +459,42 @@ class TestResultExtraction:
         # The request's own description stands; the payload cannot rewrite it.
         assert entry["description"] == "submit button"
 
+    def test_failed_element_contributes_no_approach_metrics(self, workflow_harness):
+        """element_approach_metrics stays what it has always been: located elements.
+
+        The consuming chart buckets each entry by fallback_depth to show which
+        strategy tier resolved it. A failure stamps depth 7 without having
+        resolved anything, so it must not enter that series.
+        """
+        arm(
+            workflow_harness,
+            [
+                FakeStep(
+                    [
+                        FakeActionResult(
+                            {
+                                "element_id": "elem_1",
+                                "found": False,
+                                "error": "coordinates landed on BODY",
+                                "approach_metrics": {
+                                    "locator_approach": "coordinate_fallback",
+                                    "fallback_depth": 7,
+                                    "success": False,
+                                },
+                            }
+                        )
+                    ]
+                )
+            ],
+        )
+
+        run_workflow(workflow_harness)
+
+        results = workflow_harness.updates[-1][1]["results"]
+        assert results["results"][0]["error"] == "coordinates landed on BODY"
+        assert "approach_metrics" not in results["results"][0]
+        assert results["summary"]["element_approach_metrics"] == []
+
     def test_unreported_element_gets_the_generic_reason(self, workflow_harness):
         """No payload means no diagnosis to preserve — say exactly that."""
         arm(

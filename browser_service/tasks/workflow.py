@@ -1935,10 +1935,10 @@ def process_workflow_task(
                 rejected = rejected_payloads.get(elem_id)
                 if rejected:
                     # Keep the engine's own diagnosis — error, error_type,
-                    # semantic_match, approach_metrics, whatever it recorded —
-                    # but never its found or identity claims: a payload rejected
-                    # for claiming found without a locator must not re-enter as
-                    # found, and the requested description is the canonical one.
+                    # semantic_match, whatever it recorded — but never its found
+                    # or identity claims: a payload rejected for claiming found
+                    # without a locator must not re-enter as found, and the
+                    # requested description is the canonical one.
                     record.update(rejected)
                     record["element_id"] = elem_id
                     record["description"] = elem.get("description")
@@ -1946,6 +1946,15 @@ def process_workflow_task(
                     # A payload may carry error=None explicitly; .get(default)
                     # downstream would not replace that, so coalesce here.
                     record["error"] = record["error"] or "No locator reported by the agent"
+                    # approach_metrics is the exception: element_approach_metrics
+                    # feeds a strategy-distribution chart that buckets elements by
+                    # fallback_depth, and every row in it today is an element that
+                    # WAS located. Failures stamp depth 7, so passing them through
+                    # would inflate that bucket with elements the tier did not
+                    # actually resolve. Failure-side strategy data needs its own
+                    # decision (consistent stamping + a chart that splits the two),
+                    # not a side effect of this backfill.
+                    record.pop("approach_metrics", None)
                 logger.warning(f"   ❌ {elem_id}: {record['error']}")
                 results_list.append(record)
 

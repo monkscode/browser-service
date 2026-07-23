@@ -376,13 +376,30 @@ jobs:
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
             const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
-            // Match on the marker AND on the comment being ours. Anyone who can
-            // comment on the PR can post the marker text; without the author
-            // check the upsert would then edit THEIR comment instead of this
-            // job's, and the real report would never appear. `type === 'Bot'`
-            // is not settable by a human account.
+            // The marker alone identifies nothing, so match on two things.
+            //
+            // login: anyone who can comment can paste the marker, and narrowing
+            // to `type === 'Bot'` is not enough either — this PR alone draws
+            // comments from coderabbitai[bot], codecov[bot] and
+            // sonarqubecloud[bot], and CodeRabbit reviews the very diff that
+            // introduces this marker, so it quoting the string is a live case
+            // rather than a hypothetical. Editing another app's comment would
+            // both vandalise it and hide this report. The value below is the
+            // login the default GITHUB_TOKEN posts under; change it if the job
+            // ever moves to an App token or PAT — the symptom of a stale value
+            // is a new comment appended every run instead of one being updated.
+            //
+            // startsWith, not includes: the login check above already excludes
+            // every other app, so this covers exactly one residual case — a
+            // DIFFERENT workflow in this repo, posting under the same
+            // github-actions[bot] identity, whose body quotes the marker and
+            // happens to sort before ours. The body here is composed as
+            // marker + '\n' + report, so ours always carries it at position 0
+            // while a quoting comment carries it further in. Narrow, but free.
             const existing = comments.find(
-              c => c.body && c.body.includes(marker) && c.user && c.user.type === 'Bot'
+              c =>
+                c.user?.login === 'github-actions[bot]' &&
+                c.body?.startsWith(marker)
             );
             if (existing) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });

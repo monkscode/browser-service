@@ -39,9 +39,7 @@ async def page():
         browser = await p.chromium.launch(headless=True)
         ctx = await browser.new_context(viewport={"width": 1280, "height": 900})
         page_obj = await ctx.new_page()
-        await page_obj.goto(
-            (FIXTURES_DIR / "semantic_surface_carveout.html").resolve().as_uri()
-        )
+        await page_obj.goto((FIXTURES_DIR / "semantic_surface_carveout.html").resolve().as_uri())
         try:
             yield page_obj
         finally:
@@ -51,9 +49,7 @@ async def page():
 async def test_default_still_vetoes_empty_surface_input(page):
     """Regression pin: without the opt-in, the q05 veto stands (the five
     other validate_semantic_match call sites keep today's behavior)."""
-    ok, _ = await validate_semantic_match(
-        None, "Email *", page=page, locator="input[name='email']"
-    )
+    ok, _ = await validate_semantic_match(None, "Email *", page=page, locator="input[name='email']")
     assert ok is False
 
 
@@ -61,7 +57,10 @@ async def test_carveout_accepts_empty_surface_interactive(page):
     """The q05 case: unique input, empty surface, label-text
     expected_text -> accept on uniqueness when opted in."""
     ok, _ = await validate_semantic_match(
-        None, "Email *", page=page, locator="input[name='email']",
+        None,
+        "Email *",
+        page=page,
+        locator="input[name='email']",
         accept_empty_interactive=True,
     )
     assert ok is True
@@ -71,7 +70,10 @@ async def test_carveout_does_not_bypass_real_mismatch(page):
     """A surface-bearing input that genuinely disagrees is still vetoed
     with the flag on — the carve-out is for surface-LESS elements only."""
     ok, _ = await validate_semantic_match(
-        None, "Email *", page=page, locator="input[name='username']",
+        None,
+        "Email *",
+        page=page,
+        locator="input[name='username']",
         accept_empty_interactive=True,
     )
     assert ok is False
@@ -81,7 +83,10 @@ async def test_carveout_ignores_non_interactive_nodes(page):
     """A surface-less div has no interactive affordance — never carved
     out (mirrors the node-path rule exactly)."""
     ok, _ = await validate_semantic_match(
-        None, "Email *", page=page, locator="#empty-div",
+        None,
+        "Email *",
+        page=page,
+        locator="#empty-div",
         accept_empty_interactive=True,
     )
     assert ok is False

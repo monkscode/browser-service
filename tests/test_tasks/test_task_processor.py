@@ -15,11 +15,12 @@ Tests:
   - get_tasks_dict returns the raw internal dict (used by workers to update)
 """
 
-import time
 import threading
-import pytest
-from unittest.mock import MagicMock
+import time
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import MagicMock
+
+import pytest
 
 from browser_service.tasks.processor import TaskProcessor
 
@@ -228,7 +229,7 @@ class TestEviction:
         """Completed task with past completed_at is evicted during count_active_tasks."""
         proc = make_eviction_proc(ttl=60)
         proc.submit_task("t1", MagicMock())
-        proc.get_tasks_dict()["t1"].update({"status": "completed", "completed_at": time.time() - 120})
+        proc.update_task("t1", {"status": "completed", "completed_at": time.time() - 120})
 
         proc.count_active_tasks()
 
@@ -238,7 +239,7 @@ class TestEviction:
         """Completed task within TTL is NOT evicted."""
         proc = make_eviction_proc(ttl=300)
         proc.submit_task("t1", MagicMock())
-        proc.get_tasks_dict()["t1"].update({"status": "completed", "completed_at": time.time() - 10})
+        proc.update_task("t1", {"status": "completed", "completed_at": time.time() - 10})
 
         proc.count_active_tasks()
 
@@ -248,7 +249,7 @@ class TestEviction:
         """Processing and running tasks are never evicted regardless of age."""
         proc = make_eviction_proc(ttl=1)
         proc.submit_task("t1", MagicMock())
-        proc.get_tasks_dict()["t1"]["status"] = "running"
+        proc.update_task("t1", {"status": "running"})
         # No completed_at — should never be touched
         proc.count_active_tasks()
         assert proc.get_task_status("t1") is not None
@@ -257,7 +258,7 @@ class TestEviction:
         """Completed task without completed_at timestamp is never evicted."""
         proc = make_eviction_proc(ttl=1)
         proc.submit_task("t1", MagicMock())
-        proc.get_tasks_dict()["t1"]["status"] = "completed"
+        proc.update_task("t1", {"status": "completed"})
         # No completed_at set — float('inf') guard keeps it
 
         proc.count_active_tasks()
@@ -268,7 +269,7 @@ class TestEviction:
         """TTL=0 disables eviction entirely."""
         proc = make_eviction_proc(ttl=0)
         proc.submit_task("t1", MagicMock())
-        proc.get_tasks_dict()["t1"].update({"status": "completed", "completed_at": time.time() - 9999})
+        proc.update_task("t1", {"status": "completed", "completed_at": time.time() - 9999})
 
         proc.count_active_tasks()
 
@@ -279,7 +280,7 @@ class TestEviction:
         proc = make_eviction_proc(ttl=60)
         # Fill to limit with one stale completed task
         proc.submit_task("old", MagicMock())
-        proc.get_tasks_dict()["old"].update({"status": "completed", "completed_at": time.time() - 120})
+        proc.update_task("old", {"status": "completed", "completed_at": time.time() - 120})
 
         # try_submit with limit=1: stale task evicted first, then active=0, so accepted
         result = proc.try_submit_task(1, "new", MagicMock())

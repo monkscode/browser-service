@@ -26,8 +26,9 @@ Depends on:
 """
 
 import re
-import structlog
 from typing import TYPE_CHECKING, Optional
+
+import structlog
 
 from .base import build_locator_result
 
@@ -54,24 +55,34 @@ def _is_collection_element(element_data: dict, element_description: str) -> bool
     Returns:
         True if element appears to be part of a collection
     """
-    tag = element_data.get('tagName', '').lower()
-    class_name = element_data.get('className', '').lower()
+    tag = element_data.get("tagName", "").lower()
+    class_name = element_data.get("className", "").lower()
     desc = element_description.lower()
 
     # Method 1: Semantic description keywords
     # Note: LLM may modify descriptions, so we check for various patterns
     desc_keywords = [
-        'rows', 'items', 'all ', 'each', 'every', 'list of',
-        'visible rows', 'table rows', 'filtered',
-        'cells', 'column cell', 'column cells',  # Table column patterns
-        'results table', 'data table',  # Table context patterns
+        "rows",
+        "items",
+        "all ",
+        "each",
+        "every",
+        "list of",
+        "visible rows",
+        "table rows",
+        "filtered",
+        "cells",
+        "column cell",
+        "column cells",  # Table column patterns
+        "results table",
+        "data table",  # Table context patterns
     ]
     if any(kw in desc for kw in desc_keywords):
         logger.info("collection.detected_by_description", element_description=element_description)
         return True
 
     # Method 2: Standard HTML collection tags
-    if tag in ['tr', 'li', 'option', 'dt', 'dd']:
+    if tag in ["tr", "li", "option", "dt", "dd"]:
         logger.info("collection.detected_by_tag", tag=tag)
         return True
 
@@ -79,8 +90,17 @@ def _is_collection_element(element_data: dict, element_description: str) -> bool
     # Per-token exact match (not substring) so 'nav-item' does not match 'item'.
     # Nav-prefix exclusion: navigation/menu/breadcrumb/etc. items are UI chrome,
     # not data collections — never treat them as collections even if a token matches.
-    collection_patterns = {'row', 'item', 'card', 'entry', 'record', 'tr-group', 'list-item', 'grid-item'}
-    nav_prefixes = ('nav-', 'menu-', 'tab-', 'breadcrumb-', 'pagination-', 'dropdown-')
+    collection_patterns = {
+        "row",
+        "item",
+        "card",
+        "entry",
+        "record",
+        "tr-group",
+        "list-item",
+        "grid-item",
+    }
+    nav_prefixes = ("nav-", "menu-", "tab-", "breadcrumb-", "pagination-", "dropdown-")
     for cls in class_name.split():
         if any(cls.startswith(prefix) for prefix in nav_prefixes):
             continue
@@ -107,7 +127,7 @@ def _extract_collection_class(element_data: dict) -> Optional[str]:
         Most appropriate class for collection matching, or None if not suitable
     """
 
-    class_name = element_data.get('className', '')
+    class_name = element_data.get("className", "")
     if not class_name:
         return None
 
@@ -115,7 +135,7 @@ def _extract_collection_class(element_data: dict) -> Optional[str]:
 
     # PRIORITY 1: Classes containing semantic collection patterns
     # These ARE the actual collection classes we want
-    collection_patterns = ['row', 'item', 'tr', 'card', 'entry', 'record', 'group', 'cell', 'list']
+    collection_patterns = ["row", "item", "tr", "card", "entry", "record", "group", "cell", "list"]
     for cls in classes:
         cls_lower = cls.lower()
         for pattern in collection_patterns:
@@ -130,10 +150,10 @@ def _extract_collection_class(element_data: dict) -> Optional[str]:
         if len(cls) <= 5:
             continue
         # Skip if matches pattern: 1-4 letters + hyphen + number (e.g., mt-4, px-12, col-6)
-        if re.match(r'^[a-z]{1,4}-\d+$', cls.lower()):
+        if re.match(r"^[a-z]{1,4}-\d+$", cls.lower()):
             continue
         # Skip if matches pattern: single letter + hyphen (e.g., d-flex, m-auto)
-        if re.match(r'^[a-z]-', cls.lower()):
+        if re.match(r"^[a-z]-", cls.lower()):
             continue
         # This looks like a meaningful class name
         logger.info("collection.class_component_like", cls=cls)
@@ -144,7 +164,9 @@ def _extract_collection_class(element_data: dict) -> Optional[str]:
     return None
 
 
-async def _find_collection_locator(page, element_data: dict, collection_class: str) -> Optional[str]:
+async def _find_collection_locator(
+    page, element_data: dict, collection_class: str
+) -> Optional[str]:
     """
     Build a locator that matches all items in the collection.
     Tries multiple container strategies to find the most reliable locator.
@@ -157,14 +179,14 @@ async def _find_collection_locator(page, element_data: dict, collection_class: s
     Returns:
         Multi-element locator string, or None if not found
     """
-    tag = element_data.get('tagName', '').lower()
+    tag = element_data.get("tagName", "").lower()
 
     # Strategy 1: Standard HTML table - use tbody tr
-    if tag == 'tr':
+    if tag == "tr":
         candidates = [
-            'tbody tr',
-            'table tr:not(:first-child)',  # Skip header row
-            'tbody > tr'
+            "tbody tr",
+            "table tr:not(:first-child)",  # Skip header row
+            "tbody > tr",
         ]
         for locator in candidates:
             try:
@@ -176,8 +198,8 @@ async def _find_collection_locator(page, element_data: dict, collection_class: s
                 continue
 
     # Strategy 2: Standard HTML list - use ul/ol li
-    if tag == 'li':
-        candidates = ['ul li', 'ol li', 'ul > li', 'ol > li']
+    if tag == "li":
+        candidates = ["ul li", "ol li", "ul > li", "ol > li"]
         for locator in candidates:
             try:
                 count = await page.locator(locator).count()
@@ -189,15 +211,23 @@ async def _find_collection_locator(page, element_data: dict, collection_class: s
 
     # Strategy 3: Class-based locator with common container patterns
     container_patterns = [
-        f'.{collection_class}',  # Token-exact class selector
+        f".{collection_class}",  # Token-exact class selector
     ]
 
     # Try adding common parent containers
-    parent_containers = ['tbody', '.table-body', '.list', '.grid', '.container',
-                        '[class*="body"]', '[class*="content"]', '[class*="list"]']
+    parent_containers = [
+        "tbody",
+        ".table-body",
+        ".list",
+        ".grid",
+        ".container",
+        '[class*="body"]',
+        '[class*="content"]',
+        '[class*="list"]',
+    ]
 
     for parent in parent_containers:
-        container_patterns.append(f'{parent} .{collection_class}')
+        container_patterns.append(f"{parent} .{collection_class}")
 
     for locator in container_patterns:
         try:
@@ -209,7 +239,7 @@ async def _find_collection_locator(page, element_data: dict, collection_class: s
             continue
 
     # Fallback: Just the class (might include non-data rows)
-    fallback = f'.{collection_class}'
+    fallback = f".{collection_class}"
     try:
         count = await page.locator(fallback).count()
         if count > 1:
@@ -359,21 +389,25 @@ async def _find_collection_by_text_traversal(page, expected_text: str) -> Option
         """)
 
         if row_info:
-            logger.info("collection.row_container_found", tag=row_info["tag"], cls=row_info.get("className") or "")
+            logger.info(
+                "collection.row_container_found",
+                tag=row_info["tag"],
+                cls=row_info.get("className") or "",
+            )
             logger.info("collection.sibling_count", count=row_info["siblingCount"])
 
             # Generate collection locator, scoped to the row's own parent —
             # never a bare page-global class (A4: `.row` matched every grid
             # row on the page, chrome included).
-            tag = row_info.get('tag', '')
-            best_class = row_info.get('className')
-            anchor = row_info.get('parentAnchor')
+            tag = row_info.get("tag", "")
+            best_class = row_info.get("className")
+            anchor = row_info.get("parentAnchor")
 
             if best_class:
                 suffix = f"{tag}.{best_class}"
-            elif tag in ('tr', 'li'):
+            elif tag in ("tr", "li"):
                 suffix = tag
-            elif row_info.get('role') == 'row':
+            elif row_info.get("role") == "row":
                 suffix = '[role="row"]'
             else:
                 logger.info("collection.indeterminate_locator", row_info=str(row_info))
@@ -381,24 +415,26 @@ async def _find_collection_by_text_traversal(page, expected_text: str) -> Option
 
             if anchor:
                 locator = f"{anchor} > {suffix}"
-            elif best_class or row_info.get('role') == 'row':
+            elif best_class or row_info.get("role") == "row":
                 locator = suffix
-            elif tag == 'tr':
-                locator = 'tbody tr'
+            elif tag == "tr":
+                locator = "tbody tr"
             else:  # tag == 'li'
-                locator = 'ul li, ol li'
+                locator = "ul li, ol li"
 
             # Validate the locator
             try:
                 count = await page.locator(locator).count()
                 if count >= 1:
-                    logger.info("collection.traversal_locator_validated", locator=locator, count=count)
+                    logger.info(
+                        "collection.traversal_locator_validated", locator=locator, count=count
+                    )
                     return {
-                        'locator': locator,
-                        'count': count,
-                        'row_class': row_info.get('className'),
-                        'tag': row_info.get('tag'),
-                        'source': 'text_traversal'
+                        "locator": locator,
+                        "count": count,
+                        "row_class": row_info.get("className"),
+                        "tag": row_info.get("tag"),
+                        "source": "text_traversal",
                     }
                 else:
                     logger.info("collection.locator_zero_matches", locator=locator)
@@ -451,19 +487,15 @@ async def find_locator(
 
     # PRIMARY METHOD: text-traversal using expected_text as a beacon.
     if expected_text:
-        text_result = await _find_collection_by_text_traversal(
-            search_context, expected_text
-        )
+        text_result = await _find_collection_by_text_traversal(search_context, expected_text)
 
-        if (
-            text_result
-            and text_result.get("locator")
-            and text_result.get("count", 0) > 1
-        ):
+        if text_result and text_result.get("locator") and text_result.get("count", 0) > 1:
             collection_locator = text_result["locator"]
             count = text_result["count"]
 
-            logger.info("collection.locator_found_text_traversal", locator=collection_locator, count=count)
+            logger.info(
+                "collection.locator_found_text_traversal", locator=collection_locator, count=count
+            )
             logger.info("collection.skip_semantic_validation")
 
             result = build_locator_result(
@@ -528,9 +560,7 @@ async def find_locator(
         try:
             for i in range(min(count, 3)):
                 el_text = (
-                    await search_context.locator(collection_locator)
-                    .nth(i)
-                    .text_content()
+                    await search_context.locator(collection_locator).nth(i).text_content()
                 ) or ""
                 if expected_text.lower() in el_text.lower():
                     text_found = True
@@ -539,7 +569,11 @@ async def find_locator(
             pass
 
         if not text_found:
-            logger.warning("collection.locator_text_mismatch", locator=collection_locator, expected_text=expected_text)
+            logger.warning(
+                "collection.locator_text_mismatch",
+                locator=collection_locator,
+                expected_text=expected_text,
+            )
             logger.warning("collection.locator_rejected_wrong_elements")
             return None
 

@@ -111,12 +111,17 @@ async def test_finder_trailing_number_strategy_removed(page):
 async def test_pagination_step_never_returns_checkbox(page):
     """The reproduced wrong-element bug: 'Page 2' on a page with five
     filter checkboxes must never resolve to a checkbox."""
-    await page.goto(_file_url("checkbox_gate_page.html"),
-                    wait_until="domcontentloaded")
+    await page.goto(_file_url("checkbox_gate_page.html"), wait_until="domcontentloaded")
     x, y = await _center(page, 'a:text-is("Page 2")')
     result = await _find_element_by_expected_text(
-        page, "Page 2", "pagination control for page 2", x, y,
-        vision_type_hint=None, probe_page=page, iframe_context=None,
+        page,
+        "Page 2",
+        "pagination control for page 2",
+        x,
+        y,
+        vision_type_hint=None,
+        probe_page=page,
+        iframe_context=None,
     )
     assert not _is_checkbox_result(result), f"got checkbox: {result}"
     # The standard text search should find the pagination link itself.
@@ -128,24 +133,34 @@ async def test_pagination_step_never_returns_checkbox(page):
 async def test_short_text_alone_does_not_enter_checkbox_hunt(page):
     """Text length must not trigger the detour. 'Sign Up' sits right
     after a checkbox (the adjacency strategy would grab it)."""
-    await page.goto(_file_url("checkbox_gate_page.html"),
-                    wait_until="domcontentloaded")
+    await page.goto(_file_url("checkbox_gate_page.html"), wait_until="domcontentloaded")
     x, y = await _center(page, "#signup-text")
     result = await _find_element_by_expected_text(
-        page, "Sign Up", "the Sign Up element", x, y,
-        vision_type_hint=None, probe_page=page, iframe_context=None,
+        page,
+        "Sign Up",
+        "the Sign Up element",
+        x,
+        y,
+        vision_type_hint=None,
+        probe_page=page,
+        iframe_context=None,
     )
     assert not _is_checkbox_result(result), f"got checkbox: {result}"
 
 
 async def test_select_the_phrase_does_not_enter_checkbox_hunt(page):
     """'select the …' is dropdown phrasing, not checkbox evidence."""
-    await page.goto(_file_url("checkbox_gate_page.html"),
-                    wait_until="domcontentloaded")
+    await page.goto(_file_url("checkbox_gate_page.html"), wait_until="domcontentloaded")
     x, y = await _center(page, "#signup-text")
     result = await _find_element_by_expected_text(
-        page, "Sign Up", "select the promo option", x, y,
-        vision_type_hint=None, probe_page=page, iframe_context=None,
+        page,
+        "Sign Up",
+        "select the promo option",
+        x,
+        y,
+        vision_type_hint=None,
+        probe_page=page,
+        iframe_context=None,
     )
     assert not _is_checkbox_result(result), f"got checkbox: {result}"
 
@@ -154,12 +169,17 @@ async def test_check_the_keyword_without_structure_is_probe_rejected(page):
     """'check the …' can mean 'verify'. Coordinates on a plain paragraph
     with no checkbox structure nearby -> probe rejects, detour skipped,
     trailing '2' must not map to the 2nd checkbox on the page."""
-    await page.goto(_file_url("checkbox_gate_page.html"),
-                    wait_until="domcontentloaded")
+    await page.goto(_file_url("checkbox_gate_page.html"), wait_until="domcontentloaded")
     x, y = await _center(page, "#account-note")
     result = await _find_element_by_expected_text(
-        page, "Account 2", "check the account 2 status", x, y,
-        vision_type_hint=None, probe_page=page, iframe_context=None,
+        page,
+        "Account 2",
+        "check the account 2 status",
+        x,
+        y,
+        vision_type_hint=None,
+        probe_page=page,
+        iframe_context=None,
     )
     assert not _is_checkbox_result(result), f"got checkbox: {result}"
 
@@ -168,12 +188,17 @@ async def test_genuine_checkbox_keyword_and_probe_detour_works(page):
     """Evidence + probe agreement: a real checkbox step must still get
     the input-targeting locator (clicking bare label text may not
     toggle)."""
-    await page.goto(_file_url("checkbox_gate_page.html"),
-                    wait_until="domcontentloaded")
+    await page.goto(_file_url("checkbox_gate_page.html"), wait_until="domcontentloaded")
     x, y = await _center(page, "#remember-label")
     result = await _find_element_by_expected_text(
-        page, "Remember me", "check the Remember me checkbox", x, y,
-        vision_type_hint=None, probe_page=page, iframe_context=None,
+        page,
+        "Remember me",
+        "check the Remember me checkbox",
+        x,
+        y,
+        vision_type_hint=None,
+        probe_page=page,
+        iframe_context=None,
     )
     assert _is_checkbox_result(result), f"expected checkbox, got: {result}"
     name = await page.locator(result["locator"]).get_attribute("name")
@@ -183,12 +208,17 @@ async def test_genuine_checkbox_keyword_and_probe_detour_works(page):
 async def test_vision_hint_checkbox_enters_detour(page):
     """No keywords in the description — the vision hint alone (plus
     probe agreement) must open the gate."""
-    await page.goto(_file_url("checkbox_gate_page.html"),
-                    wait_until="domcontentloaded")
+    await page.goto(_file_url("checkbox_gate_page.html"), wait_until="domcontentloaded")
     x, y = await _center(page, "#remember-label")
     result = await _find_element_by_expected_text(
-        page, "Remember me", "the Remember me element", x, y,
-        vision_type_hint="checkbox", probe_page=page, iframe_context=None,
+        page,
+        "Remember me",
+        "the Remember me element",
+        x,
+        y,
+        vision_type_hint="checkbox",
+        probe_page=page,
+        iframe_context=None,
     )
     assert _is_checkbox_result(result), f"expected checkbox, got: {result}"
 
@@ -197,12 +227,16 @@ async def test_iframe_checkbox_keyword_gate_skips_probe(page):
     """Inside an iframe the probe cannot see the frame's DOM — evidence
     alone must gate, and the detour must still find the checkbox via the
     frame-scoped search context."""
-    await page.goto(_file_url("checkbox_gate_iframe_outer.html"),
-                    wait_until="domcontentloaded")
+    await page.goto(_file_url("checkbox_gate_iframe_outer.html"), wait_until="domcontentloaded")
     frame = page.frame_locator("#prefs-frame")
     result = await _find_element_by_expected_text(
-        frame, "Remember me", "check the Remember me checkbox", 100, 100,
-        vision_type_hint=None, probe_page=page,
+        frame,
+        "Remember me",
+        "check the Remember me checkbox",
+        100,
+        100,
+        vision_type_hint=None,
+        probe_page=page,
         iframe_context='iframe[id="prefs-frame"]',
     )
     assert _is_checkbox_result(result), f"expected checkbox, got: {result}"

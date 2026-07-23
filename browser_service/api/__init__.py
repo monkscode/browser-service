@@ -27,16 +27,16 @@ Usage:
     app.run(host='0.0.0.0', port=4999)
 """
 
-from browser_service.api.routes import register_routes
 from browser_service.api.handlers import (
-    validate_workflow_request,
+    format_error_response,
     format_task_response,
-    format_error_response
+    validate_workflow_request,
 )
+from browser_service.api.routes import register_routes
 
 __all__ = [
-    'register_routes',
-    'validate_workflow_request',
-    'format_task_response',
-    'format_error_response'
+    "register_routes",
+    "validate_workflow_request",
+    "format_task_response",
+    "format_error_response",
 ]

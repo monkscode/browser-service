@@ -1,7 +1,9 @@
-﻿"""
+"""
 Basic usage example for browser-service package
 """
+
 import asyncio
+
 from browser_service.config import config
 from browser_service.tasks import process_workflow_task
 
@@ -16,10 +18,10 @@ async def main():
         "url": "https://example.com",
         "steps": [
             {"action": "click", "element": "Login button"},
-            {"action": "type", "element": "Username field", "text": "user@example.com"}
-        ]
+            {"action": "type", "element": "Username field", "text": "user@example.com"},
+        ],
     }
-    
+
     # Process the workflow
     result = await process_workflow_task(workflow)
     print(f"Result: {result}")

@@ -3,9 +3,6 @@ include README.md
 include LICENSE
 include CHANGELOG.md
 
-# Include requirements
-include requirements.txt
-
 # Include package data
 recursive-include browser_service *.py
 recursive-include browser_service py.typed

@@ -11,12 +11,12 @@ Modules:
     cleanup: Browser cleanup utilities and process termination
 """
 
-from .cleanup import get_browser_process_id, cleanup_browser_resources, capture_session_pid
+from .cleanup import capture_session_pid, cleanup_browser_resources, get_browser_process_id
 from .session import BrowserSessionManager
 
 __all__ = [
-    'get_browser_process_id',
-    'cleanup_browser_resources',
-    'capture_session_pid',
-    'BrowserSessionManager',
+    "get_browser_process_id",
+    "cleanup_browser_resources",
+    "capture_session_pid",
+    "BrowserSessionManager",
 ]

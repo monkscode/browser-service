@@ -17,9 +17,9 @@ Tests:
 
 import os
 import time
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import patch, MagicMock
 
 
 class TestFindChromeOrphansWindows:
@@ -32,13 +32,14 @@ class TestFindChromeOrphansWindows:
         mock_sys.platform = "win32"
         mock_run.return_value = MagicMock(
             stdout='"ProcessId","Name"\r\n'
-                   '"1111","chrome.exe"\r\n'
-                   '"2222","msedge.exe"\r\n'
-                   '"3333","chrome.exe"\r\n',
+            '"1111","chrome.exe"\r\n'
+            '"2222","msedge.exe"\r\n'
+            '"3333","chrome.exe"\r\n',
             returncode=0,
         )
 
         from browser_service.browser.cleanup_worker import _find_chrome_orphans
+
         pids = _find_chrome_orphans(999, MagicMock())
 
         assert pids == [1111, 3333]
@@ -56,6 +57,7 @@ class TestFindChromeOrphansWindows:
         mock_run.return_value = MagicMock(stdout="", returncode=0)
 
         from browser_service.browser.cleanup_worker import _find_chrome_orphans
+
         assert _find_chrome_orphans(999, MagicMock()) == []
 
 
@@ -70,6 +72,7 @@ class TestFindChromeOrphansLinux:
         mock_run.return_value = MagicMock(stdout="4444\n5555\n", returncode=0)
 
         from browser_service.browser.cleanup_worker import _find_chrome_orphans
+
         pids = _find_chrome_orphans(999, MagicMock())
 
         assert pids == [4444, 5555]
@@ -84,6 +87,7 @@ class TestFindChromeOrphansLinux:
         mock_run.return_value = MagicMock(stdout="", returncode=1)
 
         from browser_service.browser.cleanup_worker import _find_chrome_orphans
+
         assert _find_chrome_orphans(999, MagicMock()) == []
 
 
@@ -95,10 +99,12 @@ class TestFindChromeOrphansFailSafe:
     def test_subprocess_failure_returns_empty_and_warns(self, mock_sys, mock_run):
         """Query timeout/error → empty list + a warning, never an exception."""
         import subprocess as _sp
+
         mock_sys.platform = "win32"
         mock_run.side_effect = _sp.TimeoutExpired(cmd="powershell", timeout=8)
 
         from browser_service.browser.cleanup_worker import _find_chrome_orphans
+
         logger = MagicMock()
         assert _find_chrome_orphans(999, logger) == []
         assert logger.warning.called
@@ -114,6 +120,7 @@ class TestFindChromeOrphansFailSafe:
         )
 
         from browser_service.browser.cleanup_worker import _find_chrome_orphans
+
         logger = MagicMock()
         assert _find_chrome_orphans(999, logger) == []
         assert logger.warning.called
@@ -123,11 +130,10 @@ class TestFindChromeOrphansFailSafe:
     def test_pgrep_fatal_rc_returns_empty_and_warns(self, mock_sys, mock_run):
         """pgrep rc>=2 is a real failure (rc=1 is just 'no match') — warn."""
         mock_sys.platform = "linux"
-        mock_run.return_value = MagicMock(
-            stdout="", stderr="pgrep: invalid option", returncode=2
-        )
+        mock_run.return_value = MagicMock(stdout="", stderr="pgrep: invalid option", returncode=2)
 
         from browser_service.browser.cleanup_worker import _find_chrome_orphans
+
         logger = MagicMock()
         assert _find_chrome_orphans(999, logger) == []
         assert logger.warning.called
@@ -140,6 +146,7 @@ class TestFindChromeOrphansFailSafe:
         mock_run.return_value = MagicMock(stdout="", stderr="", returncode=1)
 
         from browser_service.browser.cleanup_worker import _find_chrome_orphans
+
         logger = MagicMock()
         assert _find_chrome_orphans(999, logger) == []
         assert not logger.warning.called
@@ -152,11 +159,13 @@ class TestMainSweepWiring:
         """Run main() with argv/sleep/psutil/sweep all controlled."""
         import browser_service.browser.cleanup_worker as worker
 
-        with patch.object(worker.sys, "argv", ["cleanup_worker.py", "999"]), \
-             patch.object(worker.time, "sleep"), \
-             patch.dict("sys.modules", {"psutil": fake_psutil}), \
-             patch.object(worker, "_find_chrome_orphans", return_value=orphans) as mock_sweep, \
-             patch.object(worker, "_setup_logging", return_value=MagicMock()):
+        with (
+            patch.object(worker.sys, "argv", ["cleanup_worker.py", "999"]),
+            patch.object(worker.time, "sleep"),
+            patch.dict("sys.modules", {"psutil": fake_psutil}),
+            patch.object(worker, "_find_chrome_orphans", return_value=orphans) as mock_sweep,
+            patch.object(worker, "_setup_logging", return_value=MagicMock()),
+        ):
             worker.main()
         return mock_sweep
 
@@ -256,9 +265,7 @@ class TestSweepLeakedProfiles:
         older = self._make_profile(tmp_path, "browser-use-user-data-dir-b", 173000)
         newer = self._make_profile(tmp_path, "browser-use-user-data-dir-c", 90000)
 
-        _sweep_leaked_profiles(
-            MagicMock(), temp_root=str(tmp_path), max_deletes=2
-        )
+        _sweep_leaked_profiles(MagicMock(), temp_root=str(tmp_path), max_deletes=2)
 
         assert not oldest.exists()
         assert not older.exists()
@@ -292,9 +299,7 @@ class TestSweepLeakedProfiles:
         """The sweep is a safety net, never a crash source."""
         from browser_service.browser.cleanup_worker import _sweep_leaked_profiles
 
-        _sweep_leaked_profiles(
-            MagicMock(), temp_root=str(tmp_path / "does-not-exist")
-        )
+        _sweep_leaked_profiles(MagicMock(), temp_root=str(tmp_path / "does-not-exist"))
 
     def test_main_runs_profile_sweep(self):
         """main() sweeps leaked profiles after the kill/orphan phases."""
@@ -306,12 +311,14 @@ class TestSweepLeakedProfiles:
         fake_psutil.TimeoutExpired = type("TimeoutExpired", (Exception,), {})
         fake_psutil.Process.side_effect = fake_psutil.NoSuchProcess()
 
-        with patch.object(worker.sys, "argv", ["cleanup_worker.py", "999"]), \
-             patch.object(worker.time, "sleep"), \
-             patch.dict("sys.modules", {"psutil": fake_psutil}), \
-             patch.object(worker, "_find_chrome_orphans", return_value=[]), \
-             patch.object(worker, "_sweep_leaked_profiles") as mock_profile_sweep, \
-             patch.object(worker, "_setup_logging", return_value=MagicMock()):
+        with (
+            patch.object(worker.sys, "argv", ["cleanup_worker.py", "999"]),
+            patch.object(worker.time, "sleep"),
+            patch.dict("sys.modules", {"psutil": fake_psutil}),
+            patch.object(worker, "_find_chrome_orphans", return_value=[]),
+            patch.object(worker, "_sweep_leaked_profiles") as mock_profile_sweep,
+            patch.object(worker, "_setup_logging", return_value=MagicMock()),
+        ):
             worker.main()
 
         mock_profile_sweep.assert_called_once()

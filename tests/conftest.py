@@ -7,14 +7,37 @@ Provides:
 - Mock Playwright page objects
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
+import os
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+def pytest_collection_modifyitems(config, items):
+    """Sub-classify the `integration` umbrella into `fixture` vs `live`.
+
+    - live: needs the internet or a full browser-use session lifecycle
+      (files named test_live_*). Never run in CI.
+    - fixture: drives chromium against local/inline HTML — deterministic and
+      CI-safe. Everything else marked integration.
+
+    Kept here (not per-file) so the taxonomy has a single source of truth.
+    """
+    for item in items:
+        if item.get_closest_marker("integration") is None:
+            continue
+        basename = os.path.basename(str(item.fspath))
+        if basename.startswith("test_live_"):
+            item.add_marker(pytest.mark.live)
+        else:
+            item.add_marker(pytest.mark.fixture)
 
 
 # ---------------------------------------------------------------------------
 # Flask app fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def flask_app():
@@ -48,6 +71,7 @@ def mock_processor(flask_app):
 # ---------------------------------------------------------------------------
 # Sample data fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def sample_elements():
@@ -108,6 +132,7 @@ def sample_locator_result():
 # Mock Playwright page
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def mock_page():
     """Mock Playwright page object with common methods stubbed."""
@@ -126,6 +151,7 @@ def mock_page():
 # ---------------------------------------------------------------------------
 # Task processor (standalone, without Flask)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def task_processor():

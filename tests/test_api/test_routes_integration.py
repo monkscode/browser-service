@@ -15,9 +15,11 @@ Tests:
   GET /tasks      → 200, list of tasks
 """
 
-import pytest
+import logging
 from contextlib import contextmanager
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 from flask import Flask
 
 
@@ -35,14 +37,17 @@ def app_and_processor():
     mock_processor.list_tasks.return_value = []
     mock_processor.get_task_status.return_value = None
 
-    with patch("browser_service.api.routes.config") as mock_config, \
-         patch("browser_service.api.routes._nl_settings") as mock_settings, \
-         patch("browser_service.api.routes.process_workflow_task"):
+    with (
+        patch("browser_service.api.routes.config") as mock_config,
+        patch("browser_service.api.routes._nl_settings") as mock_settings,
+        patch("browser_service.api.routes.process_workflow_task"),
+    ):
         mock_config.llm.google_api_key = "test-key"
         mock_config.max_concurrent_tasks = 10
         mock_settings.ENABLE_CUSTOM_ACTIONS = True
 
         from browser_service.api.routes import register_routes
+
         register_routes(app, mock_processor)
 
     return app, mock_processor
@@ -86,21 +91,47 @@ class TestStaticEndpoints:
         data = resp.get_json()
         assert data["status"] == "alive"
 
+    def test_unknown_path_returns_404_json(self, client):
+        """An unknown route returns the structured 404 body, not an HTML page."""
+        resp = client.get("/no-such-endpoint")
+        assert resp.status_code == 404
+        data = resp.get_json()
+        assert data["status"] == "error"
+        assert "available_endpoints" in data
+
 
 class TestWorkflowSubmit:
     """Tests for POST /workflow endpoint."""
 
     def test_valid_workflow_submit(self, client, processor):
         """Valid workflow request returns 202 with task_id."""
-        resp = client.post("/workflow", json={
-            "elements": [{"id": "e1", "description": "button", "action": "click"}],
-            "url": "https://example.com",
-            "user_query": "click the button",
-        })
-        # Should be 200 or 202 — accept either
-        assert resp.status_code in [200, 202]
+        resp = client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "button", "action": "click"}],
+                "url": "https://example.com",
+                "user_query": "click the button",
+            },
+        )
+        # 202 exactly. `in [200, 202]` cannot tell an accepted-async submit from a
+        # synchronous completion, which is the only thing this status communicates.
+        assert resp.status_code == 202
         data = resp.get_json()
         assert "task_id" in data
+
+    def test_explicit_enable_custom_actions_is_accepted(self, client):
+        """A request that sets enable_custom_actions is honoured (not just the default)."""
+        resp = client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "button", "action": "click"}],
+                "url": "https://example.com",
+                "user_query": "click the button",
+                "enable_custom_actions": True,
+            },
+        )
+        assert resp.status_code == 202
+        assert "task_id" in resp.get_json()
 
     def test_invalid_request_returns_400(self, client):
         """Request without elements returns 400."""
@@ -115,25 +146,33 @@ class TestWorkflowSubmit:
     def test_busy_returns_429_when_at_capacity(self, client, processor):
         """When try_submit_task returns False (at capacity), returns 429."""
         from browser_service.config import config as real_config
+
         limit = real_config.max_concurrent_tasks
         processor.try_submit_task.return_value = False
         processor.count_active_tasks.return_value = limit  # used in 429 response body
-        resp = client.post("/workflow", json={
-            "elements": [{"id": "e1", "description": "btn", "action": "click"}],
-            "url": "https://example.com",
-        })
+        resp = client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "btn", "action": "click"}],
+                "url": "https://example.com",
+            },
+        )
         assert resp.status_code == 429
 
     def test_busy_response_contains_capacity_fields(self, client, processor):
         """429 response body includes active_tasks and max_tasks fields."""
         from browser_service.config import config as real_config
+
         limit = real_config.max_concurrent_tasks
         processor.try_submit_task.return_value = False
         processor.count_active_tasks.return_value = limit
-        resp = client.post("/workflow", json={
-            "elements": [{"id": "e1", "description": "btn", "action": "click"}],
-            "url": "https://example.com",
-        })
+        resp = client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "btn", "action": "click"}],
+                "url": "https://example.com",
+            },
+        )
         assert resp.status_code == 429
         data = resp.get_json()
         assert data["active_tasks"] == limit
@@ -142,41 +181,86 @@ class TestWorkflowSubmit:
     def test_below_capacity_is_accepted(self, client, processor):
         """When try_submit_task returns True (under capacity), request is accepted."""
         processor.try_submit_task.return_value = True
-        resp = client.post("/workflow", json={
-            "elements": [{"id": "e1", "description": "btn", "action": "click"}],
-            "url": "https://example.com",
-        })
-        assert resp.status_code in [200, 202]
-
+        resp = client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "btn", "action": "click"}],
+                "url": "https://example.com",
+            },
+        )
+        assert resp.status_code == 202
 
     def test_batch_alias_works(self, client, processor):
-        """POST /batch works as alias for /workflow."""
+        """POST /batch works as alias for /workflow — same status, same body shape."""
         processor.count_active_tasks.return_value = 0
-        resp = client.post("/batch", json={
-            "elements": [{"id": "e1", "description": "btn", "action": "click"}],
-            "url": "https://example.com",
-        })
-        assert resp.status_code in [200, 202]
+        resp = client.post(
+            "/batch",
+            json={
+                "elements": [{"id": "e1", "description": "btn", "action": "click"}],
+                "url": "https://example.com",
+            },
+        )
+        assert resp.status_code == 202
+        assert "task_id" in resp.get_json()
 
 
 class TestQueryEndpoint:
     """Tests for GET /query/<task_id>."""
 
     def test_query_completed_task(self, client, processor):
-        """Query a completed task returns result."""
+        """A completed task returns 200 AND carries its results."""
         processor.get_task_status.return_value = {
             "task_id": "t1",
             "status": "completed",
+            "results": {"locator_mapping": {"e1": {"best_locator": "id=x"}}},
+        }
+        resp = client.get("/query/t1")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "completed"
+        assert data["results"] == {"locator_mapping": {"e1": {"best_locator": "id=x"}}}
+
+    @pytest.mark.parametrize("status", ["processing", "running"])
+    def test_query_in_flight_task_returns_202_without_results(self, client, processor, status):
+        """In-flight tasks return 202 and must NOT leak partial results.
+
+        Both branches are pinned: the client polls on 202, so a branch that
+        returned 200 would end the poll on an unfinished task, and one that
+        included results would hand back a partial locator_mapping.
+        """
+        processor.get_task_status.return_value = {
+            "task_id": "t1",
+            "status": status,
+            "results": {"locator_mapping": {"e1": "partial"}},
+        }
+        resp = client.get("/query/t1")
+        assert resp.status_code == 202
+        data = resp.get_json()
+        assert data["status"] == status
+        assert "results" not in data
+
+    def test_query_unrecognised_status_returns_200_without_results(self, client, processor):
+        """A status outside the known set falls to the terminal 200 branch."""
+        processor.get_task_status.return_value = {
+            "task_id": "t1",
+            "status": "failed",
             "results": {"locator_mapping": {}},
         }
         resp = client.get("/query/t1")
         assert resp.status_code == 200
+        assert "results" not in resp.get_json()
 
     def test_query_unknown_task(self, client, processor):
         """Query unknown task_id returns 404."""
         processor.get_task_status.return_value = None
         resp = client.get("/query/nonexistent")
         assert resp.status_code == 404
+
+    def test_query_processor_exception_returns_500(self, client, processor):
+        """An unexpected processor failure surfaces as 500, not a stack trace."""
+        processor.get_task_status.side_effect = RuntimeError("processor exploded")
+        resp = client.get("/query/t1")
+        assert resp.status_code == 500
 
 
 class TestTasksEndpoint:
@@ -195,6 +279,7 @@ class TestTasksEndpoint:
 # Health endpoint — provider-aware fields
 # ---------------------------------------------------------------------------
 
+
 class TestHealthProviderFields:
     """
     Tests that /health returns model_provider and the correct google_api_configured
@@ -212,8 +297,9 @@ class TestHealthProviderFields:
         remain in place throughout the test.  Using a context manager guarantees
         the patch is alive for the duration of the `with` block.
         """
-        from flask import Flask
         from unittest.mock import MagicMock, patch
+
+        from flask import Flask
 
         app = Flask(__name__)
         app.config["TESTING"] = True
@@ -233,10 +319,13 @@ class TestHealthProviderFields:
         mock_cfg.max_concurrent_tasks = 10
         mock_cfg.headless = True
 
-        with patch("browser_service.api.routes.config", mock_cfg), \
-             patch("browser_service.api.routes._nl_settings", None), \
-             patch("browser_service.api.routes.process_workflow_task"):
+        with (
+            patch("browser_service.api.routes.config", mock_cfg),
+            patch("browser_service.api.routes._nl_settings", None),
+            patch("browser_service.api.routes.process_workflow_task"),
+        ):
             from browser_service.api.routes import register_routes
+
             register_routes(app, mock_processor)
             with app.test_client() as client:
                 yield client
@@ -259,7 +348,9 @@ class TestHealthProviderFields:
 
     def test_health_gemini_with_api_key(self):
         """Gemini provider with a valid API key: google_api_configured=true."""
-        with self._make_app_with_config("gemini", credentials_obj=None, api_key="real-key") as client:
+        with self._make_app_with_config(
+            "gemini", credentials_obj=None, api_key="real-key"
+        ) as client:
             resp = client.get("/health")
         data = resp.get_json()
         assert data["model_provider"] == "gemini"
@@ -354,10 +445,13 @@ class TestHealthHeadlessField:
         mock_cfg.llm.model_provider = "vertex"
         mock_cfg.llm.vertexai_credentials = object()
 
-        with patch("browser_service.api.routes.config", mock_cfg), \
-             patch("browser_service.api.routes._nl_settings", None), \
-             patch("browser_service.api.routes.process_workflow_task"):
+        with (
+            patch("browser_service.api.routes.config", mock_cfg),
+            patch("browser_service.api.routes._nl_settings", None),
+            patch("browser_service.api.routes.process_workflow_task"),
+        ):
             from browser_service.api.routes import register_routes
+
             register_routes(app, mock_processor)
             with app.test_client() as client:
                 yield client
@@ -371,3 +465,170 @@ class TestHealthHeadlessField:
         with self._make_app_with_headless(False) as client:
             resp = client.get("/health")
         assert resp.get_json()["headless"] is False
+
+
+class TestErrorResponsesDoNotLeakInternals:
+    """A 500 body must not carry the exception text.
+
+    Exception messages routinely embed absolute paths, CDP endpoints, config
+    values and upstream API payloads. The detail belongs in the server log —
+    which every one of these handlers already writes with exc_info=True — not
+    in a response any caller can read.
+    """
+
+    SECRET = "postgresql://user:hunter2@10.0.0.4:5432/internal"
+
+    def _assert_scrubbed(self, resp, caplog):
+        assert resp.status_code == 500
+        body = resp.get_data(as_text=True)
+        assert self.SECRET not in body, f"exception text leaked into 500 body: {body}"
+        assert resp.get_json()["message"] == "Internal server error"
+        assert self.SECRET in caplog.text, "detail must still reach the server log"
+
+    def test_workflow_submit_500_is_scrubbed(self, client, processor, caplog):
+        processor.try_submit_task.side_effect = RuntimeError(self.SECRET)
+        with caplog.at_level(logging.ERROR, logger="browser_service.api.routes"):
+            resp = client.post(
+                "/workflow",
+                json={
+                    "elements": [{"id": "e1", "description": "button", "action": "click"}],
+                    "url": "https://example.com",
+                    "user_query": "click the button",
+                },
+            )
+        self._assert_scrubbed(resp, caplog)
+
+    def test_query_500_is_scrubbed(self, client, processor, caplog):
+        processor.get_task_status.side_effect = RuntimeError(self.SECRET)
+        with caplog.at_level(logging.ERROR, logger="browser_service.api.routes"):
+            resp = client.get("/query/t1")
+        self._assert_scrubbed(resp, caplog)
+
+    def test_list_tasks_500_is_scrubbed(self, client, processor, caplog):
+        processor.list_tasks.side_effect = RuntimeError(self.SECRET)
+        with caplog.at_level(logging.ERROR, logger="browser_service.api.routes"):
+            resp = client.get("/tasks")
+        self._assert_scrubbed(resp, caplog)
+
+    def test_unhandled_exception_handler_omits_error_field(self, caplog):
+        """The app-wide 500 handler returns no `error` key and logs the cause.
+
+        TESTING/PROPAGATE_EXCEPTIONS must be off, otherwise Flask re-raises past
+        the handler and this asserts nothing.
+        """
+        app = Flask(__name__)
+        app.config["PROPAGATE_EXCEPTIONS"] = False
+
+        mock_processor = MagicMock()
+        with (
+            patch("browser_service.api.routes.config") as mock_config,
+            patch("browser_service.api.routes._nl_settings", None),
+            patch("browser_service.api.routes.process_workflow_task"),
+        ):
+            mock_config.max_concurrent_tasks = 10
+            from browser_service.api.routes import register_routes
+
+            register_routes(app, mock_processor)
+
+        @app.route("/boom")
+        def boom():
+            raise RuntimeError(self.SECRET)
+
+        with caplog.at_level(logging.ERROR, logger="browser_service.api.routes"):
+            resp = app.test_client().get("/boom")
+
+        assert resp.status_code == 500
+        data = resp.get_json()
+        assert "error" not in data, f"500 handler still exposes an error field: {data}"
+        assert data["message"] == "Internal server error"
+        assert self.SECRET in caplog.text, "the 500 handler must log the cause"
+
+
+class TestLogSanitization:
+    """Caller-controlled values must not be able to forge log entries (CWE-117).
+
+    Two different reachability stories, and the distinction is the point:
+
+    - task_id is a PATH segment. Werkzeug strips CR/LF before the view runs
+      (verified: "aaa\\r\\nWARNING x" arrives as "aaaWARNING x") and the value
+      must match a server-generated UUID key to reach the log line at all.
+      Forging through it is not reachable; sanitizing it is defence in depth
+      and the fix for the SonarCloud finding.
+    - parent_workflow_id, url and user_query are JSON BODY fields. Nothing
+      strips them — validate_workflow_request does no newline checking — so a
+      newline in the body reached the log record verbatim and forged an entry.
+      That WAS reachable, in one request, and the end-to-end tests below drive
+      it through the Flask client to prove it stays closed.
+    """
+
+    FORGED = "abc\r\n2026-01-01 CRITICAL forged entry"
+
+    def _assert_no_record_spans_lines(self, caplog):
+        offenders = [r.getMessage() for r in caplog.records if "\n" in r.getMessage()]
+        assert not offenders, f"log record carries a newline from caller input: {offenders}"
+
+    def test_body_parent_workflow_id_cannot_forge_a_log_entry(self, client, caplog):
+        caplog.set_level(logging.INFO, logger="browser_service.api.routes")
+        client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "d"}],
+                "url": "https://example.com",
+                "user_query": "click",
+                "parent_workflow_id": self.FORGED,
+            },
+        )
+        assert "forged entry" in caplog.text, "the value must still be logged, just flattened"
+        self._assert_no_record_spans_lines(caplog)
+
+    def test_body_url_and_query_cannot_forge_a_log_entry(self, client, caplog):
+        caplog.set_level(logging.INFO, logger="browser_service.api.routes")
+        client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "d"}],
+                "url": f"https://example.com/{self.FORGED}",
+                "user_query": self.FORGED,
+            },
+        )
+        assert "forged entry" in caplog.text, "the value must still be logged, just flattened"
+        self._assert_no_record_spans_lines(caplog)
+
+    def test_long_url_is_not_truncated_to_the_default_cap(self, client, caplog):
+        """Sanitizing must not cost debuggability.
+
+        URLs routinely run past the 80-char default (ASTPP query strings), and
+        the submission log line is the one place the target URL is recorded.
+        Flattening is the requirement; truncating to 80 is not.
+        """
+        caplog.set_level(logging.INFO, logger="browser_service.api.routes")
+        long_url = "https://example.com/" + "a" * 150
+        client.post(
+            "/workflow",
+            json={
+                "elements": [{"id": "e1", "description": "d"}],
+                "url": long_url,
+                "user_query": "click",
+            },
+        )
+        assert long_url in caplog.text
+
+    def test_crlf_in_logged_value_is_neutralised(self):
+        from browser_service.api.routes import _sanitize_for_log
+
+        forged = "abc\r\nINFO Task deadbeef query completed: True"
+        out = _sanitize_for_log(forged)
+        assert "\n" not in out
+        assert "\r" not in out
+        assert out.startswith("abc")
+
+    def test_long_value_is_capped(self):
+        from browser_service.api.routes import _sanitize_for_log
+
+        assert len(_sanitize_for_log("x" * 500)) <= 80
+
+    def test_ordinary_uuid_passes_through_unchanged(self):
+        from browser_service.api.routes import _sanitize_for_log
+
+        tid = "51aa8eaa-6637-464e-b078-89af2d65191f"
+        assert _sanitize_for_log(tid) == tid

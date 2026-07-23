@@ -83,9 +83,9 @@ async def find_locator(
     input_name = ""
 
     is_direct_input = (
-        (element_data.get("tagName") or "").lower() == "input"
-        and "flatpickr-input"
-        in ((element_data.get("className") or "").lower().split())
+        element_data.get("tagName") or ""
+    ).lower() == "input" and "flatpickr-input" in (
+        (element_data.get("className") or "").lower().split()
     )
     if is_direct_input:
         input_id = (element_data.get("id") or "").strip()
@@ -114,11 +114,13 @@ async def find_locator(
     elif input_id:
         candidates.append((f"id={input_id}", "flatpickr-input id (volatile)"))
     if input_name:
-        escaped_name = input_name.replace('\\', '\\\\').replace('"', '\\"')
-        candidates.append((
-            f'input.flatpickr-input[name="{escaped_name}"]',
-            "flatpickr-input name",
-        ))
+        escaped_name = input_name.replace("\\", "\\\\").replace('"', '\\"')
+        candidates.append(
+            (
+                f'input.flatpickr-input[name="{escaped_name}"]',
+                "flatpickr-input name",
+            )
+        )
     candidates.append(("input.flatpickr-input", "sole flatpickr input on page"))
     if anchor_xpath:
         candidates.append((f"xpath={anchor_xpath}", "probe anchor xpath"))
@@ -132,7 +134,8 @@ async def find_locator(
         except Exception as e:
             logger.info(
                 "date_picker.candidate_probe_failed locator=%s error=%s",
-                locator, e,
+                locator,
+                e,
             )
 
     if chosen is None:
@@ -145,15 +148,15 @@ async def find_locator(
     # downstream warnings/healing want to know why Fill Text was not used.
     readonly = False
     try:
-        readonly = (
-            await search_context.locator(locator).get_attribute("readonly")
-        ) is not None
+        readonly = (await search_context.locator(locator).get_attribute("readonly")) is not None
     except Exception:
         pass
 
     logger.info(
         "date_picker.resolved locator=%s strategy=%s readonly=%s",
-        locator, strategy, readonly,
+        locator,
+        strategy,
+        readonly,
     )
     return build_locator_result(
         element_id=element_id,

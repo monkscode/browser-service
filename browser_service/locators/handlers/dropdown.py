@@ -29,11 +29,13 @@ Depends on:
 """
 
 import re
-import structlog
 from typing import TYPE_CHECKING, Optional
 
-from .base import build_locator_result
+import structlog
+
 from browser_service.locators.stability import STABLE, score_stability
+
+from .base import build_locator_result
 
 if TYPE_CHECKING:
     from ..classifier import ElementTypeInfo
@@ -51,7 +53,12 @@ logger = structlog.get_logger(__name__)
 _LABEL_REQUIRED_MARKER_RE = re.compile(r"\s*\*\s*$")
 _LABEL_HTML_REQUIRED_ARTEFACT = "<span> *</span>"
 _DESCRIPTION_UI_SUFFIXES: tuple[str, ...] = (
-    "dropdown", "field", "input", "select", "picker", "chooser",
+    "dropdown",
+    "field",
+    "input",
+    "select",
+    "picker",
+    "chooser",
 )
 
 _TS_CONTROL_SUFFIX = "-ts-control"
@@ -110,7 +117,7 @@ def _xpath_string_literal(value: str) -> str:
     if '"' not in value:
         return f'"{value}"'
     parts = value.split("'")
-    return "concat(" + ", \"'\", ".join(f"'{p}'" for p in parts) + ")"
+    return "concat(" + ', "\'", '.join(f"'{p}'" for p in parts) + ")"
 
 
 def _is_real_select_id(select_id: Optional[str]) -> bool:
@@ -453,10 +460,7 @@ async def _tom_select(
     )
 
     has_real_select_id = _is_real_select_id(select_id)
-    has_real_input_id = (
-        input_id is not None
-        and score_stability("id", input_id) == STABLE
-    )
+    has_real_input_id = input_id is not None and score_stability("id", input_id) == STABLE
 
     # Auto-generated select_ids (tomselect-N) are positionally unstable — the N
     # depends on TomSelect initialisation order in a given browser session and will
@@ -464,8 +468,11 @@ async def _tom_select(
     # Code Assembler uses the locator-based JS fallback instead of id=tomselect-N.
     result_select_id = select_id if has_real_select_id else None
     if result_select_id is None and select_id is not None:
-        logger.info("tom_select.select_id_suppressed", select_id=select_id,
-                    reason="volatile per stability scorer, unstable across sessions")
+        logger.info(
+            "tom_select.select_id_suppressed",
+            select_id=select_id,
+            reason="volatile per stability scorer, unstable across sessions",
+        )
 
     # ---- Strategy 1a: id-anchored input ----
     if has_real_input_id:
@@ -627,12 +634,14 @@ async def _resolve_tom_select_ids(
     # then re-run the probe with adjusted viewport-relative coords.
     if not select_id and confirmed_coords:
         try:
-            viewport = await search_context.evaluate(
-                "() => ({ h: window.innerHeight })"
-            )
+            viewport = await search_context.evaluate("() => ({ h: window.innerHeight })")
             vh = viewport.get("h", 0) if viewport else 0
             if confirmed_coords[1] > vh:
-                logger.info("tom_select.scroll_to_viewport", coords_y=confirmed_coords[1], viewport_height=vh)
+                logger.info(
+                    "tom_select.scroll_to_viewport",
+                    coords_y=confirmed_coords[1],
+                    viewport_height=vh,
+                )
                 probe = await search_context.evaluate(
                     _TS_SCROLL_AND_PROBE_JS,
                     {"x": confirmed_coords[0], "y": confirmed_coords[1]},
@@ -640,7 +649,9 @@ async def _resolve_tom_select_ids(
                 if probe:
                     select_id = probe.get("selectId")
                     input_id = probe.get("inputId")
-                    logger.info("tom_select.scroll_probe_resolved", select_id=select_id, input_id=input_id)
+                    logger.info(
+                        "tom_select.scroll_probe_resolved", select_id=select_id, input_id=input_id
+                    )
         except Exception as e:
             logger.warning("tom_select.scroll_probe_failed", error=str(e))
 
@@ -658,7 +669,9 @@ async def _resolve_tom_select_ids(
                 if probe:
                     select_id = probe.get("selectId")
                     input_id = probe.get("inputId")
-                    logger.info("tom_select.xpath_walk_resolved", select_id=select_id, input_id=input_id)
+                    logger.info(
+                        "tom_select.xpath_walk_resolved", select_id=select_id, input_id=input_id
+                    )
             except Exception as e:
                 logger.warning("tom_select.xpath_walk_failed", error=str(e))
 
@@ -731,11 +744,15 @@ async def _validate_and_build_result(
     try:
         count = await search_context.locator(locator).count()
     except Exception as e:
-        logger.warning("tom_select.strategy_validation_failed", strategy=strategy_name, error=str(e))
+        logger.warning(
+            "tom_select.strategy_validation_failed", strategy=strategy_name, error=str(e)
+        )
         return None
 
     if count != 1:
-        logger.info("tom_select.strategy_not_unique", strategy=strategy_name, count=count, locator=locator)
+        logger.info(
+            "tom_select.strategy_not_unique", strategy=strategy_name, count=count, locator=locator
+        )
         return None
 
     logger.info("tom_select.strategy_succeeded", strategy=strategy_name, locator=locator)

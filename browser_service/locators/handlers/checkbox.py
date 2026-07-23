@@ -37,8 +37,9 @@ Depends on:
     - browser_service.locators.classifier.ElementTypeInfo (type hint only)
 """
 
-import structlog
 from typing import TYPE_CHECKING, Optional
+
+import structlog
 
 from .base import build_locator_result
 
@@ -116,9 +117,7 @@ async def find_locator(
 
     # ---- Strategy 3: custom-widget role + aria-label anchor ----
     if framework in ("custom", "toggle") and label:
-        role_for_widget = (
-            "switch" if framework == "toggle" else primary_type
-        )
+        role_for_widget = "switch" if framework == "toggle" else primary_type
         custom_result = await _try_custom_widget_by_label(
             search_context=search_context,
             role=role_for_widget,
@@ -162,26 +161,34 @@ async def _try_element_data_attrs(
     if el_id:
         candidates.append((f"id={el_id}", "id-anchored"))
     if el_name and el_value and primary_type == "radio":
-        candidates.append((
-            f'input[type="radio"][name="{el_name}"][value="{el_value}"]',
-            "name+value (radio)",
-        ))
+        candidates.append(
+            (
+                f'input[type="radio"][name="{el_name}"][value="{el_value}"]',
+                "name+value (radio)",
+            )
+        )
     if el_name:
         if framework == "native":
-            candidates.append((
-                f'input[type="{primary_type}"][name="{el_name}"]',
-                "name-anchored",
-            ))
+            candidates.append(
+                (
+                    f'input[type="{primary_type}"][name="{el_name}"]',
+                    "name-anchored",
+                )
+            )
         elif framework == "toggle":
-            candidates.append((
-                f'[role="switch"][name="{el_name}"]',
-                "role+name-anchored",
-            ))
+            candidates.append(
+                (
+                    f'[role="switch"][name="{el_name}"]',
+                    "role+name-anchored",
+                )
+            )
         else:
-            candidates.append((
-                f'[role="{primary_type}"][name="{el_name}"]',
-                "role+name-anchored",
-            ))
+            candidates.append(
+                (
+                    f'[role="{primary_type}"][name="{el_name}"]',
+                    "role+name-anchored",
+                )
+            )
 
     for locator, name in candidates:
         if await _locator_unique(search_context, locator):
@@ -196,18 +203,14 @@ async def _try_element_data_attrs(
 # ----------------------------------------------------------------------
 
 
-async def _try_custom_widget_by_label(
-    search_context, role: str, label: str
-) -> Optional[dict]:
+async def _try_custom_widget_by_label(search_context, role: str, label: str) -> Optional[dict]:
     """
     Try aria-label-anchored locator, then a Playwright role= selector
     scoped to the visible label.
     """
     candidates: list[tuple[str, str]] = [
-        (f'[role="{role}"][aria-label="{label}"]',
-         f"role={role}+aria-label"),
-        (f'role={role}[name="{label}"]',
-         f"role={role}+accessible-name"),
+        (f'[role="{role}"][aria-label="{label}"]', f"role={role}+aria-label"),
+        (f'role={role}[name="{label}"]', f"role={role}+accessible-name"),
     ]
     for locator, name in candidates:
         if await _locator_unique(search_context, locator):
@@ -272,22 +275,12 @@ def _css_quote(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-async def resolve_hidden_input_proxy(
-    search_context, input_locator: str
-) -> Optional[dict]:
-    """
-    When a resolved checkbox/radio input is hidden, find its visible
-    clickable proxy (G3 / Task C).
+async def _probe_hidden_input(search_context, input_locator: str) -> Optional[dict]:
+    """Return the hidden-input probe payload, or None when no redirect applies.
 
-    Returns:
-      - ``None`` — input is visible (or not an <input>, or the probe
-        errored): no redirection, caller keeps the locator as-is.
-      - ``{"hidden_input": True, "locator": <proxy>, "proxy_kind": ...}``
-        — a unique, visible proxy was found; caller should emit it as
-        best_locator and keep ``input_locator`` for state reads.
-      - ``{"hidden_input": True, "locator": None, "proxy_kind": ""}`` —
-        input is hidden but no proxy qualified; caller keeps the input
-        locator (today's behavior) with the flag for observability.
+    None means one of: the input is visible, it is not a real ``<input>``
+    (a custom widget IS the visible control), or the probe itself errored —
+    in every case the caller keeps its locator unchanged.
     """
     try:
         first = search_context.locator(input_locator).first
@@ -302,32 +295,50 @@ async def resolve_hidden_input_proxy(
         # Custom widgets (role="switch" divs/spans) ARE the visible
         # control — redirection only applies to real hidden inputs.
         return None
+    return probe
 
+
+def _proxy_candidates(input_locator: str, probe: dict) -> list[tuple[str, str]]:
+    """Ordered ``(selector, kind)`` proxy candidates for a hidden input."""
     el_id = (probe.get("id") or "").strip()
     # CSS form of the input, needed for :has() and sibling candidates.
     # Attribute-selector form avoids CSS identifier-escaping issues.
-    input_css: Optional[str] = (
-        f'input[id="{_css_quote(el_id)}"]' if el_id else None
-    )
+    input_css: Optional[str] = f'input[id="{_css_quote(el_id)}"]' if el_id else None
     if input_css is None:
         loc = input_locator.strip()
-        if not (loc.startswith(("xpath=", "text=", "role=", "//"))
-                or ">>" in loc):
+        if not (loc.startswith(("xpath=", "text=", "role=", "//")) or ">>" in loc):
             input_css = loc  # already a plain CSS selector
 
     candidates: list[tuple[str, str]] = []
     if el_id and probe.get("hasLabelFor"):
-        candidates.append(
-            (f'label[for="{_css_quote(el_id)}"]', "label-for")
-        )
+        candidates.append((f'label[for="{_css_quote(el_id)}"]', "label-for"))
     if input_css and probe.get("hasWrappingLabel"):
         candidates.append((f"label:has({input_css})", "wrapping-label"))
     if input_css and probe.get("siblingTag"):
-        candidates.append(
-            (f'{input_css} + {probe["siblingTag"]}', "adjacent-sibling")
-        )
+        candidates.append((f"{input_css} + {probe['siblingTag']}", "adjacent-sibling"))
+    return candidates
 
-    for proxy, kind in candidates:
+
+async def resolve_hidden_input_proxy(search_context, input_locator: str) -> Optional[dict]:
+    """
+    When a resolved checkbox/radio input is hidden, find its visible
+    clickable proxy (G3 / Task C).
+
+    Returns:
+      - ``None`` — input is visible (or not an <input>, or the probe
+        errored): no redirection, caller keeps the locator as-is.
+      - ``{"hidden_input": True, "locator": <proxy>, "proxy_kind": ...}``
+        — a unique, visible proxy was found; caller should emit it as
+        best_locator and keep ``input_locator`` for state reads.
+      - ``{"hidden_input": True, "locator": None, "proxy_kind": ""}`` —
+        input is hidden but no proxy qualified; caller keeps the input
+        locator (today's behavior) with the flag for observability.
+    """
+    probe = await _probe_hidden_input(search_context, input_locator)
+    if probe is None:
+        return None
+
+    for proxy, kind in _proxy_candidates(input_locator, probe):
         try:
             if await search_context.locator(proxy).count() != 1:
                 continue
@@ -337,7 +348,9 @@ async def resolve_hidden_input_proxy(
             continue
         logger.info(
             "checkbox.hidden_input_redirected",
-            proxy_kind=kind, input_locator=input_locator, proxy=proxy,
+            proxy_kind=kind,
+            input_locator=input_locator,
+            proxy=proxy,
         )
         return {"hidden_input": True, "locator": proxy, "proxy_kind": kind}
 
@@ -375,10 +388,7 @@ async def _build_result(
         if proxy_info.get("locator"):
             best_locator = proxy_info["locator"]
             element_info["proxy_kind"] = proxy_info["proxy_kind"]
-            strategy_name = (
-                f"{strategy_name} → hidden-input redirect "
-                f"({proxy_info['proxy_kind']})"
-            )
+            strategy_name = f"{strategy_name} → hidden-input redirect ({proxy_info['proxy_kind']})"
         extra["element_info"] = element_info
 
     return build_locator_result(
@@ -402,128 +412,115 @@ async def _build_result(
 # ======================================================================
 
 
-async def find_checkbox_or_radio_by_label(
-    page, label_text: str
-) -> Optional[dict]:
+async def _find_matching_label(page, text: str) -> Optional[str]:
+    """Return the first matching label locator, exact match before substring.
+
+    has-text is a substring match, so "Option 1" would hit "Option 10" when
+    that label comes first in the DOM — text-is is tried first to avoid it.
     """
-    Find a checkbox or radio input element associated with the given
-    label text.
+    for candidate in (
+        f'label:text-is("{text}")',
+        f'label:has-text("{text}")',
+    ):
+        if await page.locator(candidate).count() >= 1:
+            return candidate
+    return None
 
-    This handles multiple scenarios:
-      1. ``<label for="id">text</label> <input id="id" type="checkbox">``
-      2. ``<label><input type="checkbox"> text</label>``
-      3. ``<input type="checkbox"> text`` (no label, adjacent text)
 
-    Args:
-        page: Playwright page object.
-        label_text: The visible text near the checkbox/radio.
-
-    Returns:
-        Dict with 'locator' and 'element_type' if found, None otherwise.
-    """
-    if not label_text:
+async def _resolve_label_for(page, for_attr: str) -> Optional[dict]:
+    """``<label for="id">text</label>`` → the checkbox/radio it points at."""
+    input_locator = f'input[id="{for_attr}"]'
+    if await page.locator(input_locator).count() != 1:
         return None
 
-    text = label_text.strip()
-    logger.info("checkbox.finder_start", label=text)
+    input_type = await page.locator(input_locator).first.get_attribute("type")
+    if input_type not in ("checkbox", "radio"):
+        return None
 
-    # Strategy 1: <label> with matching text → use its 'for' attribute.
-    # Exact match first — has-text is a substring match, so "Option 1"
-    # would hit "Option 10" when that label comes first in the DOM.
+    final_locator = f"id={for_attr}"
+    logger.info(
+        "checkbox.found_via_label_for",
+        input_type=input_type,
+        locator=final_locator,
+    )
+    return {"locator": final_locator, "element_type": input_type}
+
+
+async def _resolve_nested_input(page, label_locator: str) -> Optional[dict]:
+    """``<label><input> text</label>`` → the checkbox/radio nested inside."""
+    nested_checkbox = f'{label_locator} >> input[type="checkbox"]'
+    if await page.locator(nested_checkbox).count() == 1:
+        checkbox_id = await page.locator(nested_checkbox).first.get_attribute("id")
+        checkbox_name = await page.locator(nested_checkbox).first.get_attribute("name")
+
+        if checkbox_id:
+            final_locator = f"id={checkbox_id}"
+        elif checkbox_name:
+            final_locator = f'input[type="checkbox"][name="{checkbox_name}"]'
+        else:
+            final_locator = nested_checkbox
+
+        logger.info(
+            "checkbox.found_nested_in_label",
+            input_type="checkbox",
+            locator=final_locator,
+        )
+        return {"locator": final_locator, "element_type": "checkbox"}
+
+    nested_radio = f'{label_locator} >> input[type="radio"]'
+    if await page.locator(nested_radio).count() == 1:
+        radio_id = await page.locator(nested_radio).first.get_attribute("id")
+        radio_name = await page.locator(nested_radio).first.get_attribute("name")
+        radio_value = await page.locator(nested_radio).first.get_attribute("value")
+
+        if radio_id:
+            final_locator = f"id={radio_id}"
+        elif radio_name and radio_value:
+            final_locator = f'input[type="radio"][name="{radio_name}"][value="{radio_value}"]'
+        elif radio_name:
+            final_locator = f'input[type="radio"][name="{radio_name}"]'
+        else:
+            final_locator = nested_radio
+
+        logger.info(
+            "checkbox.found_nested_in_label",
+            input_type="radio",
+            locator=final_locator,
+        )
+        return {"locator": final_locator, "element_type": "radio"}
+
+    return None
+
+
+async def _resolve_by_label(page, text: str) -> Optional[dict]:
+    """Strategy 1: a ``<label>`` whose text matches, via its ``for`` or nested input.
+
+    A label carries EITHER a ``for`` attribute OR a nested input; the branches
+    stay mutually exclusive, as before — a ``for`` that resolves to nothing does
+    not fall back to the nested search, it falls through to Strategy 2.
+    """
     try:
-        label_locator = None
-        for candidate in (
-            f'label:text-is("{text}")',
-            f'label:has-text("{text}")',
-        ):
-            if await page.locator(candidate).count() >= 1:
-                label_locator = candidate
-                break
+        label_locator = await _find_matching_label(page, text)
+        if not label_locator:
+            return None
 
-        if label_locator:
-            for_attr = await page.locator(label_locator).first.get_attribute(
-                "for"
-            )
+        for_attr = await page.locator(label_locator).first.get_attribute("for")
+        if for_attr:
+            return await _resolve_label_for(page, for_attr)
 
-            if for_attr:
-                input_locator = f'input[id="{for_attr}"]'
-                input_count = await page.locator(input_locator).count()
-
-                if input_count == 1:
-                    input_type = await page.locator(
-                        input_locator
-                    ).first.get_attribute("type")
-                    if input_type in ("checkbox", "radio"):
-                        final_locator = f"id={for_attr}"
-                        logger.info("checkbox.found_via_label_for", input_type=input_type, locator=final_locator)
-                        return {
-                            "locator": final_locator,
-                            "element_type": input_type,
-                        }
-            else:
-                # No 'for' attribute — check for nested input inside label.
-                try:
-                    nested_checkbox = (
-                        f'{label_locator} >> input[type="checkbox"]'
-                    )
-                    if await page.locator(nested_checkbox).count() == 1:
-                        checkbox_id = await page.locator(
-                            nested_checkbox
-                        ).first.get_attribute("id")
-                        checkbox_name = await page.locator(
-                            nested_checkbox
-                        ).first.get_attribute("name")
-
-                        if checkbox_id:
-                            final_locator = f"id={checkbox_id}"
-                        elif checkbox_name:
-                            final_locator = f'input[type="checkbox"][name="{checkbox_name}"]'
-                        else:
-                            final_locator = nested_checkbox
-
-                        logger.info("checkbox.found_nested_in_label", input_type="checkbox", locator=final_locator)
-                        return {
-                            "locator": final_locator,
-                            "element_type": "checkbox",
-                        }
-
-                    nested_radio = (
-                        f'{label_locator} >> input[type="radio"]'
-                    )
-                    if await page.locator(nested_radio).count() == 1:
-                        radio_id = await page.locator(
-                            nested_radio
-                        ).first.get_attribute("id")
-                        radio_name = await page.locator(
-                            nested_radio
-                        ).first.get_attribute("name")
-                        radio_value = await page.locator(
-                            nested_radio
-                        ).first.get_attribute("value")
-
-                        if radio_id:
-                            final_locator = f"id={radio_id}"
-                        elif radio_name and radio_value:
-                            final_locator = (
-                                f'input[type="radio"][name="{radio_name}"]'
-                                f'[value="{radio_value}"]'
-                            )
-                        elif radio_name:
-                            final_locator = f'input[type="radio"][name="{radio_name}"]'
-                        else:
-                            final_locator = nested_radio
-
-                        logger.info("checkbox.found_nested_in_label", input_type="radio", locator=final_locator)
-                        return {
-                            "locator": final_locator,
-                            "element_type": "radio",
-                        }
-                except Exception as e:
-                    logger.info("checkbox.nested_input_error", error=str(e))
+        # No 'for' attribute — check for a nested input inside the label.
+        try:
+            return await _resolve_nested_input(page, label_locator)
+        except Exception as e:
+            logger.info("checkbox.nested_input_error", error=str(e))
+            return None
     except Exception as e:
         logger.info("checkbox.label_search_error", error=str(e))
+        return None
 
-    # Strategy 2: text element with adjacent checkbox/radio.
+
+async def _resolve_adjacent_input(page, text: str) -> Optional[dict]:
+    """Strategy 2: a text element with an adjacent checkbox/radio."""
     try:
         adjacent_patterns = [
             f'input[type="checkbox"]:left-of(:text("{text}"):visible)',
@@ -554,7 +551,9 @@ async def find_checkbox_or_radio_by_label(
                     else:
                         continue
 
-                    logger.info("checkbox.found_adjacent", input_type=input_type, locator=final_locator)
+                    logger.info(
+                        "checkbox.found_adjacent", input_type=input_type, locator=final_locator
+                    )
                     return {
                         "locator": final_locator,
                         "element_type": input_type,
@@ -563,6 +562,40 @@ async def find_checkbox_or_radio_by_label(
                 pass
     except Exception as e:
         logger.info("checkbox.adjacent_search_error", error=str(e))
+
+    return None
+
+
+async def find_checkbox_or_radio_by_label(page, label_text: str) -> Optional[dict]:
+    """
+    Find a checkbox or radio input element associated with the given
+    label text.
+
+    This handles multiple scenarios:
+      1. ``<label for="id">text</label> <input id="id" type="checkbox">``
+      2. ``<label><input type="checkbox"> text</label>``
+      3. ``<input type="checkbox"> text`` (no label, adjacent text)
+
+    Args:
+        page: Playwright page object.
+        label_text: The visible text near the checkbox/radio.
+
+    Returns:
+        Dict with 'locator' and 'element_type' if found, None otherwise.
+    """
+    if not label_text:
+        return None
+
+    text = label_text.strip()
+    logger.info("checkbox.finder_start", label=text)
+
+    result = await _resolve_by_label(page, text)
+    if result:
+        return result
+
+    result = await _resolve_adjacent_input(page, text)
+    if result:
+        return result
 
     logger.info("checkbox.finder_not_found", label=text)
     return None

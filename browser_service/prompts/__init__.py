@@ -14,10 +14,10 @@ The prompts guide the agent through element identification, locator extraction,
 and validation workflows.
 """
 
-from .workflow import build_workflow_prompt
 from .system import build_system_prompt
+from .workflow import build_workflow_prompt
 
 __all__ = [
-    'build_workflow_prompt',
-    'build_system_prompt',
+    "build_workflow_prompt",
+    "build_system_prompt",
 ]

@@ -12,13 +12,16 @@ Functions:
 """
 
 import logging
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Any, Dict, List, Optional, Tuple
+
 from flask import Request
 
 logger = logging.getLogger(__name__)
 
 
-def validate_workflow_request(request: Request) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+def validate_workflow_request(
+    request: Request,
+) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
     """
     Validate workflow request and extract data.
 
@@ -47,7 +50,11 @@ def validate_workflow_request(request: Request) -> Tuple[bool, Optional[str], Op
     # Validate elements field
     elements = data.get("elements")
     if not elements or not isinstance(elements, list):
-        return False, "Missing or invalid 'elements' field. Must be a list of element descriptions.", None
+        return (
+            False,
+            "Missing or invalid 'elements' field. Must be a list of element descriptions.",
+            None,
+        )
 
     if len(elements) == 0:
         return False, "Elements list cannot be empty.", None
@@ -70,16 +77,14 @@ def validate_workflow_request(request: Request) -> Tuple[bool, Optional[str], Op
         "enable_custom_actions": enable_custom_actions,
         "parent_workflow_id": parent_workflow_id,
         "org_id": org_id,
-        "user_id": user_id
+        "user_id": user_id,
     }
 
     return True, None, validated_data
 
 
 def format_task_response(
-    task_data: Dict[str, Any],
-    include_results: bool = True,
-    truncate_objective: int = 200
+    task_data: Dict[str, Any], include_results: bool = True, truncate_objective: int = 200
 ) -> Dict[str, Any]:
     """
     Format task data for API response.
@@ -109,7 +114,7 @@ def format_task_response(
         "task_id": task_id,
         "status": status,
         "objective": objective,
-        "created_at": task_data.get("created_at")
+        "created_at": task_data.get("created_at"),
     }
 
     # Add status-specific fields
@@ -132,6 +137,7 @@ def format_task_response(
     elif status == "running":
         # Calculate running time
         import time
+
         started_at = task_data.get("started_at")
         if started_at:
             response["running_time"] = time.time() - started_at
@@ -140,9 +146,7 @@ def format_task_response(
 
 
 def format_error_response(
-    message: str,
-    status_code: int = 500,
-    additional_data: Optional[Dict[str, Any]] = None
+    message: str, status_code: int = 500, additional_data: Optional[Dict[str, Any]] = None
 ) -> Tuple[Dict[str, Any], int]:
     """
     Format error response with consistent structure.
@@ -159,10 +163,7 @@ def format_error_response(
         >>> return format_error_response("Task not found", 404)
         >>> return format_error_response("Invalid request", 400, {"field": "elements"})
     """
-    response = {
-        "status": "error",
-        "message": message
-    }
+    response = {"status": "error", "message": message}
 
     if additional_data:
         response.update(additional_data)
@@ -192,7 +193,7 @@ def format_task_list_response(tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
         status = task_data.get("status", "unknown")
 
         # Count active tasks
-        if status in ['processing', 'running']:
+        if status in ["processing", "running"]:
             active_count += 1
 
         # Create task summary
@@ -200,7 +201,7 @@ def format_task_list_response(tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
             "task_id": task_data.get("task_id"),
             "status": status,
             "objective": task_data.get("objective", "")[:100],  # Truncate for display
-            "created_at": task_data.get("created_at")
+            "created_at": task_data.get("created_at"),
         }
 
         # Add completion info if available
@@ -210,8 +211,4 @@ def format_task_list_response(tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
 
         task_list.append(task_summary)
 
-    return {
-        "tasks": task_list,
-        "total_tasks": len(task_list),
-        "active_tasks": active_count
-    }
+    return {"tasks": task_list, "total_tasks": len(task_list), "active_tasks": active_count}

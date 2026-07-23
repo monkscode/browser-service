@@ -13,20 +13,20 @@ Usage:
     python /abs/path/to/cleanup_worker.py <browser_pid>
 """
 
-import sys
-import os
 import csv
 import io
-import time
 import logging
+import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 
 # Leaked browser-use temp profiles (see _sweep_leaked_profiles).
 PROFILE_SWEEP_PREFIX = "browser-use-user-data-dir-"
 PROFILE_SWEEP_MAX_AGE_S = 86400  # >24h only (owner-approved gate) — never a live session
-PROFILE_SWEEP_MAX_DELETES = 20   # bounded work per sweep; ~55 dirs/day leak vs 1 sweep per task
+PROFILE_SWEEP_MAX_DELETES = 20  # bounded work per sweep; ~55 dirs/day leak vs 1 sweep per task
 
 
 def _setup_logging() -> logging.Logger:
@@ -72,7 +72,10 @@ def _find_chrome_orphans(browser_pid: int, logger: logging.Logger) -> list:
         if sys.platform.startswith("win"):
             result = subprocess.run(
                 [
-                    "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
                     f"Get-CimInstance Win32_Process -Filter 'ParentProcessId={int(browser_pid)}' | "
                     "Select-Object ProcessId,Name | ConvertTo-Csv -NoTypeInformation",
                 ],
@@ -176,8 +179,7 @@ def _sweep_leaked_profiles(
                 f"{remaining} eligible left for future sweeps"
             )
         else:
-            logger.info("   ✅ No leaked browser-use profiles older than "
-                        f"{max_age_s}s found")
+            logger.info(f"   ✅ No leaked browser-use profiles older than {max_age_s}s found")
     except Exception as e:
         logger.warning(f"   ⚠️ Leaked profile sweep failed: {e}")
 
@@ -220,9 +222,7 @@ def main():
                 proc.wait(timeout=5)
                 logger.info(f"   ✅ Chrome PID {browser_pid} confirmed dead")
             except psutil.TimeoutExpired:
-                logger.warning(
-                    f"   ⚠️ Chrome PID {browser_pid} did not die within 5s after SIGKILL"
-                )
+                logger.warning(f"   ⚠️ Chrome PID {browser_pid} did not die within 5s after SIGKILL")
         else:
             logger.info(f"   ✅ Chrome PID {browser_pid} not running (already terminated)")
     except psutil.NoSuchProcess:
@@ -241,7 +241,9 @@ def main():
     try:
         orphans = _find_chrome_orphans(browser_pid, logger)
         if orphans:
-            logger.info(f"   ⚠️ Found {len(orphans)} orphaned Chrome child(ren) with PPID {browser_pid}")
+            logger.info(
+                f"   ⚠️ Found {len(orphans)} orphaned Chrome child(ren) with PPID {browser_pid}"
+            )
             for orphan_pid in orphans:
                 try:
                     psutil.Process(orphan_pid).kill()
@@ -249,9 +251,7 @@ def main():
                 except psutil.NoSuchProcess:
                     pass  # Already gone — not an error
                 except psutil.AccessDenied as e:
-                    logger.warning(
-                        f"   ⚠️ Access denied killing orphan PID {orphan_pid}: {e}"
-                    )
+                    logger.warning(f"   ⚠️ Access denied killing orphan PID {orphan_pid}: {e}")
         else:
             logger.info(f"   ✅ No orphaned Chrome children found for PPID {browser_pid}")
     except Exception as e:

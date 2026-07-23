@@ -43,13 +43,19 @@ async def test_timer_logged_and_duration_injected_on_success(caplog):
         "validation_summary": {},
         "approach_metrics": {"locator_approach": "element_data", "success": True},
     }
-    with patch(
-        "browser_service.locators.find_unique_locator_at_coordinates",
-        new=AsyncMock(return_value=found_result),
-    ), caplog.at_level(logging.INFO, logger="browser_service.agent.actions"):
+    with (
+        patch(
+            "browser_service.locators.find_unique_locator_at_coordinates",
+            new=AsyncMock(return_value=found_result),
+        ),
+        caplog.at_level(logging.INFO, logger="browser_service.agent.actions"),
+    ):
         result = await find_unique_locator_action(
-            x=10, y=20, element_id="elem_1",
-            element_description="login button", page=_page(),
+            x=10,
+            y=20,
+            element_id="elem_1",
+            element_description="login button",
+            page=_page(),
         )
 
     timers = _timer_records(caplog)
@@ -71,13 +77,19 @@ async def test_timer_logged_but_not_injected_when_approach_metrics_absent(caplog
         "error": "No unique locator found",
         "validation_summary": {},
     }
-    with patch(
-        "browser_service.locators.find_unique_locator_at_coordinates",
-        new=AsyncMock(return_value=not_found),
-    ), caplog.at_level(logging.INFO, logger="browser_service.agent.actions"):
+    with (
+        patch(
+            "browser_service.locators.find_unique_locator_at_coordinates",
+            new=AsyncMock(return_value=not_found),
+        ),
+        caplog.at_level(logging.INFO, logger="browser_service.agent.actions"),
+    ):
         result = await find_unique_locator_action(
-            x=10, y=20, element_id="elem_2",
-            element_description="missing thing", page=_page(),
+            x=10,
+            y=20,
+            element_id="elem_2",
+            element_description="missing thing",
+            page=_page(),
         )
 
     timers = _timer_records(caplog)
@@ -92,13 +104,19 @@ async def test_timer_logged_but_not_injected_when_approach_metrics_absent(caplog
 
 @pytest.mark.asyncio
 async def test_timer_logged_on_timeout_path(caplog):
-    with patch(
-        "browser_service.locators.find_unique_locator_at_coordinates",
-        new=AsyncMock(side_effect=asyncio.TimeoutError),
-    ), caplog.at_level(logging.INFO, logger="browser_service.agent.actions"):
+    with (
+        patch(
+            "browser_service.locators.find_unique_locator_at_coordinates",
+            new=AsyncMock(side_effect=asyncio.TimeoutError),
+        ),
+        caplog.at_level(logging.INFO, logger="browser_service.agent.actions"),
+    ):
         result = await find_unique_locator_action(
-            x=10, y=20, element_id="elem_3",
-            element_description="slow page", page=_page(),
+            x=10,
+            y=20,
+            element_id="elem_3",
+            element_description="slow page",
+            page=_page(),
         )
 
     timers = _timer_records(caplog)

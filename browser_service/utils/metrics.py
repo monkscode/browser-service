@@ -2,15 +2,16 @@
 Metrics Recording Utility
 
 This module provides functionality for recording workflow metrics to the backend API.
-Metrics include execution time, success rates, LLM usage, and cost estimates.
+Metrics include execution time, success rates, LLM usage, and actual cost.
 
 Functions:
     - record_workflow_metrics: Record workflow metrics to the API endpoint
 """
 
 import logging
+from typing import Any, Dict, Optional
+
 import requests
-from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ def record_workflow_metrics(
     url: str,
     results: Dict[str, Any],
     session_id: Optional[str] = None,
-    backend_port: int = 8000
+    backend_port: int = 8000,
 ) -> None:
     """
     Record workflow metrics to the API endpoint for persistence.
@@ -49,25 +50,30 @@ def record_workflow_metrics(
         >>> record_workflow_metrics('task-123', 'https://example.com', results)
     """
     try:
-        summary = results.get('summary', {})
-        execution_time = results.get('execution_time', 0)
+        summary = results.get("summary", {})
+        execution_time = results.get("execution_time", 0)
 
         # Extract metrics from summary
-        total_elements = summary.get('total_elements', 0)
-        successful_elements = summary.get('successful', 0)
-        failed_elements = summary.get('failed', 0)
-        success_rate = summary.get('success_rate', 0.0)
-        total_llm_calls = summary.get('total_llm_calls', 0)
-        avg_llm_calls_per_element = summary.get('avg_llm_calls_per_element', 0.0)
-        total_cost = summary.get('estimated_total_cost', 0.0)
-        avg_cost_per_element = summary.get('estimated_cost_per_element', 0.0)
-        custom_actions_enabled = summary.get('custom_actions_enabled', False)
+        total_elements = summary.get("total_elements", 0)
+        successful_elements = summary.get("successful", 0)
+        failed_elements = summary.get("failed", 0)
+        success_rate = summary.get("success_rate", 0.0)
+        total_llm_calls = summary.get("total_llm_calls", 0)
+        avg_llm_calls_per_element = summary.get("avg_llm_calls_per_element", 0.0)
+        # `actual_cost` is the only cost key the workflow summary emits (real
+        # spend reported by browser-use, not an estimate). Reading anything else
+        # persists total_cost=0.0 for every workflow without failing anywhere.
+        # There is no per-element cost key upstream — derive it, matching the
+        # backend's own aggregate formula (total_cost / total_elements).
+        total_cost = summary.get("actual_cost", 0.0)
+        avg_cost_per_element = total_cost / total_elements if total_elements else 0.0
+        custom_actions_enabled = summary.get("custom_actions_enabled", False)
 
         # Count custom action usage from results
         custom_action_usage_count = 0
-        if 'results' in results:
-            for elem_result in results['results']:
-                if elem_result.get('metrics', {}).get('custom_action_used', False):
+        if "results" in results:
+            for elem_result in results["results"]:
+                if elem_result.get("metrics", {}).get("custom_action_used", False):
                     custom_action_usage_count += 1
 
         # Prepare metrics payload
@@ -87,7 +93,7 @@ def record_workflow_metrics(
             "url": url,
             "session_id": session_id,
             # Per-element approach metrics for pattern analysis
-            "element_approach_metrics": summary.get('element_approach_metrics', [])
+            "element_approach_metrics": summary.get("element_approach_metrics", []),
         }
 
         # Get the backend API URL
@@ -102,13 +108,15 @@ def record_workflow_metrics(
             metrics_endpoint,
             json=metrics_payload,
             timeout=5,
-            headers={'Content-Type': 'application/json'}
+            headers={"Content-Type": "application/json"},
         )
 
         if response.status_code == 200:
             logger.info(f"✅ Workflow metrics recorded successfully for workflow {workflow_id}")
         else:
-            logger.warning(f"⚠️ Failed to record metrics: HTTP {response.status_code} - {response.text}")
+            logger.warning(
+                f"⚠️ Failed to record metrics: HTTP {response.status_code} - {response.text}"
+            )
 
     except Exception as e:
         logger.error(f"❌ Error recording workflow metrics: {e}", exc_info=True)

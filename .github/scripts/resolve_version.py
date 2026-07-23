@@ -5,6 +5,7 @@ Fetching the most recent version directly from PyPI removes the dependency on
 Git tags or GitHub releases, which keeps automated publishing consistent even if
 no manual tagging occurs.
 """
+
 from __future__ import annotations
 
 import json

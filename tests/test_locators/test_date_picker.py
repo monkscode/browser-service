@@ -52,8 +52,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Pure classifier tests (no browser)
 # ======================================================================
 
-class TestClassifierDatePicker:
 
+class TestClassifierDatePicker:
     def test_vision_hint_maps(self):
         assert map_vision_hint("date-picker") == "date-picker"
 
@@ -61,9 +61,12 @@ class TestClassifierDatePicker:
         """ASTPP shape: input.flatpickr-input is HTML-deterministic —
         classified date-picker/flatpickr at high confidence in Tier 0."""
         info = classify_element_type(
-            {"tagName": "input", "type": "text",
-             "className": "text field form-control flatpickr-input",
-             "id": "customer_cdr_from_date"},
+            {
+                "tagName": "input",
+                "type": "text",
+                "className": "text field form-control flatpickr-input",
+                "id": "customer_cdr_from_date",
+            },
             "From Date filter",
         )
         assert info.primary_type == "date-picker"
@@ -93,8 +96,7 @@ class TestClassifierDatePicker:
 
     def test_hint_plus_desc_keyword_votes_high(self):
         info = classify_element_type(
-            {"tagName": "button", "className": "calendar-toggle",
-             "type": "button"},
+            {"tagName": "button", "className": "calendar-toggle", "type": "button"},
             "calendar button for the from date filter",
             vision_type_hint="date-picker",
         )
@@ -110,12 +112,15 @@ class TestClassifierDatePicker:
         assert info.primary_type == "date-picker"
         assert info.confidence == "medium"
 
-    @pytest.mark.parametrize("desc", [
-        "from date filter for the CDR report",
-        "date picker for the start date",
-        "calendar field to choose the end date",
-        "due date input on the invoice form",
-    ])
+    @pytest.mark.parametrize(
+        "desc",
+        [
+            "from date filter for the CDR report",
+            "date picker for the start date",
+            "calendar field to choose the end date",
+            "due date input on the invoice form",
+        ],
+    )
     def test_desc_keywords_vote(self, desc):
         info = classify_element_type(
             {"tagName": "input", "type": "text", "className": "form-control"},
@@ -123,11 +128,14 @@ class TestClassifierDatePicker:
         )
         assert info.primary_type == "date-picker"
 
-    @pytest.mark.parametrize("desc", [
-        "update the customer record button",
-        "validate the form submit button",
-        "candidate name input field",
-    ])
+    @pytest.mark.parametrize(
+        "desc",
+        [
+            "update the customer record button",
+            "validate the form submit button",
+            "candidate name input field",
+        ],
+    )
     def test_bare_date_substring_does_not_vote(self, desc):
         """'date' hides inside update/validate/candidate — substring
         matching on the bare word would misroute half the app."""
@@ -142,15 +150,14 @@ class TestClassifierDatePicker:
 # Integration: probe + handler + STEP-0 dispatch on a real page
 # ======================================================================
 
+
 @pytest.fixture
 async def page():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         ctx = await browser.new_context(viewport={"width": 1280, "height": 900})
         page_obj = await ctx.new_page()
-        await page_obj.goto(
-            (FIXTURES_DIR / "date_picker.html").resolve().as_uri()
-        )
+        await page_obj.goto((FIXTURES_DIR / "date_picker.html").resolve().as_uri())
         try:
             yield page_obj
         finally:
@@ -165,11 +172,13 @@ async def _center(page, selector: str) -> tuple:
 
 @pytest.mark.integration
 class TestDatePickerProbe:
-
     async def _probe(self, page, coords):
         from browser_service.locators.dom_probe import probe_specialized_type
+
         return await probe_specialized_type(
-            page=page, suspected_type="date-picker", coords=coords,
+            page=page,
+            suspected_type="date-picker",
+            coords=coords,
         )
 
     async def test_flatpickr_input_confirms_itself(self, page):
@@ -177,9 +186,7 @@ class TestDatePickerProbe:
         result = await self._probe(page, coords)
         assert result["confirmed"] is True
         assert result["framework"] == "flatpickr"
-        anchor_id = await page.locator(
-            f"xpath={result['anchor_xpath']}"
-        ).get_attribute("id")
+        anchor_id = await page.locator(f"xpath={result['anchor_xpath']}").get_attribute("id")
         assert anchor_id == "customer_cdr_from_date"
 
     async def test_calendar_button_anchors_sibling_input(self, page):
@@ -189,9 +196,7 @@ class TestDatePickerProbe:
         result = await self._probe(page, coords)
         assert result["confirmed"] is True
         assert result["framework"] == "flatpickr"
-        anchor_name = await page.locator(
-            f"xpath={result['anchor_xpath']}"
-        ).get_attribute("name")
+        anchor_name = await page.locator(f"xpath={result['anchor_xpath']}").get_attribute("name")
         assert anchor_name == "event_date"
 
     async def test_native_date_input_confirms_as_native(self, page):
@@ -213,13 +218,18 @@ class TestDatePickerProbe:
 class TestDatePickerDispatch:
     """STEP-0 end-to-end: payload carries the Assembler contract."""
 
-    async def _dispatch(self, page, element_data, coords, description,
-                        vision_type_hint="date-picker"):
+    async def _dispatch(
+        self, page, element_data, coords, description, vision_type_hint="date-picker"
+    ):
         from browser_service.locators.smart_locator import (
             _generate_locators_from_element_data,
         )
+
         return await _generate_locators_from_element_data(
-            page, element_data, "elem_1", description,
+            page,
+            element_data,
+            "elem_1",
+            description,
             expected_text=None,
             confirmed_coords=coords,
             vision_type_hint=vision_type_hint,
@@ -229,17 +239,27 @@ class TestDatePickerDispatch:
     async def test_astpp_readonly_input_payload(self, page):
         coords = await _center(page, "#customer_cdr_from_date")
         element_data = {
-            "tagName": "input", "id": "customer_cdr_from_date",
+            "tagName": "input",
+            "id": "customer_cdr_from_date",
             "name": "callstart[]",
             "className": "text field form-control flatpickr-input",
-            "textContent": "", "ariaLabel": "", "placeholder": "",
-            "title": "", "role": "", "dataTestId": "", "type": "text",
+            "textContent": "",
+            "ariaLabel": "",
+            "placeholder": "",
+            "title": "",
+            "role": "",
+            "dataTestId": "",
+            "type": "text",
             "xpath": "",
             "coordinates": {"x": coords[0], "y": coords[1]},
-            "parentId": "filter-panel", "parentClass": "",
+            "parentId": "filter-panel",
+            "parentClass": "",
         }
         result = await self._dispatch(
-            page, element_data, coords, "From Date filter for the CDR report",
+            page,
+            element_data,
+            coords,
+            "From Date filter for the CDR report",
             vision_type_hint=None,
         )
         assert result is not None and result["found"]
@@ -257,15 +277,27 @@ class TestDatePickerDispatch:
         name candidate must win."""
         coords = await _center(page, ".calendar-toggle")
         element_data = {
-            "tagName": "button", "id": "", "name": "",
-            "className": "calendar-toggle", "textContent": "",
-            "ariaLabel": "", "placeholder": "", "title": "", "role": "",
-            "dataTestId": "", "type": "button", "xpath": "",
+            "tagName": "button",
+            "id": "",
+            "name": "",
+            "className": "calendar-toggle",
+            "textContent": "",
+            "ariaLabel": "",
+            "placeholder": "",
+            "title": "",
+            "role": "",
+            "dataTestId": "",
+            "type": "button",
+            "xpath": "",
             "coordinates": {"x": coords[0], "y": coords[1]},
-            "parentId": "", "parentClass": "flatpickr-wrap",
+            "parentId": "",
+            "parentClass": "flatpickr-wrap",
         }
         result = await self._dispatch(
-            page, element_data, coords, "calendar button for the event date",
+            page,
+            element_data,
+            coords,
+            "calendar button for the event date",
         )
         assert result is not None and result["found"]
         assert result["best_locator"] == 'input.flatpickr-input[name="event_date"]'
@@ -277,15 +309,27 @@ class TestDatePickerDispatch:
         NOT commit; the generic path keeps emitting the plain id."""
         coords = await _center(page, "#dob")
         element_data = {
-            "tagName": "input", "id": "dob", "name": "dob",
-            "className": "", "textContent": "", "ariaLabel": "",
-            "placeholder": "", "title": "", "role": "", "dataTestId": "",
-            "type": "date", "xpath": "",
+            "tagName": "input",
+            "id": "dob",
+            "name": "dob",
+            "className": "",
+            "textContent": "",
+            "ariaLabel": "",
+            "placeholder": "",
+            "title": "",
+            "role": "",
+            "dataTestId": "",
+            "type": "date",
+            "xpath": "",
             "coordinates": {"x": coords[0], "y": coords[1]},
-            "parentId": "profile", "parentClass": "",
+            "parentId": "profile",
+            "parentClass": "",
         }
         result = await self._dispatch(
-            page, element_data, coords, "date of birth field",
+            page,
+            element_data,
+            coords,
+            "date of birth field",
             vision_type_hint=None,
         )
         assert result is not None and result["found"]
@@ -297,24 +341,25 @@ class TestDatePickerDispatch:
 # Plumbing tripwires
 # ======================================================================
 
-class TestPlumbing:
 
+class TestPlumbing:
     def test_element_type_enum_offers_date_picker(self):
-        src = (REPO_ROOT / "browser_service" / "agent"
-               / "registration.py").read_text(encoding="utf-8")
+        src = (REPO_ROOT / "browser_service" / "agent" / "registration.py").read_text(
+            encoding="utf-8"
+        )
         assert '"date-picker"' in src
 
     def test_framework_hint_enum_offers_flatpickr(self):
-        src = (REPO_ROOT / "browser_service" / "agent"
-               / "registration.py").read_text(encoding="utf-8")
+        src = (REPO_ROOT / "browser_service" / "agent" / "registration.py").read_text(
+            encoding="utf-8"
+        )
         assert '"flatpickr"' in src
 
     def test_system_prompt_lists_in_sync_with_schema(self):
         """The vision LLM reads the system prompt's element_type list —
         it must offer date-picker AND file-upload (the latter was missed
         when Task E extended the schema enum)."""
-        src = (REPO_ROOT / "browser_service" / "prompts"
-               / "system.py").read_text(encoding="utf-8")
+        src = (REPO_ROOT / "browser_service" / "prompts" / "system.py").read_text(encoding="utf-8")
         assert "date-picker" in src
         assert "file-upload" in src
         assert "flatpickr" in src

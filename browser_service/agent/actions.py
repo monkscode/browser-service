@@ -29,7 +29,7 @@ Usage:
 import asyncio
 import logging
 import time
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 from browser_service.locators.classifier import classify_element_type
 from browser_service.locators.stability import classify_locator
@@ -49,15 +49,15 @@ def _candidate_element_info(element_data: Optional[Dict[str, Any]]) -> Dict[str,
     if not element_data:
         return {}
     return {
-        'id': element_data.get('id', ''),
-        'tagName': element_data.get('tagName', ''),
-        'text': element_data.get('textContent', '') or element_data.get('text', ''),
-        'className': element_data.get('className', ''),
-        'ariaInvalid': element_data.get('ariaInvalid', ''),
-        'parentClassName': element_data.get('parentClassName', ''),
-        'name': element_data.get('name', ''),
-        'testId': element_data.get('dataTestId', ''),
-        'source': 'candidate_element_data',
+        "id": element_data.get("id", ""),
+        "tagName": element_data.get("tagName", ""),
+        "text": element_data.get("textContent", "") or element_data.get("text", ""),
+        "className": element_data.get("className", ""),
+        "ariaInvalid": element_data.get("ariaInvalid", ""),
+        "parentClassName": element_data.get("parentClassName", ""),
+        "name": element_data.get("name", ""),
+        "testId": element_data.get("dataTestId", ""),
+        "source": "candidate_element_data",
     }
 
 
@@ -83,45 +83,43 @@ def _candidate_tier0_stamp(
         return {}
 
     stamp: Dict[str, Any] = {}
-    if (element_data.get('tagName') or '').lower() == 'select' and element_data.get('id'):
-        stamp['select_id'] = element_data['id']
+    if (element_data.get("tagName") or "").lower() == "select" and element_data.get("id"):
+        stamp["select_id"] = element_data["id"]
 
     type_info = classify_element_type(element_data, element_description)
-    if 'tier:0' not in type_info.signals:
+    if "tier:0" not in type_info.signals:
         return stamp
-    if not any(
-        s.startswith(('type=', 'className:', 'role=')) for s in type_info.signals
-    ):
+    if not any(s.startswith(("type=", "className:", "role=")) for s in type_info.signals):
         return stamp
     # role=combobox/listbox is on the approved skip list: a
     # dropdown/combobox-input stamp matches no composer TYPE rule, while
     # the tagName fallback (div/input/span/button) routes TYPE 2/3.
-    if type_info.primary_type == 'dropdown' and type_info.framework == 'combobox-input':
+    if type_info.primary_type == "dropdown" and type_info.framework == "combobox-input":
         return stamp
 
-    stamp['element_type'] = type_info.primary_type
-    stamp['classifier_confidence'] = type_info.confidence
-    stamp['classifier_signals'] = list(type_info.signals)
-    if type_info.primary_type == 'dropdown':
-        stamp['dropdown_framework'] = type_info.framework or ''
-    elif type_info.primary_type == 'date-picker':
-        stamp['datepicker_framework'] = type_info.framework or ''
+    stamp["element_type"] = type_info.primary_type
+    stamp["classifier_confidence"] = type_info.confidence
+    stamp["classifier_signals"] = list(type_info.signals)
+    if type_info.primary_type == "dropdown":
+        stamp["dropdown_framework"] = type_info.framework or ""
+    elif type_info.primary_type == "date-picker":
+        stamp["datepicker_framework"] = type_info.framework or ""
         # Explicit empty: 'flatpickr' in dropdown_framework would misroute
         # the Assembler's dropdown table (Task D guard — mirrors the
         # date_picker handler).
-        stamp['dropdown_framework'] = ''
+        stamp["dropdown_framework"] = ""
     return stamp
 
 
 def _log_success_result(element_id: str, result: Dict[str, Any]) -> None:
     """Log successful locator finding result with detailed information."""
-    best_locator = result.get('best_locator')
-    validation_summary = result.get('validation_summary', {})
+    best_locator = result.get("best_locator")
+    validation_summary = result.get("validation_summary", {})
 
     logger.info("")
-    logger.info(f"{'='*80}")
+    logger.info(f"{'=' * 80}")
     logger.info(f"✅ CUSTOM ACTION SUCCEEDED for {element_id}")
-    logger.info(f"{'='*80}")
+    logger.info(f"{'=' * 80}")
     logger.info(f"   Best Locator: {best_locator}")
     logger.info(f"   Locator Type: {validation_summary.get('best_type', 'unknown')}")
     logger.info(f"   Strategy: {validation_summary.get('best_strategy', 'unknown')}")
@@ -138,19 +136,21 @@ def _log_success_result(element_id: str, result: Dict[str, Any]) -> None:
     logger.info(f"      - not_found: {validation_summary.get('not_found', 0)}")
     logger.info(f"      - not_unique: {validation_summary.get('not_unique', 0)}")
     logger.info(f"      - errors: {validation_summary.get('errors', 0)}")
-    logger.info(f"{'='*80}")
+    logger.info(f"{'=' * 80}")
     logger.info("")
 
 
-def _log_failure_result(element_id: str, element_description: str, x: float, y: float, result: Dict[str, Any]) -> None:
+def _log_failure_result(
+    element_id: str, element_description: str, x: float, y: float, result: Dict[str, Any]
+) -> None:
     """Log failed locator finding result with detailed error information."""
-    error = result.get('error', 'Unknown error')
-    validation_summary = result.get('validation_summary', {})
+    error = result.get("error", "Unknown error")
+    validation_summary = result.get("validation_summary", {})
 
     logger.error("")
-    logger.error(f"{'='*80}")
+    logger.error(f"{'=' * 80}")
     logger.error(f"❌ CUSTOM ACTION FAILED for {element_id}")
-    logger.error(f"{'='*80}")
+    logger.error(f"{'=' * 80}")
     logger.error(f"   Error: {error}")
     logger.error(f"   Element ID: {element_id}")
     logger.error(f"   Description: {element_description}")
@@ -162,7 +162,7 @@ def _log_failure_result(element_id: str, element_description: str, x: float, y: 
         logger.error(f"      - not_found: {validation_summary.get('not_found', 0)}")
         logger.error(f"      - not_unique: {validation_summary.get('not_unique', 0)}")
         logger.error(f"      - errors: {validation_summary.get('errors', 0)}")
-    logger.error(f"{'='*80}")
+    logger.error(f"{'=' * 80}")
     logger.error("")
 
 
@@ -178,7 +178,9 @@ async def find_unique_locator_action(
     iframe_context: Optional[str] = None,  # Iframe locator if element is inside an iframe
     is_collection: Optional[bool] = None,  # Collection flag for multi-element detection
     browser_session=None,  # BrowserSession for resolved_node lookup in smart_locator
-    vision_type_hint: Optional[str] = None,  # LLM's visual type classification (any specialized type)
+    vision_type_hint: Optional[
+        str
+    ] = None,  # LLM's visual type classification (any specialized type)
     vision_framework_hint: Optional[str] = None,  # LLM's framework guess (any specialized type)
     row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
 ) -> Dict[str, Any]:
@@ -242,9 +244,11 @@ async def find_unique_locator_action(
     logger.info(f"   Description: {element_description}")
     logger.info(f"   Coordinates: ({x}, {y})")
     if expected_text:
-        logger.info(f"   Expected text: \"{expected_text}\"")
+        logger.info(f'   Expected text: "{expected_text}"')
     if element_data:
-        logger.info(f"   Element data from index: tag=<{element_data.get('tagName', '?')}>, text=\"{element_data.get('textContent', '')[:30]}...\"")
+        logger.info(
+            f'   Element data from index: tag=<{element_data.get("tagName", "?")}>, text="{(element_data.get("textContent") or "")[:30]}..."'
+        )
     if candidate_locator:
         logger.info(f"   Candidate locator: {candidate_locator}")
     if iframe_context:
@@ -253,20 +257,22 @@ async def find_unique_locator_action(
         logger.info(f"   📋 Collection mode: {is_collection}")
 
     # Helper function to create structured error result
-    def create_error_result(error_type: str, error_message: str, additional_context: Optional[Dict] = None) -> Dict[str, Any]:
+    def create_error_result(
+        error_type: str, error_message: str, additional_context: Optional[Dict] = None
+    ) -> Dict[str, Any]:
         """Create a structured error result with complete validation data."""
         result = {
-            'element_id': element_id,
-            'description': element_description,
-            'found': False,
-            'error': error_message,
-            'error_type': error_type,
-            'coordinates': {'x': x, 'y': y},
-            'validated': False,
-            'count': 0,
-            'unique': False,
-            'valid': False,
-            'validation_method': 'playwright'
+            "element_id": element_id,
+            "description": element_description,
+            "found": False,
+            "error": error_message,
+            "error_type": error_type,
+            "coordinates": {"x": x, "y": y},
+            "validated": False,
+            "count": 0,
+            "unique": False,
+            "valid": False,
+            "validation_method": "playwright",
         }
         if additional_context:
             result.update(additional_context)
@@ -284,26 +290,26 @@ async def find_unique_locator_action(
             logger.error(f"   Element ID: {element_id}")
             logger.error(f"   Description: {element_description}")
             logger.error(f"   Coordinates: ({x}, {y})")
-            return create_error_result('PageObjectError', error_msg)
+            return create_error_result("PageObjectError", error_msg)
 
         # Validate coordinates
         if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
             error_msg = f"Invalid coordinates: x={x} (type={type(x).__name__}), y={y} (type={type(y).__name__})"
             logger.error(f"❌ {error_msg}")
             logger.error(f"   Element ID: {element_id}")
-            return create_error_result('InvalidCoordinatesError', error_msg)
+            return create_error_result("InvalidCoordinatesError", error_msg)
 
         if x < 0 or y < 0:
             error_msg = f"Negative coordinates not allowed: x={x}, y={y}"
             logger.error(f"❌ {error_msg}")
             logger.error(f"   Element ID: {element_id}")
-            return create_error_result('InvalidCoordinatesError', error_msg)
+            return create_error_result("InvalidCoordinatesError", error_msg)
 
         # Validate element_id
         if not element_id or not isinstance(element_id, str):
             error_msg = f"Invalid element_id: {element_id} (type={type(element_id).__name__})"
             logger.error(f"❌ {error_msg}")
-            return create_error_result('InvalidElementIdError', error_msg)
+            return create_error_result("InvalidElementIdError", error_msg)
 
         # ========================================
         # ROW-ANCHOR EXPECTED-TEXT CORRECTION (ASTPP gate q02)
@@ -348,9 +354,11 @@ async def find_unique_locator_action(
                 else:
                     # Use shared conversion function from browser_service.locators
                     from browser_service.locators import convert_to_playwright_locator
-                    
-                    playwright_locator, was_converted = convert_to_playwright_locator(candidate_locator)
-                    
+
+                    playwright_locator, was_converted = convert_to_playwright_locator(
+                        candidate_locator
+                    )
+
                     if was_converted:
                         logger.info(f"   Converted to Playwright format: {playwright_locator}")
 
@@ -364,11 +372,13 @@ async def find_unique_locator_action(
 
                     # Try to validate with Playwright
                     count = await search_root.locator(playwright_locator).count()
-                    logger.info(f"   DEBUG: page.locator('{playwright_locator}').count() returned: {count}")
+                    logger.info(
+                        f"   DEBUG: page.locator('{playwright_locator}').count() returned: {count}"
+                    )
 
                     # Log detailed validation results
-                    is_unique = (count == 1)
-                    is_valid = (count == 1)
+                    is_unique = count == 1
+                    is_valid = count == 1
 
                     logger.info("   Validation Results:")
                     logger.info(f"      - count: {count}")
@@ -386,12 +396,14 @@ async def find_unique_locator_action(
                         # expected_text is absent.
                         from browser_service.locators import candidate_targets_row_anchor
 
-                        _anchor_norm = ' '.join(str(row_anchor_text or '').split())
-                        _elem_text_norm = ' '.join(str(
-                            (element_data or {}).get('textContent')
-                            or (element_data or {}).get('text')
-                            or ''
-                        ).split())
+                        _anchor_norm = " ".join(str(row_anchor_text or "").split())
+                        _elem_text_norm = " ".join(
+                            str(
+                                (element_data or {}).get("textContent")
+                                or (element_data or {}).get("text")
+                                or ""
+                            ).split()
+                        )
                         _anchor_reject = bool(
                             _anchor_norm
                             and _elem_text_norm
@@ -415,6 +427,7 @@ async def find_unique_locator_action(
                         _semantic_ok = not _anchor_reject
                         if _semantic_ok and expected_text:
                             from browser_service.locators import validate_semantic_match
+
                             # accept_empty_interactive (q05 guard i): a unique
                             # candidate with an EMPTY semantic surface cannot
                             # contradict expected_text — the agent sometimes
@@ -422,7 +435,10 @@ async def find_unique_locator_action(
                             # (broken <label for=>), and the veto killed the
                             # correct locator. Opt-in here only.
                             _semantic_ok, _observed = await validate_semantic_match(
-                                None, expected_text, page=search_root, locator=playwright_locator,
+                                None,
+                                expected_text,
+                                page=search_root,
+                                locator=playwright_locator,
                                 accept_empty_interactive=True,
                             )
                             if not _semantic_ok:
@@ -438,27 +454,33 @@ async def find_unique_locator_action(
                             final_locator = playwright_locator
 
                             logger.info("")
-                            logger.info(f"{'='*80}")
-                            logger.info("✅ CANDIDATE LOCATOR IS UNIQUE AND SEMANTIC MATCH - Using directly!")
-                            logger.info(f"{'='*80}")
+                            logger.info(f"{'=' * 80}")
+                            logger.info(
+                                "✅ CANDIDATE LOCATOR IS UNIQUE AND SEMANTIC MATCH - Using directly!"
+                            )
+                            logger.info(f"{'=' * 80}")
                             logger.info("   Skipping 21 strategies (not needed)")
                             logger.info(f"   Original: {candidate_locator}")
                             if was_converted:
-                                logger.info(f"   Converted: {final_locator} (Browser Library compatible)")
+                                logger.info(
+                                    f"   Converted: {final_locator} (Browser Library compatible)"
+                                )
                             logger.info("   Type: candidate")
                             logger.info("   Priority: 0 (agent-provided)")
-                            logger.info(f"{'='*80}")
+                            logger.info(f"{'=' * 80}")
                             logger.info("")
 
                             locator_lower = final_locator.lower().lstrip()
 
                             # Extract element metadata from DOM data (available via element_data param)
-                            elem_tag = ''
+                            elem_tag = ""
                             elem_has_text = False
                             elem_data_available = False
                             if element_data:
-                                elem_tag = element_data.get('tagName', '').lower()
-                                text_content = element_data.get('textContent', '') or element_data.get('text', '')
+                                elem_tag = element_data.get("tagName", "").lower()
+                                text_content = element_data.get(
+                                    "textContent", ""
+                                ) or element_data.get("text", "")
                                 elem_has_text = bool(text_content and text_content.strip())
                                 elem_data_available = True
 
@@ -467,7 +489,7 @@ async def find_unique_locator_action(
                             # must not rise) — but the payload reports the
                             # tier honestly so nlrf can warn or heal (E1).
                             candidate_stability = classify_locator(final_locator)
-                            if candidate_stability != 'stable':
+                            if candidate_stability != "stable":
                                 logger.warning(
                                     f"   ⚠️ Agent-provided candidate is {candidate_stability}: "
                                     f"{final_locator} — accepted, reported for healing"
@@ -480,75 +502,84 @@ async def find_unique_locator_action(
                                 element_data, element_description
                             )
                             if candidate_stamp:
-                                logger.info(
-                                    f"   🏷️ Candidate Tier-0 stamp: {candidate_stamp}"
-                                )
+                                logger.info(f"   🏷️ Candidate Tier-0 stamp: {candidate_stamp}")
 
                             return {
                                 **candidate_stamp,
-                                'element_id': element_id,
-                                'description': element_description,
-                                'found': True,
-                                'best_locator': final_locator,  # Use converted locator
-                                'stability': candidate_stability,
-                                'all_locators': [{
-                                    'type': 'candidate',
-                                    'locator': final_locator,  # Use converted locator
-                                    'priority': 0,
-                                    'strategy': 'Agent-provided candidate (converted for Browser Library)' if was_converted else 'Agent-provided candidate',
-                                    'count': count,
-                                    'unique': True,
-                                    'valid': True,
-                                    'validated': True,
-                                    'validation_method': 'playwright',
-                                    'stability': candidate_stability
-                                }],
-                                'element_info': _candidate_element_info(element_data),
-                                'coordinates': {'x': x, 'y': y},
-                                'validation_summary': {
-                                    'total_generated': 1,
-                                    'valid': 1,
-                                    'unique': 1,
-                                    'validated': 1,
-                                    'not_found': 0,
-                                    'not_unique': 0,
-                                    'errors': 0,
-                                    'best_type': 'candidate',
-                                    'best_strategy': 'Agent-provided candidate',
-                                    'validation_method': 'playwright'
+                                "element_id": element_id,
+                                "description": element_description,
+                                "found": True,
+                                "best_locator": final_locator,  # Use converted locator
+                                "stability": candidate_stability,
+                                "all_locators": [
+                                    {
+                                        "type": "candidate",
+                                        "locator": final_locator,  # Use converted locator
+                                        "priority": 0,
+                                        "strategy": "Agent-provided candidate (converted for Browser Library)"
+                                        if was_converted
+                                        else "Agent-provided candidate",
+                                        "count": count,
+                                        "unique": True,
+                                        "valid": True,
+                                        "validated": True,
+                                        "validation_method": "playwright",
+                                        "stability": candidate_stability,
+                                    }
+                                ],
+                                "element_info": _candidate_element_info(element_data),
+                                "coordinates": {"x": x, "y": y},
+                                "validation_summary": {
+                                    "total_generated": 1,
+                                    "valid": 1,
+                                    "unique": 1,
+                                    "validated": 1,
+                                    "not_found": 0,
+                                    "not_unique": 0,
+                                    "errors": 0,
+                                    "best_type": "candidate",
+                                    "best_strategy": "Agent-provided candidate",
+                                    "validation_method": "playwright",
                                 },
                                 # Add validation data at result level
-                                'validated': True,
-                                'count': count,
-                                'unique': True,
-                                'valid': True,
-                                'validation_method': 'playwright',
+                                "validated": True,
+                                "count": count,
+                                "unique": True,
+                                "valid": True,
+                                "validation_method": "playwright",
                                 # Per-element approach metrics for pattern analysis
-                                'approach_metrics': {
-                                    'locator_approach': 'actions_candidate',
-                                    'fallback_depth': 0,  # Best case - candidate worked
-                                    'success': True,
-                                    'element_tag': elem_tag,
-                                    'has_id': (
-                                        locator_lower.startswith('#')
-                                        or '[id=' in locator_lower
+                                "approach_metrics": {
+                                    "locator_approach": "actions_candidate",
+                                    "fallback_depth": 0,  # Best case - candidate worked
+                                    "success": True,
+                                    "element_tag": elem_tag,
+                                    "has_id": (
+                                        locator_lower.startswith("#")
+                                        or "[id=" in locator_lower
                                         or (
-                                            'id=' in locator_lower
-                                            and not any(k in locator_lower for k in ('data-testid=', 'data-test=', 'data-qa='))
+                                            "id=" in locator_lower
+                                            and not any(
+                                                k in locator_lower
+                                                for k in ("data-testid=", "data-test=", "data-qa=")
+                                            )
                                         )
                                     ),
-                                    'has_text_content': elem_has_text,
-                                    'element_data_available': elem_data_available,
-                                    'is_collection': is_collection is True,
-                                    'is_in_iframe': bool(iframe_context),
-                                }
+                                    "has_text_content": elem_has_text,
+                                    "element_data_available": elem_data_available,
+                                    "is_collection": is_collection is True,
+                                    "is_in_iframe": bool(iframe_context),
+                                },
                             }
                     elif count > 1:
                         logger.info(f"   ⚠️ Candidate locator NOT UNIQUE (matches {count} elements)")
-                        logger.info("   🔄 Continuing with smart locator finder to find unique locator...")
+                        logger.info(
+                            "   🔄 Continuing with smart locator finder to find unique locator..."
+                        )
                     else:  # count == 0
                         logger.info("   ⚠️ Candidate locator NOT FOUND (matches 0 elements)")
-                        logger.info("   🔄 Continuing with smart locator finder to find valid locator...")
+                        logger.info(
+                            "   🔄 Continuing with smart locator finder to find valid locator..."
+                        )
 
             except ValueError as e:
                 # Invalid locator syntax
@@ -565,11 +596,13 @@ async def find_unique_locator_action(
             except RuntimeError as e:
                 # Playwright runtime errors (including invalid CSS selectors)
                 error_str = str(e).lower()
-                if 'not a valid selector' in error_str or 'invalid selector' in error_str:
+                if "not a valid selector" in error_str or "invalid selector" in error_str:
                     logger.warning(f"⚠️ Candidate locator has invalid CSS syntax: {e}")
                     logger.warning(f"   Locator: {candidate_locator}")
                     logger.warning("   Note: This often happens with numeric IDs (e.g., #123)")
-                    logger.info("🔄 Continuing with smart locator finder (will use [id='...'] syntax)...")
+                    logger.info(
+                        "🔄 Continuing with smart locator finder (will use [id='...'] syntax)..."
+                    )
                 else:
                     logger.warning(f"⚠️ Candidate locator validation failed with RuntimeError: {e}")
                     logger.warning(f"   Locator: {candidate_locator}")
@@ -595,7 +628,7 @@ async def find_unique_locator_action(
             logger.error(f"❌ {error_msg}")
             logger.error(f"   Element ID: {element_id}")
             logger.error("   This is a critical error - smart_locator module is required")
-            return create_error_result('ImportError', error_msg)
+            return create_error_result("ImportError", error_msg)
 
         # Call smart locator finder with timeout protection
         try:
@@ -606,7 +639,7 @@ async def find_unique_locator_action(
                 search_context = page.frame_locator(iframe_context)
             else:
                 search_context = page
-            
+
             # Per-element latency telemetry (bench harness). The timer line is
             # emitted on the timeout path too, so every element yields a sample.
             _locator_timer_start = time.monotonic()
@@ -627,7 +660,7 @@ async def find_unique_locator_action(
                     vision_framework_hint=vision_framework_hint,  # LLM's framework guess
                     row_anchor_text=row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
                 ),
-                timeout=custom_action_timeout
+                timeout=custom_action_timeout,
             )
 
             duration_ms = (time.monotonic() - _locator_timer_start) * 1000.0
@@ -637,11 +670,11 @@ async def find_unique_locator_action(
             )
             # Only enrich an EXISTING approach_metrics dict — failure results may
             # not carry one, and inventing it here would corrupt pattern analysis.
-            if isinstance(result.get('approach_metrics'), dict):
-                result['approach_metrics']['duration_ms'] = round(duration_ms, 1)
+            if isinstance(result.get("approach_metrics"), dict):
+                result["approach_metrics"]["duration_ms"] = round(duration_ms, 1)
 
             # Log the result with detailed information
-            if result.get('found'):
+            if result.get("found"):
                 _log_success_result(element_id, result)
             else:
                 _log_failure_result(element_id, element_description, x, y, result)
@@ -651,8 +684,7 @@ async def find_unique_locator_action(
         except asyncio.TimeoutError:
             duration_ms = (time.monotonic() - _locator_timer_start) * 1000.0
             logger.info(
-                f"LOCATOR_TIMER element_id={element_id} "
-                f"duration_ms={duration_ms:.1f} found=False"
+                f"LOCATOR_TIMER element_id={element_id} duration_ms={duration_ms:.1f} found=False"
             )
             # Handle timeout gracefully
             timeout_msg = f"Smart locator finder timed out after {custom_action_timeout} seconds"
@@ -662,9 +694,9 @@ async def find_unique_locator_action(
             logger.error(f"   Coordinates: ({x}, {y})")
             logger.error("   This may indicate a complex page or slow network")
 
-            return create_error_result('TimeoutError', timeout_msg, {
-                'timeout_seconds': custom_action_timeout
-            })
+            return create_error_result(
+                "TimeoutError", timeout_msg, {"timeout_seconds": custom_action_timeout}
+            )
 
         except asyncio.CancelledError:
             # Task was cancelled (e.g., browser closed)
@@ -673,7 +705,7 @@ async def find_unique_locator_action(
             logger.error(f"   Element ID: {element_id}")
             logger.error(f"   Coordinates: ({x}, {y})")
 
-            return create_error_result('CancelledError', cancel_msg)
+            return create_error_result("CancelledError", cancel_msg)
 
         except RuntimeError as e:
             # Runtime errors (e.g., event loop issues, browser closed)
@@ -684,7 +716,7 @@ async def find_unique_locator_action(
             logger.error("   This may indicate the browser was closed or the page navigated away")
             logger.error("   Stack trace:", exc_info=True)
 
-            return create_error_result('RuntimeError', runtime_msg)
+            return create_error_result("RuntimeError", runtime_msg)
 
         except Exception as e:
             # Catch any other errors from smart_locator_finder
@@ -703,7 +735,7 @@ async def find_unique_locator_action(
         logger.error(f"   Element ID: {element_id}")
         logger.error(f"   Coordinates: ({x}, {y})")
 
-        return create_error_result('TimeoutError', timeout_msg)
+        return create_error_result("TimeoutError", timeout_msg)
 
     except asyncio.CancelledError:
         # Top-level cancellation
@@ -712,7 +744,7 @@ async def find_unique_locator_action(
         logger.error(f"   Element ID: {element_id}")
         logger.error(f"   Coordinates: ({x}, {y})")
 
-        return create_error_result('CancelledError', cancel_msg)
+        return create_error_result("CancelledError", cancel_msg)
 
     except KeyboardInterrupt:
         # User interrupted execution
@@ -720,7 +752,7 @@ async def find_unique_locator_action(
         logger.error(f"⚠️ {interrupt_msg}")
         logger.error(f"   Element ID: {element_id}")
 
-        return create_error_result('KeyboardInterrupt', interrupt_msg)
+        return create_error_result("KeyboardInterrupt", interrupt_msg)
 
     except Exception as e:
         # Catch-all for any unexpected errors

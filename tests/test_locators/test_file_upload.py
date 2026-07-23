@@ -46,15 +46,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Pure classifier tests (no browser)
 # ======================================================================
 
-class TestClassifierFileUpload:
 
+class TestClassifierFileUpload:
     def test_vision_hint_maps(self):
         assert map_vision_hint("file-upload") == "file-upload"
 
     def test_hint_plus_desc_keyword_votes_high(self):
         info = classify_element_type(
-            {"tagName": "button", "className": "btn browse-customer",
-             "type": "button"},
+            {"tagName": "button", "className": "btn browse-customer", "type": "button"},
             "Browse button to upload the customer CSV file",
             vision_type_hint="file-upload",
         )
@@ -70,11 +69,14 @@ class TestClassifierFileUpload:
         assert info.primary_type == "file-upload"
         assert info.confidence == "medium"
 
-    @pytest.mark.parametrize("desc", [
-        "upload the ratedeck csv",
-        "choose file control for the import",
-        "attach file button",
-    ])
+    @pytest.mark.parametrize(
+        "desc",
+        [
+            "upload the ratedeck csv",
+            "choose file control for the import",
+            "attach file button",
+        ],
+    )
     def test_desc_keywords_vote(self, desc):
         info = classify_element_type(
             {"tagName": "button", "className": "btn", "type": "button"},
@@ -114,9 +116,7 @@ async def page():
         browser = await p.chromium.launch(headless=True)
         ctx = await browser.new_context(viewport={"width": 1280, "height": 900})
         page_obj = await ctx.new_page()
-        await page_obj.goto(
-            (FIXTURES_DIR / "file_upload.html").resolve().as_uri()
-        )
+        await page_obj.goto((FIXTURES_DIR / "file_upload.html").resolve().as_uri())
         try:
             yield page_obj
         finally:
@@ -131,11 +131,13 @@ async def _center(page, selector: str) -> tuple:
 
 @pytest.mark.integration
 class TestFileUploadProbe:
-
     async def _probe(self, page, coords):
         from browser_service.locators.dom_probe import probe_specialized_type
+
         return await probe_specialized_type(
-            page=page, suspected_type="file-upload", coords=coords,
+            page=page,
+            suspected_type="file-upload",
+            coords=coords,
         )
 
     async def test_button_with_sibling_hidden_input_confirms(self, page):
@@ -146,9 +148,7 @@ class TestFileUploadProbe:
         assert result["confirmed"] is True
         assert result["anchor_tag"] == "input"
         # Anchor must be THE sibling input, not the one in the next section
-        anchor_id = await page.locator(
-            f"xpath={result['anchor_xpath']}"
-        ).get_attribute("id")
+        anchor_id = await page.locator(f"xpath={result['anchor_xpath']}").get_attribute("id")
         assert anchor_id == "customer_import_mapper"
 
     async def test_nearest_container_wins_over_neighbor_section(self, page):
@@ -157,9 +157,7 @@ class TestFileUploadProbe:
         coords = await _center(page, ".browse-ratedeck")
         result = await self._probe(page, coords)
         assert result["confirmed"] is True
-        anchor_name = await page.locator(
-            f"xpath={result['anchor_xpath']}"
-        ).get_attribute("name")
+        anchor_name = await page.locator(f"xpath={result['anchor_xpath']}").get_attribute("name")
         assert anchor_name == "ratedeck_csv"
 
     async def test_toolbar_link_with_no_nearby_input_rejects(self, page):
@@ -173,9 +171,7 @@ class TestFileUploadProbe:
         coords = await _center(page, "#avatar_file")
         result = await self._probe(page, coords)
         assert result["confirmed"] is True
-        anchor_id = await page.locator(
-            f"xpath={result['anchor_xpath']}"
-        ).get_attribute("id")
+        anchor_id = await page.locator(f"xpath={result['anchor_xpath']}").get_attribute("id")
         assert anchor_id == "avatar_file"
 
 
@@ -187,20 +183,33 @@ class TestFileUploadDispatch:
     @staticmethod
     def _button_element_data(class_name, coords):
         return {
-            "tagName": "button", "id": "", "name": "",
-            "className": class_name, "textContent": "Browse",
-            "ariaLabel": "", "placeholder": "", "title": "", "role": "",
-            "dataTestId": "", "type": "button", "xpath": "",
+            "tagName": "button",
+            "id": "",
+            "name": "",
+            "className": class_name,
+            "textContent": "Browse",
+            "ariaLabel": "",
+            "placeholder": "",
+            "title": "",
+            "role": "",
+            "dataTestId": "",
+            "type": "button",
+            "xpath": "",
             "coordinates": {"x": coords[0], "y": coords[1]},
-            "parentId": "", "parentClass": "section",
+            "parentId": "",
+            "parentClass": "section",
         }
 
     async def _dispatch(self, page, element_data, coords, description):
         from browser_service.locators.smart_locator import (
             _generate_locators_from_element_data,
         )
+
         return await _generate_locators_from_element_data(
-            page, element_data, "elem_1", description,
+            page,
+            element_data,
+            "elem_1",
+            description,
             expected_text=None,
             confirmed_coords=coords,
             vision_type_hint="file-upload",
@@ -210,8 +219,10 @@ class TestFileUploadDispatch:
     async def test_hidden_input_with_id(self, page):
         coords = await _center(page, ".browse-customer")
         result = await self._dispatch(
-            page, self._button_element_data("btn browse-customer", coords),
-            coords, "Browse button to upload the customer CSV file",
+            page,
+            self._button_element_data("btn browse-customer", coords),
+            coords,
+            "Browse button to upload the customer CSV file",
         )
         assert result is not None and result["found"]
         assert result["best_locator"] == "id=customer_import_mapper"
@@ -224,8 +235,10 @@ class TestFileUploadDispatch:
         input[type=file] fallback is ambiguous; name anchoring must win."""
         coords = await _center(page, ".browse-ratedeck")
         result = await self._dispatch(
-            page, self._button_element_data("btn browse-ratedeck", coords),
-            coords, "Choose file button to upload the ratedeck csv",
+            page,
+            self._button_element_data("btn browse-ratedeck", coords),
+            coords,
+            "Choose file button to upload the ratedeck csv",
         )
         assert result is not None and result["found"]
         assert result["best_locator"] == 'input[type="file"][name="ratedeck_csv"]'
@@ -235,15 +248,27 @@ class TestFileUploadDispatch:
     async def test_visible_input_direct(self, page):
         coords = await _center(page, "#avatar_file")
         element_data = {
-            "tagName": "input", "id": "avatar_file", "name": "",
-            "className": "", "textContent": "", "ariaLabel": "",
-            "placeholder": "", "title": "", "role": "", "dataTestId": "",
-            "type": "file", "xpath": "",
+            "tagName": "input",
+            "id": "avatar_file",
+            "name": "",
+            "className": "",
+            "textContent": "",
+            "ariaLabel": "",
+            "placeholder": "",
+            "title": "",
+            "role": "",
+            "dataTestId": "",
+            "type": "file",
+            "xpath": "",
             "coordinates": {"x": coords[0], "y": coords[1]},
-            "parentId": "avatar-upload", "parentClass": "section",
+            "parentId": "avatar-upload",
+            "parentClass": "section",
         }
         result = await self._dispatch(
-            page, element_data, coords, "avatar upload field",
+            page,
+            element_data,
+            coords,
+            "avatar upload field",
         )
         assert result is not None and result["found"]
         assert result["best_locator"] == "id=avatar_file"
@@ -255,14 +280,27 @@ class TestFileUploadDispatch:
         rejects, generic path still returns the link's own id."""
         coords = await _center(page, "#import")
         element_data = {
-            "tagName": "a", "id": "import", "name": "", "className": "",
-            "textContent": "Import", "ariaLabel": "", "placeholder": "",
-            "title": "", "role": "", "dataTestId": "", "type": "",
-            "xpath": "", "coordinates": {"x": coords[0], "y": coords[1]},
-            "parentId": "toolbar", "parentClass": "section",
+            "tagName": "a",
+            "id": "import",
+            "name": "",
+            "className": "",
+            "textContent": "Import",
+            "ariaLabel": "",
+            "placeholder": "",
+            "title": "",
+            "role": "",
+            "dataTestId": "",
+            "type": "",
+            "xpath": "",
+            "coordinates": {"x": coords[0], "y": coords[1]},
+            "parentId": "toolbar",
+            "parentClass": "section",
         }
         result = await self._dispatch(
-            page, element_data, coords, "Import button in the toolbar",
+            page,
+            element_data,
+            coords,
+            "Import button in the toolbar",
         )
         assert result is not None and result["found"]
         assert result["best_locator"] == "#import"  # generic id path, unchanged
@@ -273,9 +311,10 @@ class TestFileUploadDispatch:
 # Plumbing tripwire
 # ======================================================================
 
-class TestPlumbing:
 
+class TestPlumbing:
     def test_element_type_enum_offers_file_upload(self):
-        src = (REPO_ROOT / "browser_service" / "agent"
-               / "registration.py").read_text(encoding="utf-8")
+        src = (REPO_ROOT / "browser_service" / "agent" / "registration.py").read_text(
+            encoding="utf-8"
+        )
         assert '"file-upload"' in src

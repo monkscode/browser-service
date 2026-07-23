@@ -20,9 +20,10 @@ Skip the full agent tests (expensive) with:
 
 import os
 import time
-import pytest
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.integration
 
@@ -30,6 +31,7 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _minimal_session_config() -> dict:
     """Return a minimal session config for tests."""
@@ -42,15 +44,14 @@ def _minimal_session_config() -> dict:
 def _has_llm_key() -> bool:
     """True if any supported LLM API key is available."""
     return bool(
-        os.getenv("OPENAI_API_KEY")
-        or os.getenv("ANTHROPIC_API_KEY")
-        or os.getenv("GEMINI_API_KEY")
+        os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("GEMINI_API_KEY")
     )
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def make_processor():
@@ -81,6 +82,7 @@ def make_processor():
 # Guard condition tests — no browser/LLM needed
 # ---------------------------------------------------------------------------
 
+
 class TestProcessWorkflowTaskGuardsLive:
     """Guard conditions in process_workflow_task() — replicated with live imports."""
 
@@ -94,6 +96,7 @@ class TestProcessWorkflowTaskGuardsLive:
     def test_raises_on_none_tasks_dict(self):
         """task_processor=None raises ValueError immediately, no browser launched."""
         from browser_service.tasks.workflow import process_workflow_task
+
         with pytest.raises(ValueError, match="task_processor"):
             process_workflow_task(
                 task_id="guard-test",
@@ -107,6 +110,7 @@ class TestProcessWorkflowTaskGuardsLive:
     def test_task_id_is_set_in_tasks_dict(self, make_processor):
         """Task entry is updated for the given task_id after execution."""
         from browser_service.tasks.workflow import process_workflow_task
+
         tp = make_processor("live-t1")
         with self._mock_browser():
             process_workflow_task(
@@ -124,6 +128,7 @@ class TestProcessWorkflowTaskGuardsLive:
     def test_started_at_is_positive_timestamp(self, make_processor):
         """started_at value is a positive Unix timestamp."""
         from browser_service.tasks.workflow import process_workflow_task
+
         tp = make_processor("ts-test")
         with self._mock_browser():
             process_workflow_task(
@@ -142,6 +147,7 @@ class TestProcessWorkflowTaskGuardsLive:
     def test_message_is_non_empty_string(self, make_processor):
         """Task entry contains a non-empty message string."""
         from browser_service.tasks.workflow import process_workflow_task
+
         tp = make_processor("msg-test")
         with self._mock_browser():
             process_workflow_task(
@@ -159,6 +165,7 @@ class TestProcessWorkflowTaskGuardsLive:
     def test_status_is_completed_or_error(self, make_processor):
         """Terminal status is either 'completed' or 'error' — never left as running."""
         from browser_service.tasks.workflow import process_workflow_task
+
         tp = make_processor("status-test")
         with self._mock_browser():
             process_workflow_task(
@@ -170,14 +177,13 @@ class TestProcessWorkflowTaskGuardsLive:
                 task_processor=tp,
             )
         final_status = tp.get_task_status("status-test")["status"]
-        assert final_status in ("completed", "error"), (
-            f"Unexpected final status: {final_status}"
-        )
+        assert final_status in ("completed", "error"), f"Unexpected final status: {final_status}"
 
 
 # ---------------------------------------------------------------------------
 # Full agent workflow — requires LLM API key + browser
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.skipif(not _has_llm_key(), reason="No LLM API key available")
 class TestLiveAgentWorkflow:
@@ -186,6 +192,7 @@ class TestLiveAgentWorkflow:
     def test_workflow_finds_h1_element(self, make_processor):
         """Agent can find the main heading on example.com."""
         from browser_service.tasks.workflow import process_workflow_task
+
         tp = make_processor("full-e2e-1")
         process_workflow_task(
             task_id="full-e2e-1",
@@ -205,6 +212,7 @@ class TestLiveAgentWorkflow:
     def test_locator_mapping_key_present_on_completion(self, make_processor):
         """Completed task includes results in the task status."""
         from browser_service.tasks.workflow import process_workflow_task
+
         tp = make_processor("mapping-test")
         process_workflow_task(
             task_id="mapping-test",
@@ -226,6 +234,7 @@ class TestLiveAgentWorkflow:
     def test_multiple_elements_all_tracked(self, make_processor):
         """All requested elements appear in the result dict."""
         from browser_service.tasks.workflow import process_workflow_task
+
         elements = [
             {"id": "e_heading", "description": "page heading", "action": "find"},
             {"id": "e_link", "description": "hyperlink", "action": "find"},

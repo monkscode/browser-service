@@ -26,7 +26,6 @@ from browser_service.locators.handlers.dropdown import (
     find_locator,
 )
 
-
 # ----------------------------------------------------------------------
 # Pure helpers
 # ----------------------------------------------------------------------
@@ -42,20 +41,13 @@ class TestNormalizeLabelOrDescription:
         assert _normalize_label_or_description("Currency*") == "Currency"
 
     def test_strips_html_required_artefact(self):
-        assert (
-            _normalize_label_or_description("Role<span> *</span>") == "Role"
-        )
+        assert _normalize_label_or_description("Role<span> *</span>") == "Role"
 
     def test_strips_dropdown_suffix(self):
-        assert (
-            _normalize_label_or_description("Rate Group dropdown")
-            == "Rate Group"
-        )
+        assert _normalize_label_or_description("Rate Group dropdown") == "Rate Group"
 
     def test_strips_field_suffix(self):
-        assert (
-            _normalize_label_or_description("Email field") == "Email"
-        )
+        assert _normalize_label_or_description("Email field") == "Email"
 
     def test_strips_input_suffix(self):
         assert _normalize_label_or_description("Search input") == "Search"
@@ -70,10 +62,7 @@ class TestNormalizeLabelOrDescription:
         assert _normalize_label_or_description("File chooser") == "File"
 
     def test_suffix_match_is_case_insensitive(self):
-        assert (
-            _normalize_label_or_description("Rate Group DROPDOWN")
-            == "Rate Group"
-        )
+        assert _normalize_label_or_description("Rate Group DROPDOWN") == "Rate Group"
 
     def test_suffix_only_input_returns_empty(self):
         """A description that is just 'dropdown' has no useful label."""
@@ -81,15 +70,10 @@ class TestNormalizeLabelOrDescription:
 
     def test_does_not_strip_substring_match(self):
         """'subselect' ends with 'select' but isn't a UI suffix word."""
-        assert (
-            _normalize_label_or_description("subselect") == "subselect"
-        )
+        assert _normalize_label_or_description("subselect") == "subselect"
 
     def test_collapses_internal_whitespace(self):
-        assert (
-            _normalize_label_or_description("Rate    Group  *  ")
-            == "Rate Group"
-        )
+        assert _normalize_label_or_description("Rate    Group  *  ") == "Rate Group"
 
     def test_combined_required_and_ui_suffix(self):
         """Description rendered with both: 'Rate Group * dropdown'."""
@@ -124,7 +108,7 @@ class TestXpathStringLiteral:
         assert _xpath_string_literal('Click "OK"') == "'Click \"OK\"'"
 
     def test_string_with_both_quote_kinds_uses_concat(self):
-        result = _xpath_string_literal("It's \"complex\"")
+        result = _xpath_string_literal('It\'s "complex"')
         assert result.startswith("concat(")
         assert "It" in result
         assert "complex" in result
@@ -149,10 +133,7 @@ class TestIsRealSelectId:
 
 class TestSelectIdFromInputId:
     def test_strips_ts_control_suffix(self):
-        assert (
-            _select_id_from_input_id("permission_id-ts-control")
-            == "permission_id"
-        )
+        assert _select_id_from_input_id("permission_id-ts-control") == "permission_id"
 
     def test_returns_none_when_suffix_missing(self):
         assert _select_id_from_input_id("permission_id") is None
@@ -166,10 +147,7 @@ class TestSelectIdFromInputId:
     def test_handles_auto_generated_input_id(self):
         # 'tomselect-6-ts-control' → 'tomselect-6'. The caller is
         # responsible for filtering via _is_real_select_id.
-        assert (
-            _select_id_from_input_id("tomselect-6-ts-control")
-            == "tomselect-6"
-        )
+        assert _select_id_from_input_id("tomselect-6-ts-control") == "tomselect-6"
 
 
 # ----------------------------------------------------------------------
@@ -376,10 +354,12 @@ async def test_strategy_2_used_when_no_real_select_id():
 
     ctx = MagicMock()
     ctx.locator = counting_locator
-    ctx.evaluate = AsyncMock(return_value={
-        "selectId": "tomselect-6",  # auto-generated
-        "inputId": "tomselect-6-ts-control",
-    })
+    ctx.evaluate = AsyncMock(
+        return_value={
+            "selectId": "tomselect-6",  # auto-generated
+            "inputId": "tomselect-6-ts-control",
+        }
+    )
 
     result = await find_locator(
         page=None,
@@ -428,11 +408,13 @@ async def test_strategy_4_uses_wrapper_index_xpath():
     #   4. Strategy 4: wrapperIndex=4
     ctx = MagicMock()
     ctx.locator = counting_locator
-    ctx.evaluate = AsyncMock(side_effect=[
-        {"selectId": None, "inputId": None},  # _resolve coord probe
-        {"h": 1080},                           # viewport height check
-        {"wrapperIndex": 4},                    # strategy 4 probe
-    ])
+    ctx.evaluate = AsyncMock(
+        side_effect=[
+            {"selectId": None, "inputId": None},  # _resolve coord probe
+            {"h": 1080},  # viewport height check
+            {"wrapperIndex": 4},  # strategy 4 probe
+        ]
+    )
 
     result = await find_locator(
         page=None,
@@ -488,9 +470,7 @@ async def test_count_check_exception_returns_none():
 async def test_evaluate_exception_does_not_raise():
     """JS probe failure must be swallowed and produce None overall."""
     ctx = MagicMock()
-    ctx.locator = MagicMock(
-        return_value=MagicMock(count=AsyncMock(return_value=0))
-    )
+    ctx.locator = MagicMock(return_value=MagicMock(count=AsyncMock(return_value=0)))
     ctx.evaluate = AsyncMock(side_effect=RuntimeError("page closed"))
 
     result = await find_locator(

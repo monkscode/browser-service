@@ -8,20 +8,21 @@ Tests deterministic helper functions that have no Playwright dependency:
 """
 
 import pytest
+
 from browser_service.locators.smart_locator import (
+    DROPDOWN_CSS_PATTERNS,
+    DROPDOWN_KEYWORDS,
+    PRIORITY_ARIA_LABEL,
+    PRIORITY_CSS_CLASS,
+    PRIORITY_ID,
+    PRIORITY_NAME,
+    PRIORITY_ROLE,
+    PRIORITY_TEST_ID,
+    PRIORITY_TEXT,
+    PRIORITY_XPATH_TEXT,
     _escape_css_selector,
     _is_collection_element,
     is_dropdown_element,
-    PRIORITY_ID,
-    PRIORITY_TEST_ID,
-    PRIORITY_NAME,
-    PRIORITY_ARIA_LABEL,
-    PRIORITY_TEXT,
-    PRIORITY_ROLE,
-    PRIORITY_CSS_CLASS,
-    PRIORITY_XPATH_TEXT,
-    DROPDOWN_KEYWORDS,
-    DROPDOWN_CSS_PATTERNS,
 )
 
 
@@ -89,9 +90,13 @@ class TestIsDropdownElement:
         assert is_dropdown_element({}, "Date picker field") is True
 
     def test_description_no_dropdown_keyword(self):
-        result = is_dropdown_element({}, "Click the submit button")
-        # Should not be True just because of this description
-        assert isinstance(result, bool)
+        """A description with no dropdown keyword must classify as False.
+
+        `isinstance(result, bool)` passed for True as well, so the negative case
+        — the one that stops non-dropdowns entering the dropdown handler — was
+        never actually checked.
+        """
+        assert is_dropdown_element({}, "Click the submit button") is False
 
     # --- ARIA role detection ---
 
@@ -175,15 +180,25 @@ class TestPriorityOrdering:
 
     def test_all_priorities_are_non_negative(self):
         priorities = [
-            PRIORITY_ID, PRIORITY_TEST_ID, PRIORITY_NAME,
-            PRIORITY_ARIA_LABEL, PRIORITY_TEXT, PRIORITY_ROLE, PRIORITY_CSS_CLASS,
+            PRIORITY_ID,
+            PRIORITY_TEST_ID,
+            PRIORITY_NAME,
+            PRIORITY_ARIA_LABEL,
+            PRIORITY_TEXT,
+            PRIORITY_ROLE,
+            PRIORITY_CSS_CLASS,
         ]
         assert all(p >= 0 for p in priorities)
 
     def test_all_priorities_are_unique(self):
         priorities = [
-            PRIORITY_ID, PRIORITY_TEST_ID, PRIORITY_NAME,
-            PRIORITY_ARIA_LABEL, PRIORITY_TEXT, PRIORITY_ROLE, PRIORITY_CSS_CLASS,
+            PRIORITY_ID,
+            PRIORITY_TEST_ID,
+            PRIORITY_NAME,
+            PRIORITY_ARIA_LABEL,
+            PRIORITY_TEXT,
+            PRIORITY_ROLE,
+            PRIORITY_CSS_CLASS,
         ]
         assert len(set(priorities)) == len(priorities)
 
@@ -241,68 +256,76 @@ class TestIsCollectionElement:
 
     def test_nav_item_is_NOT_collection(self):
         """Bug 2 regression: 'nav-item' must not match the 'item' pattern."""
-        assert _is_collection_element(
-            {"tagName": "a", "className": "nav-item"}, "Customer option in Create menu"
-        ) is False
+        assert (
+            _is_collection_element(
+                {"tagName": "a", "className": "nav-item"}, "Customer option in Create menu"
+            )
+            is False
+        )
 
     def test_nav_item_with_extra_classes_is_NOT_collection(self):
         """Real ASTPP markup typically has additional bootstrap classes alongside nav-item."""
-        assert _is_collection_element(
-            {"tagName": "a", "className": "nav-item dropdown-item active"}, "Customer"
-        ) is False
+        assert (
+            _is_collection_element(
+                {"tagName": "a", "className": "nav-item dropdown-item active"}, "Customer"
+            )
+            is False
+        )
 
     def test_menu_item_is_NOT_collection(self):
         """tagName=a so Method 2 (li/tr/option) doesn't fire — isolates Method 3 nav-prefix exclusion."""
-        assert _is_collection_element(
-            {"tagName": "a", "className": "menu-item"}, "settings link"
-        ) is False
+        assert (
+            _is_collection_element({"tagName": "a", "className": "menu-item"}, "settings link")
+            is False
+        )
 
     def test_breadcrumb_item_is_NOT_collection(self):
         """tagName left as 'span' so Method 2 doesn't fire — isolates Method 3 behavior."""
-        assert _is_collection_element(
-            {"tagName": "span", "className": "breadcrumb-item"}, "Home crumb"
-        ) is False
+        assert (
+            _is_collection_element(
+                {"tagName": "span", "className": "breadcrumb-item"}, "Home crumb"
+            )
+            is False
+        )
 
     def test_pagination_item_is_NOT_collection(self):
-        assert _is_collection_element(
-            {"tagName": "span", "className": "pagination-item"}, "page 2"
-        ) is False
+        assert (
+            _is_collection_element({"tagName": "span", "className": "pagination-item"}, "page 2")
+            is False
+        )
 
     def test_dropdown_item_is_NOT_collection(self):
         """dropdown-* items are menu chrome, not data collections."""
-        assert _is_collection_element(
-            {"tagName": "a", "className": "dropdown-item"}, "Customer"
-        ) is False
+        assert (
+            _is_collection_element({"tagName": "a", "className": "dropdown-item"}, "Customer")
+            is False
+        )
 
     # Positive cases — real collection class tokens still match
 
     def test_bare_row_class_is_collection(self):
         """Bootstrap '.row' on a non-tr element — Method 3 should still match."""
-        assert _is_collection_element(
-            {"tagName": "div", "className": "row"}, "data row"
-        ) is True
+        assert _is_collection_element({"tagName": "div", "className": "row"}, "data row") is True
 
     def test_card_class_is_collection(self):
-        assert _is_collection_element(
-            {"tagName": "div", "className": "card mb-3"}, "product card"
-        ) is True
+        assert (
+            _is_collection_element({"tagName": "div", "className": "card mb-3"}, "product card")
+            is True
+        )
 
     def test_grid_item_class_is_collection(self):
         """Multi-word token 'grid-item' is in the pattern set verbatim."""
-        assert _is_collection_element(
-            {"tagName": "div", "className": "grid-item"}, "tile"
-        ) is True
+        assert _is_collection_element({"tagName": "div", "className": "grid-item"}, "tile") is True
 
     def test_substring_only_match_is_NOT_collection(self):
         """'rowboat' contains 'row' as substring but is not the 'row' token."""
-        assert _is_collection_element(
-            {"tagName": "div", "className": "rowboat"}, "decorative"
-        ) is False
+        assert (
+            _is_collection_element({"tagName": "div", "className": "rowboat"}, "decorative")
+            is False
+        )
 
     def test_empty_class_and_tag_not_collection(self):
-        assert _is_collection_element(
-            {"tagName": "div", "className": ""}, "header"
-        ) is False
+        assert _is_collection_element({"tagName": "div", "className": ""}, "header") is False
 
 
 class TestDropdownOverridesCollection:

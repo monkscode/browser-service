@@ -32,12 +32,13 @@ def _make_page(evaluate_return=None, evaluate_raises=None):
 @pytest.mark.asyncio
 async def test_unsupported_type_returns_unconfirmed_without_calling_js():
     page = _make_page()
-    result = await probe_specialized_type(
-        page, suspected_type="button", coords=(100, 100)
-    )
+    result = await probe_specialized_type(page, suspected_type="button", coords=(100, 100))
     assert result == {
-        "confirmed": False, "framework": "", "signals": [],
-        "anchor_xpath": "", "anchor_tag": "",
+        "confirmed": False,
+        "framework": "",
+        "signals": [],
+        "anchor_xpath": "",
+        "anchor_tag": "",
     }
     page.evaluate.assert_not_called()
 
@@ -52,14 +53,19 @@ async def test_no_coords_or_xpath_returns_unconfirmed_without_calling_js():
 
 @pytest.mark.asyncio
 async def test_coords_alone_invokes_js():
-    page = _make_page(evaluate_return={
-        "confirmed": True, "framework": "tom-select",
-        "signals": ["self:class:ts-control"],
-        "anchor_xpath": "/html/body/div[1]/div[2]",
-        "anchor_tag": "div",
-    })
+    page = _make_page(
+        evaluate_return={
+            "confirmed": True,
+            "framework": "tom-select",
+            "signals": ["self:class:ts-control"],
+            "anchor_xpath": "/html/body/div[1]/div[2]",
+            "anchor_tag": "div",
+        }
+    )
     result = await probe_specialized_type(
-        page, suspected_type="dropdown", coords=(450.0, 320.0),
+        page,
+        suspected_type="dropdown",
+        coords=(450.0, 320.0),
     )
     assert result["confirmed"] is True
     assert result["framework"] == "tom-select"
@@ -77,12 +83,18 @@ async def test_coords_alone_invokes_js():
 
 @pytest.mark.asyncio
 async def test_xpath_alone_invokes_js():
-    page = _make_page(evaluate_return={
-        "confirmed": True, "framework": "", "signals": ["self:role:combobox"],
-        "anchor_xpath": "/html/body/div", "anchor_tag": "div",
-    })
+    page = _make_page(
+        evaluate_return={
+            "confirmed": True,
+            "framework": "",
+            "signals": ["self:role:combobox"],
+            "anchor_xpath": "/html/body/div",
+            "anchor_tag": "div",
+        }
+    )
     result = await probe_specialized_type(
-        page, suspected_type="dropdown",
+        page,
+        suspected_type="dropdown",
         candidate_xpath="//div[@id='rate_group']",
     )
     assert result["confirmed"] is True
@@ -101,22 +113,34 @@ async def test_result_keys_always_present_even_when_js_returns_partial():
     # JS returns only `confirmed`; wrapper fills defaults for the rest.
     page = _make_page(evaluate_return={"confirmed": False})
     result = await probe_specialized_type(
-        page, suspected_type="checkbox", coords=(0, 0),
+        page,
+        suspected_type="checkbox",
+        coords=(0, 0),
     )
     assert result == {
-        "confirmed": False, "framework": "", "signals": [],
-        "anchor_xpath": "", "anchor_tag": "",
+        "confirmed": False,
+        "framework": "",
+        "signals": [],
+        "anchor_xpath": "",
+        "anchor_tag": "",
     }
 
 
 @pytest.mark.asyncio
 async def test_result_signals_coerced_to_list_when_js_returns_none():
-    page = _make_page(evaluate_return={
-        "confirmed": True, "framework": None, "signals": None,
-        "anchor_xpath": None, "anchor_tag": None,
-    })
+    page = _make_page(
+        evaluate_return={
+            "confirmed": True,
+            "framework": None,
+            "signals": None,
+            "anchor_xpath": None,
+            "anchor_tag": None,
+        }
+    )
     result = await probe_specialized_type(
-        page, suspected_type="radio", coords=(50, 50),
+        page,
+        suspected_type="radio",
+        coords=(50, 50),
     )
     assert result["signals"] == []
     assert result["framework"] == ""
@@ -128,7 +152,9 @@ async def test_result_signals_coerced_to_list_when_js_returns_none():
 async def test_non_dict_js_return_yields_unconfirmed():
     page = _make_page(evaluate_return="oops not a dict")
     result = await probe_specialized_type(
-        page, suspected_type="dropdown", coords=(10, 10),
+        page,
+        suspected_type="dropdown",
+        coords=(10, 10),
     )
     assert result["confirmed"] is False
     assert result["signals"] == []
@@ -143,7 +169,9 @@ async def test_non_dict_js_return_yields_unconfirmed():
 async def test_js_eval_exception_returns_unconfirmed():
     page = _make_page(evaluate_raises=RuntimeError("page crashed"))
     result = await probe_specialized_type(
-        page, suspected_type="dropdown", coords=(10, 10),
+        page,
+        suspected_type="dropdown",
+        coords=(10, 10),
     )
     assert result["confirmed"] is False
     assert result["signals"] == []
@@ -153,7 +181,8 @@ async def test_js_eval_exception_returns_unconfirmed():
 async def test_js_timeout_does_not_propagate():
     page = _make_page(evaluate_raises=TimeoutError("evaluate timed out"))
     result = await probe_specialized_type(
-        page, suspected_type="collection",
+        page,
+        suspected_type="collection",
         candidate_xpath="//table[1]",
     )
     assert result["confirmed"] is False
@@ -168,7 +197,9 @@ async def test_js_timeout_does_not_propagate():
 async def test_int_coords_coerced_to_float_for_js():
     page = _make_page(evaluate_return={"confirmed": False})
     await probe_specialized_type(
-        page, suspected_type="dropdown", coords=(100, 200),
+        page,
+        suspected_type="dropdown",
+        coords=(100, 200),
     )
     args = page.evaluate.call_args[0][1]
     assert args["coords"]["x"] == 100.0
@@ -185,9 +216,10 @@ async def test_int_coords_coerced_to_float_for_js():
 def test_framework_patterns_match_classifier_table():
     # The probe should expose every framework the classifier knows about.
     # Catches drift if a new framework is added to one but not the other.
+    import json
+
     from browser_service.locators.classifier import _DROPDOWN_FRAMEWORK_PATTERNS
     from browser_service.locators.dom_probe import _FRAMEWORK_PATTERNS_JSON
-    import json
 
     probe_table = json.loads(_FRAMEWORK_PATTERNS_JSON)
     classifier_names = {name for name, _ in _DROPDOWN_FRAMEWORK_PATTERNS}
@@ -205,18 +237,21 @@ async def test_confirmation_propagates_anchor_xpath_for_handler_retargeting():
     # Bug 3 pattern: coords land on outer .row, probe finds .ts-wrapper
     # at an ancestor's sibling. The handler can re-anchor using
     # anchor_xpath rather than the original (wrong) element_data.
-    page = _make_page(evaluate_return={
-        "confirmed": True,
-        "framework": "tom-select",
-        "signals": [
-            "ancestor[2].sib:class:ts-wrapper",
-            "ancestor[2].sib.descendant:class:ts-control",
-        ],
-        "anchor_xpath": "/html/body/div/form/div[3]/div[2]/div[1]",
-        "anchor_tag": "div",
-    })
+    page = _make_page(
+        evaluate_return={
+            "confirmed": True,
+            "framework": "tom-select",
+            "signals": [
+                "ancestor[2].sib:class:ts-wrapper",
+                "ancestor[2].sib.descendant:class:ts-control",
+            ],
+            "anchor_xpath": "/html/body/div/form/div[3]/div[2]/div[1]",
+            "anchor_tag": "div",
+        }
+    )
     result = await probe_specialized_type(
-        page, suspected_type="dropdown",
+        page,
+        suspected_type="dropdown",
         coords=(450, 320),
         candidate_xpath="//div[contains(@class,'row')]",
     )

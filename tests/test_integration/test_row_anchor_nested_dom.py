@@ -30,20 +30,16 @@ pytestmark = pytest.mark.integration
 EDIT = '[title="Edit"]'
 
 
-def grid_html(customer_ids, extra_rows=''):
+def grid_html(customer_ids, extra_rows=""):
     """ASTPP customer-grid replica: id cell + Edit link with the
     nested-title pattern (title on the <a> AND the <span> inside it)."""
-    trs = '\n'.join(
+    trs = "\n".join(
         f'<tr><td><span class="cid">{cid}</span></td>'
         f'<td><a href="/accounts/customer_edit/{cid}" title="Edit">'
         f'<span title="Edit" class="fa fa-pencil">E</span></a></td></tr>'
         for cid in customer_ids
     )
-    return (
-        '<table><tbody>'
-        f'{trs}{extra_rows}'
-        '</tbody></table>'
-    )
+    return f"<table><tbody>{trs}{extra_rows}</tbody></table>"
 
 
 @contextlib.asynccontextmanager
@@ -59,23 +55,20 @@ async def _page(html):
 
 
 class TestNestedTitleCollapseRealDom:
-
     async def test_nested_pair_collapses_to_the_link(self):
         """The q02 case verbatim: 2 matches in the row (a + span) are one
         control — the collapse must emit the row-scoped composite and it
         must resolve to exactly the customer's <a>, actionable."""
-        async with _page(grid_html(['55514', '55515', '55516'])) as page:
-            result = await _upgrade_to_row_anchor(page, EDIT, '55516')
-            expected = (
-                f'tr:has-text("55516") >> {EDIT} >> visible=true >> nth=0'
-            )
-            assert result == {'locator': expected}
+        async with _page(grid_html(["55514", "55515", "55516"])) as page:
+            result = await _upgrade_to_row_anchor(page, EDIT, "55516")
+            expected = f'tr:has-text("55516") >> {EDIT} >> visible=true >> nth=0'
+            assert result == {"locator": expected}
 
-            target = page.locator(result['locator'])
+            target = page.locator(result["locator"])
             assert await target.count() == 1
-            assert await target.evaluate('el => el.tagName') == 'A'
-            href = await target.get_attribute('href')
-            assert href.endswith('/customer_edit/55516')
+            assert await target.evaluate("el => el.tagName") == "A"
+            href = await target.get_attribute("href")
+            assert href.endswith("/customer_edit/55516")
             # Actionability: the outer link takes the click (the icon
             # span inside it is an accepted hit-target descendant).
             await target.click(trial=True)
@@ -85,13 +78,12 @@ class TestNestedTitleCollapseRealDom:
         became nth=18 when rows were added. The collapsed composite must
         keep resolving to customer 55516's Edit link after rows are
         prepended and the table reordered."""
-        async with _page(grid_html(['55514', '55515', '55516'])) as page:
-            result = await _upgrade_to_row_anchor(page, EDIT, '55516')
-            locator = result['locator']
+        async with _page(grid_html(["55514", "55515", "55516"])) as page:
+            result = await _upgrade_to_row_anchor(page, EDIT, "55516")
+            locator = result["locator"]
 
             grown = grid_html(
-                ['61001', '61002', '61003', '55515', '61004', '55516',
-                 '55514', '61005']
+                ["61001", "61002", "61003", "55515", "61004", "55516", "55514", "61005"]
             )
             await page.set_content(grown)
 
@@ -100,15 +92,15 @@ class TestNestedTitleCollapseRealDom:
             row_datum = await target.evaluate(
                 "el => el.closest('tr').querySelector('.cid').textContent"
             )
-            assert row_datum == '55516'
+            assert row_datum == "55516"
 
     async def test_two_matching_rows_stay_ambiguous(self):
         """An anchor that substring-matches two rows is genuine
         ambiguity — cross-row matches never nest."""
-        html = grid_html(['55516', '155516', '61001'])
+        html = grid_html(["55516", "155516", "61001"])
         async with _page(html) as page:
-            result = await _upgrade_to_row_anchor(page, EDIT, '55516')
-            assert result == {'ambiguous': True}
+            result = await _upgrade_to_row_anchor(page, EDIT, "55516")
+            assert result == {"ambiguous": True}
 
     async def test_second_separate_control_in_row_stays_ambiguous(self):
         """A second non-nested Edit control in the anchor row breaks the
@@ -119,10 +111,10 @@ class TestNestedTitleCollapseRealDom:
             '<span title="Edit">E</span></a></td>'
             '<td><a href="/quick/55516" title="Edit">quick</a></td></tr>'
         )
-        html = grid_html(['55514', '55515'], extra_rows=extra)
+        html = grid_html(["55514", "55515"], extra_rows=extra)
         async with _page(html) as page:
-            result = await _upgrade_to_row_anchor(page, EDIT, '55516')
-            assert result == {'ambiguous': True}
+            result = await _upgrade_to_row_anchor(page, EDIT, "55516")
+            assert result == {"ambiguous": True}
 
     async def test_hidden_template_row_still_collapses(self):
         """Both ASTPP patterns at once: a display:none duplicate of the
@@ -135,14 +127,14 @@ class TestNestedTitleCollapseRealDom:
             '<td><a href="/hidden/55516" title="Edit">'
             '<span title="Edit">E</span></a></td></tr>'
         )
-        html = grid_html(['55514', '55516'], extra_rows=hidden)
+        html = grid_html(["55514", "55516"], extra_rows=hidden)
         async with _page(html) as page:
-            result = await _upgrade_to_row_anchor(page, EDIT, '55516')
-            assert result and 'locator' in result
-            target = page.locator(result['locator'])
+            result = await _upgrade_to_row_anchor(page, EDIT, "55516")
+            assert result and "locator" in result
+            target = page.locator(result["locator"])
             assert await target.count() == 1
-            href = await target.get_attribute('href')
-            assert href.endswith('/customer_edit/55516')  # not /hidden/
+            href = await target.get_attribute("href")
+            assert href.endswith("/customer_edit/55516")  # not /hidden/
 
     async def test_triple_nested_titles_collapse_to_outermost(self):
         """Three name tags on one ancestor line (td > a > span) are
@@ -152,13 +144,13 @@ class TestNestedTitleCollapseRealDom:
             '<td title="Edit"><a href="/e/55516" title="Edit">'
             '<span title="Edit">E</span></a></td></tr>'
         )
-        html = grid_html(['55514'], extra_rows=extra)
+        html = grid_html(["55514"], extra_rows=extra)
         async with _page(html) as page:
-            result = await _upgrade_to_row_anchor(page, EDIT, '55516')
-            assert result and 'locator' in result
-            target = page.locator(result['locator'])
+            result = await _upgrade_to_row_anchor(page, EDIT, "55516")
+            assert result and "locator" in result
+            target = page.locator(result["locator"])
             assert await target.count() == 1
-            assert await target.evaluate('el => el.tagName') == 'TD'
+            assert await target.evaluate("el => el.tagName") == "TD"
 
     async def test_full_engine_emits_collapsed_composite_stable(self):
         """End-to-end through find_unique_locator_at_coordinates with
@@ -169,63 +161,67 @@ class TestNestedTitleCollapseRealDom:
         from browser_service.locators.smart_locator import (
             find_unique_locator_at_coordinates,
         )
-        async with _page(grid_html(['55514', '55515', '55516'])) as page:
-            box = await page.locator(
-                'a[href$="/customer_edit/55516"]'
-            ).bounding_box()
+
+        async with _page(grid_html(["55514", "55515", "55516"])) as page:
+            box = await page.locator('a[href$="/customer_edit/55516"]').bounding_box()
             result = await find_unique_locator_at_coordinates(
                 page=page,
-                x=box['x'] + box['width'] / 2,
-                y=box['y'] + box['height'] / 2,
-                element_id='elem_4',
+                x=box["x"] + box["width"] / 2,
+                y=box["y"] + box["height"] / 2,
+                element_id="elem_4",
                 element_description=(
-                    'Edit action icon in the row containing 55516 '
-                    'in the customer data table'
+                    "Edit action icon in the row containing 55516 in the customer data table"
                 ),
-                expected_text='Edit',
+                expected_text="Edit",
                 element_data={
-                    'tagName': 'a', 'id': '', 'name': '', 'className': '',
-                    'textContent': 'E', 'ariaLabel': '', 'placeholder': '',
-                    'title': 'Edit', 'role': '', 'dataTestId': '',
-                    'type': '', 'xpath': '', 'parentId': '',
-                    'parentClass': '',
+                    "tagName": "a",
+                    "id": "",
+                    "name": "",
+                    "className": "",
+                    "textContent": "E",
+                    "ariaLabel": "",
+                    "placeholder": "",
+                    "title": "Edit",
+                    "role": "",
+                    "dataTestId": "",
+                    "type": "",
+                    "xpath": "",
+                    "parentId": "",
+                    "parentClass": "",
                 },
                 search_context=page,
-                row_anchor_text='55516',
+                row_anchor_text="55516",
             )
-            assert result['found'] is True
-            assert 'tr:has-text("55516")' in result['best_locator']
-            assert result['best_locator'].endswith('>> nth=0')
-            assert result.get('row_anchored') is True
-            assert result['stability'] == 'stable'
+            assert result["found"] is True
+            assert 'tr:has-text("55516")' in result["best_locator"]
+            assert result["best_locator"].endswith(">> nth=0")
+            assert result.get("row_anchored") is True
+            assert result["stability"] == "stable"
 
-            target = page.locator(result['best_locator'])
+            target = page.locator(result["best_locator"])
             assert await target.count() == 1
-            href = await target.get_attribute('href')
-            assert href.endswith('/customer_edit/55516')
+            href = await target.get_attribute("href")
+            assert href.endswith("/customer_edit/55516")
 
     async def test_identity_check_on_real_geometry(self):
         """A5 on real boxes: coordinates on the link accept the collapse;
         coordinates on a different row's link reject it."""
-        async with _page(grid_html(['55514', '55515', '55516'])) as page:
-            right_box = await page.locator(
-                'a[href$="/customer_edit/55516"]'
-            ).bounding_box()
-            wrong_box = await page.locator(
-                'a[href$="/customer_edit/55514"]'
-            ).bounding_box()
+        async with _page(grid_html(["55514", "55515", "55516"])) as page:
+            right_box = await page.locator('a[href$="/customer_edit/55516"]').bounding_box()
+            wrong_box = await page.locator('a[href$="/customer_edit/55514"]').bounding_box()
 
-            cx = right_box['x'] + right_box['width'] / 2
-            cy = right_box['y'] + right_box['height'] / 2
-            accepted = await _upgrade_to_row_anchor(
-                page, EDIT, '55516', x=cx, y=cy
-            )
-            assert accepted and 'locator' in accepted
+            cx = right_box["x"] + right_box["width"] / 2
+            cy = right_box["y"] + right_box["height"] / 2
+            accepted = await _upgrade_to_row_anchor(page, EDIT, "55516", x=cx, y=cy)
+            assert accepted and "locator" in accepted
 
             # A far-away point (different row, offset beyond the
             # coordinate threshold) must not be claimed.
             rejected = await _upgrade_to_row_anchor(
-                page, EDIT, '55516',
-                x=wrong_box['x'] + 600, y=wrong_box['y'] + 600,
+                page,
+                EDIT,
+                "55516",
+                x=wrong_box["x"] + 600,
+                y=wrong_box["y"] + 600,
             )
             assert rejected is None

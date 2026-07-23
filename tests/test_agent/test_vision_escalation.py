@@ -11,20 +11,26 @@ Purpose: With use_vision='auto' the agent runs vision-off; browser-use 0.12.6
            - failure messages tell the model to re-examine the attached screenshot
            - the terminal dead-browser path does NOT escalate (run is over)
            - the success path metadata (the result dict) is not polluted
+           - BOTH failure ActionResults also carry the engine's failure payload,
+             which is how workflow.py learns why a locator is missing. metadata
+             is observability-only in browser-use (ActionResult.metadata is read
+             for include_screenshot and nothing else), so this costs no tokens.
 
 The registered handler is exercised through the real browser-use Tools registry
 (register_custom_actions on a fake agent, then registry.execute_action) with the
 locator engine and Playwright connection mocked — no browser, no LLM.
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from browser_service.agent.registration import register_custom_actions
 
 
 class FakeBrowserSession:
     """Minimal browser_session stand-in: CDP URL present, empty selector map."""
+
     cdp_url = "ws://127.0.0.1:9222/devtools/browser/00000000-0000-0000-0000-000000000000"
     cdp_client = None
     is_cdp_connected = True
@@ -40,6 +46,7 @@ class FakeBrowserSession:
 
 class FakeDeadBrowserSession:
     """No CDP URL anywhere — _ensure_playwright must raise the terminal error."""
+
     cdp_url = None
     cdp_client = None
     is_cdp_connected = False
@@ -89,10 +96,13 @@ async def _invoke(engine_result, element_index, browser_session=None):
     if element_index is not None:
         params["element_index"] = element_index
 
-    with patch(
-        "browser_service.agent.actions.find_unique_locator_action",
-        new=AsyncMock(return_value=engine_result),
-    ), patch("playwright.async_api.async_playwright", new=_fake_playwright()):
+    with (
+        patch(
+            "browser_service.agent.actions.find_unique_locator_action",
+            new=AsyncMock(return_value=engine_result),
+        ),
+        patch("playwright.async_api.async_playwright", new=_fake_playwright()),
+    ):
         assert register_custom_actions(agent, elements=ELEMENTS) is True
         return await agent.tools.registry.execute_action(
             "find_unique_locator", params, browser_session=session
@@ -135,6 +145,46 @@ class TestEscalationOnValidationFailure:
         assert "screenshot" in result.error.lower()
 
 
+ENGINE_FAILURE_DETAILED = {
+    "element_id": "elem_1",
+    "description": "submit button",
+    "found": False,
+    "error": "Semantic mismatch: expected 'Submit' but none of the 3 unique locators matched",
+    "error_type": "SemanticMismatch",
+    "semantic_match": False,
+    "candidates_found": 3,
+}
+
+
+class TestFailurePayloadIsPublished:
+    """The engine's reason must reach metadata, not just the agent-facing prose.
+
+    workflow.py drops rejected payloads out of its results list, so metadata is
+    the only channel that can tell it why an element has no locator. Without
+    this the reason exists solely in the log.
+    """
+
+    @pytest.mark.asyncio
+    async def test_failure_with_index_carries_engine_payload(self):
+        result = await _invoke(ENGINE_FAILURE_DETAILED, element_index=42)
+
+        assert result.metadata["element_id"] == "elem_1"
+        assert result.metadata["found"] is False
+        assert result.metadata["error"] == ENGINE_FAILURE_DETAILED["error"]
+        assert result.metadata["error_type"] == "SemanticMismatch"
+        # The escalation flag rides alongside it, not instead of it.
+        assert result.metadata["include_screenshot"] is True
+
+    @pytest.mark.asyncio
+    async def test_retry_without_index_carries_engine_payload(self):
+        result = await _invoke(ENGINE_FAILURE_DETAILED, element_index=None)
+
+        assert result.metadata["element_id"] == "elem_1"
+        assert result.metadata["found"] is False
+        assert result.metadata["error"] == ENGINE_FAILURE_DETAILED["error"]
+        assert result.metadata["include_screenshot"] is True
+
+
 class TestNoEscalationOnOtherPaths:
     """Terminal and success paths must NOT request a screenshot."""
 
@@ -173,9 +223,8 @@ class TestSchemaContract:
         contract (templates.py: 'element_index (int, required)')."""
         agent = FakeAgent()
         assert register_custom_actions(agent, elements=ELEMENTS) is True
-        field = (
-            agent.tools.registry.registry.actions["find_unique_locator"]
-            .param_model.model_fields["element_index"]
-        )
+        field = agent.tools.registry.registry.actions[
+            "find_unique_locator"
+        ].param_model.model_fields["element_index"]
         assert "REQUIRED" in field.description
         assert "HIGHLY RECOMMENDED" not in field.description

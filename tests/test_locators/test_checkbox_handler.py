@@ -21,7 +21,6 @@ from browser_service.locators.handlers.checkbox import (
     find_locator,
 )
 
-
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
@@ -92,8 +91,10 @@ class TestStrategy1AttributeAnchors:
         result = await find_locator(
             page=ctx,
             element_data={
-                "tagName": "input", "type": "radio",
-                "name": "plan", "value": "pro",
+                "tagName": "input",
+                "type": "radio",
+                "name": "plan",
+                "value": "pro",
             },
             type_info=_info("native", primary_type="radio"),
             element_id="elem_radio",
@@ -127,14 +128,15 @@ class TestStrategy1AttributeAnchors:
     @pytest.mark.asyncio
     async def test_id_takes_priority_over_name(self):
         # Both unique — id should win since it's tried first.
-        ctx = _mock_search_context({
-            "id=terms": 1,
-            '[name="terms"]': 1,
-        })
+        ctx = _mock_search_context(
+            {
+                "id=terms": 1,
+                '[name="terms"]': 1,
+            }
+        )
         result = await find_locator(
             page=ctx,
-            element_data={"tagName": "input", "type": "checkbox",
-                          "id": "terms", "name": "terms"},
+            element_data={"tagName": "input", "type": "checkbox", "id": "terms", "name": "terms"},
             type_info=_info("native"),
             element_id="elem",
             element_description="Accept terms",
@@ -149,15 +151,20 @@ class TestStrategy1AttributeAnchors:
     async def test_attr_skipped_when_count_not_one(self):
         # id matches 0 elements (e.g., dynamically removed) — handler
         # falls through to the next candidate.
-        ctx = _mock_search_context({
-            "id=missing": 0,
-            'input[type="radio"][name="plan"][value="basic"]': 1,
-        })
+        ctx = _mock_search_context(
+            {
+                "id=missing": 0,
+                'input[type="radio"][name="plan"][value="basic"]': 1,
+            }
+        )
         result = await find_locator(
             page=ctx,
             element_data={
-                "tagName": "input", "type": "radio", "id": "missing",
-                "name": "plan", "value": "basic",
+                "tagName": "input",
+                "type": "radio",
+                "id": "missing",
+                "name": "plan",
+                "value": "basic",
             },
             type_info=_info("native", primary_type="radio"),
             element_id="elem",
@@ -179,9 +186,11 @@ class TestStrategy1AttributeAnchors:
 class TestStrategy3CustomWidget:
     @pytest.mark.asyncio
     async def test_custom_checkbox_aria_label_anchor(self):
-        ctx = _mock_search_context({
-            '[role="checkbox"][aria-label="Enable analytics"]': 1,
-        })
+        ctx = _mock_search_context(
+            {
+                '[role="checkbox"][aria-label="Enable analytics"]': 1,
+            }
+        )
         result = await find_locator(
             page=ctx,
             element_data={"tagName": "span", "role": "checkbox"},
@@ -194,18 +203,17 @@ class TestStrategy3CustomWidget:
             confirmed_coords=None,
         )
         assert result is not None
-        assert (
-            result["best_locator"]
-            == '[role="checkbox"][aria-label="Enable analytics"]'
-        )
+        assert result["best_locator"] == '[role="checkbox"][aria-label="Enable analytics"]'
         assert result["element_type"] == "checkbox"
         assert result["framework"] == "custom"
 
     @pytest.mark.asyncio
     async def test_toggle_role_switch_anchor(self):
-        ctx = _mock_search_context({
-            '[role="switch"][aria-label="Email notifications"]': 1,
-        })
+        ctx = _mock_search_context(
+            {
+                '[role="switch"][aria-label="Email notifications"]': 1,
+            }
+        )
         result = await find_locator(
             page=ctx,
             element_data={"tagName": "span", "role": "switch"},
@@ -218,15 +226,17 @@ class TestStrategy3CustomWidget:
             confirmed_coords=None,
         )
         assert result is not None
-        assert "role=\"switch\"" in result["best_locator"]
+        assert 'role="switch"' in result["best_locator"]
         assert result["element_type"] == "checkbox"  # toggle maps under checkbox primary_type
 
     @pytest.mark.asyncio
     async def test_custom_radio_falls_back_to_role_name(self):
         # First candidate (aria-label) misses; second (role=...[name=...]) hits.
-        ctx = _mock_search_context({
-            'role=radio[name="Light theme"]': 1,
-        })
+        ctx = _mock_search_context(
+            {
+                'role=radio[name="Light theme"]': 1,
+            }
+        )
         result = await find_locator(
             page=ctx,
             element_data={"tagName": "span", "role": "radio"},
@@ -272,8 +282,10 @@ class TestAlwaysFallback:
         ctx = _mock_search_context({})  # everything returns 0
         # Use an unknown framework so Strategy 3 short-circuits too.
         info = ElementTypeInfo(
-            primary_type="checkbox", framework="unknown",
-            confidence="low", signals=[],
+            primary_type="checkbox",
+            framework="unknown",
+            confidence="low",
+            signals=[],
         )
         result = await find_locator(
             page=ctx,
@@ -306,4 +318,5 @@ class TestLegacyHelperReExport:
         from browser_service.locators.smart_locator import (
             _find_checkbox_or_radio_by_label,
         )
+
         assert _find_checkbox_or_radio_by_label is find_checkbox_or_radio_by_label

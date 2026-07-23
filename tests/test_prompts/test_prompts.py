@@ -26,6 +26,7 @@ Tests cover:
 """
 
 import pytest
+
 from browser_service.prompts.system import build_system_prompt
 from browser_service.prompts.workflow import build_workflow_prompt
 
@@ -100,6 +101,20 @@ class TestBuildWorkflowPrompt:
         )
         assert "search input" in prompt
 
+    def test_long_query_and_description_are_truncated(self):
+        """Over-long caller inputs are capped so the prompt stays bounded."""
+        prompt = build_workflow_prompt(
+            url="https://example.com",
+            user_query="q" * 600,
+            elements=[{"id": "elem_1", "description": "d" * 300, "action": "get_text"}],
+        )
+        # query capped at 500 + ellipsis; full 600 never appears
+        assert "q" * 500 + "..." in prompt
+        assert "q" * 600 not in prompt
+        # description capped at 200 + ellipsis
+        assert "d" * 200 + "..." in prompt
+        assert "d" * 300 not in prompt
+
     def test_empty_elements_raises(self):
         """Empty elements list raises ValueError — nothing to process."""
         with pytest.raises((ValueError, Exception)):
@@ -149,19 +164,21 @@ class TestBuildWorkflowPrompt:
         assert len(prompt) > 100
 
     def test_client_hints_included(self):
-        """Client hints (from NL backend) are included when provided."""
+        """Client hints (from NL backend) are included when provided.
+
+        client_hints is a LIST of hints, as the caller passes it
+        (client_config.system_prompt_additions). Handing it a bare string
+        makes the bullet join iterate characters, so each hint has to survive
+        intact as its own line for this to mean anything.
+        """
         prompt = build_workflow_prompt(
             url="https://example.com",
             user_query="click",
             elements=self._make_elements(),
-            client_hints="Handle cookie popup first",
+            client_hints=["Handle cookie popup first", "Wait for the spinner"],
         )
-        # Hints should appear somewhere in the prompt
-        if "cookie popup" in prompt.lower() or "Handle cookie" in prompt:
-            assert True
-        else:
-            # Some implementations may not support hints yet — test should be flexible
-            assert len(prompt) > 100
+        assert "• Handle cookie popup first" in prompt
+        assert "• Wait for the spinner" in prompt
 
     def test_no_client_hints(self):
         """Prompt works without client hints."""
@@ -245,10 +262,15 @@ class TestVisionOffContract:
 
     def test_sequential_processing_rules_untouched(self):
         from browser_service.prompts.templates import SEQUENTIAL_PROCESSING_RULES
+
         assert "Process elements IN THE ORDER THEY ARE LISTED" in SEQUENTIAL_PROCESSING_RULES
         assert "FALLBACK REQUIRED" in SEQUENTIAL_PROCESSING_RULES
         assert "Always provide element_index" in SEQUENTIAL_PROCESSING_RULES
 
     def test_expected_text_mandate_untouched(self):
         from browser_service.prompts.templates import CUSTOM_ACTION_PARAMETERS_EXTENDED
-        assert "PROVIDE THIS whenever the element has visible text" in CUSTOM_ACTION_PARAMETERS_EXTENDED
+
+        assert (
+            "PROVIDE THIS whenever the element has visible text"
+            in CUSTOM_ACTION_PARAMETERS_EXTENDED
+        )

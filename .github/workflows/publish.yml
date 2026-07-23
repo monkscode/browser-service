@@ -17,6 +17,19 @@ on:
         required: true
         type: string
 
+# One publish at a time, and never cancel one in flight. resolve_version.py
+# derives the next version by reading the latest release off PyPI and bumping
+# it, so two runs that overlap read the SAME base and compute the SAME version
+# — the second then dies on PyPI's duplicate-file rejection, after the tests
+# and build have already run. Serialising removes that race.
+#
+# cancel-in-progress is deliberately false, unlike ci.yml: cancelling mid-run
+# can kill a job between the PyPI upload and the end of the workflow, which
+# would leave the release published but the run recorded as cancelled.
+concurrency:
+  group: publish-pypi
+  cancel-in-progress: false
+
 jobs:
   extract-tag:  
     runs-on: ubuntu-latest
@@ -27,52 +40,155 @@ jobs:
     steps:  
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0  # Fetch all history for version calculation
           token: ${{ secrets.GITHUB_TOKEN }}
-      - id: extract_tag  
-        name: Extract or generate version  
+      - id: extract_tag
+        name: Extract or generate version
+        # Inputs and refs reach the shell through env, never through ${{ }}
+        # expansion into the script text. An expanded value is substituted
+        # before bash parses the line, so metacharacters in it would execute
+        # here — and this version is consumed downstream by a job holding
+        # id-token: write for PyPI trusted publishing.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_VERSION"
+          elif [ "${REF#refs/tags/}" != "$REF" ]; then
+            VERSION="${REF#refs/tags/}"
           else
-            NEW_VERSION=$(python3 .github/scripts/resolve_version.py)
-            echo "tag=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
-          fi  
+            VERSION="$(python3 .github/scripts/resolve_version.py)"
+          fi
 
-  build-and-publish-pypi:
-    needs: [extract-tag]
+          # Releases may be tagged 1.2.3 or v1.2.3; pyproject must carry the
+          # bare version either way (resolve_version.py strips it the same way).
+          VERSION="${VERSION#v}"
+
+          # Reject anything that is not a PEP 440 public version. This is what
+          # actually contains an untrusted workflow_dispatch input: it blocks
+          # shell metacharacters and embedded newlines, the latter otherwise
+          # letting a caller forge extra entries in $GITHUB_OUTPUT.
+          if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$ ]]; then
+            echo "::error::Refusing to publish: '${VERSION}' is not a valid PEP 440 version"
+            exit 1
+          fi
+
+          echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Gate on tests
     runs-on: ubuntu-latest
-    environment: 
+    # Explicit least privilege: without this the job inherits the repository's
+    # default GITHUB_TOKEN scope, which may be read/write. Running the test
+    # suite needs nothing but read.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install package + test deps
+        run: python3 -m pip install -e ".[test]" -c requirements/test-constraints.txt
+      - name: Run tests (excluding live integration)
+        run: python3 -m pytest -m "not integration" -q
+
+  # Building and publishing are separate jobs on purpose. `permissions` is a
+  # job-level key — GitHub has no step-level scoping — so every step of a job
+  # declaring `id-token: write` can mint the PyPI OIDC token. Any `pip install`
+  # in such a job therefore runs third-party code that can publish as us.
+  # PyPI's trusted-publisher security model spells out the fix: "your publishing
+  # job should (ideally) have only two steps: 1. Retrieve the publishable
+  # distribution files from a separate build job; 2. Publish the distributions."
+  # That is exactly the shape below — `publish-pypi` has no checkout, no pip and
+  # no shell, only two pinned actions.
+  build:
+    needs: [extract-tag, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build backend (hash-locked)
+        # The build backend produces the exact bytes we ship to PyPI, so it is
+        # pinned by content, not by name: see requirements/build.txt for the
+        # reasoning and the bump procedure. --only-binary is load-bearing —
+        # without it a hash mismatch silently falls back to compiling the sdist.
+        # Quoted: an unquoted `:all: -r` is a colon-space, which YAML parses as
+        # a nested mapping and rejects.
+        run: 'python3 -m pip install --require-hashes --only-binary=:all: -r requirements/build.txt'
+      - name: Update version in pyproject.toml
+        # Same rule as extract-tag: through env, not through ${{ }} expansion
+        # into the sed script. extract-tag has already validated the value
+        # against PEP 440, so it cannot carry a sed delimiter either.
+        env:
+          NEW_VERSION: ${{ needs.extract-tag.outputs.version }}
+        run: sed -i "s/^version = \"[^\"]*\"/version = \"${NEW_VERSION}\"/" pyproject.toml
+      - name: Build sdist + wheel
+        # --no-isolation is required, not cosmetic. The default spins a fresh
+        # venv and resolves `[build-system] requires` (setuptools, wheel) from
+        # PyPI at build time — floating exactly the backend that emits the wheel
+        # bytes. This builds against the hash-verified environment installed
+        # above, where setuptools and wheel are pinned by content.
+        run: python3 -m build --no-isolation
+      - name: Install twine
+        # Installed AFTER the build, never before: twine drags in 23 packages
+        # (requests, urllib3, keyring, rich, nh3, readme_renderer, ...) and none
+        # of them has any business being importable while the artifact is being
+        # produced. Version-pinned rather than hash-locked — this is a read-only
+        # metadata lint in an unprivileged job that never touches the published
+        # bytes, so the 23-package lockfile it would cost is not worth carrying.
+        run: python3 -m pip install twine==6.2.0
+      - name: Check distribution metadata
+        run: python3 -m twine check dist/*
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
       name: pypi
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Download distributions
+        uses: actions/download-artifact@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Set up Python 3.9
-        uses: actions/setup-python@v3
-        with:
-          python-version: "3.9"
-      - name: Install dependencies
-        run: python3 -m pip install setuptools wheel twine
-      - name: Update version in setup.py
-        run: sed -i 's/version="[^"]*"/version="${{ needs.extract-tag.outputs.version }}"/' setup.py
-      - name: Update version in pyproject.toml
-        run: sed -i 's/version = "[^"]*"/version = "${{ needs.extract-tag.outputs.version }}"/' pyproject.toml
-      - name: Update package name in setup.py  
-        run: sed -i 's/name="[^"]*"/name="browser-service"/' setup.py
-      - name: Update package name in pyproject.toml
-        run: sed -i 's/name = "[^"]*"/name = "browser-service"/' pyproject.toml
-      - name: Build a binary wheel
-        run: python3 setup.py sdist bdist_wheel
+          name: pypi-dist
+          path: dist/
       - name: Publish distribution 📦 to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with: 
-          attestations: false
+        # SHA-pinned: `release/v1` is a moving branch, so an upstream compromise
+        # would run in the job that holds id-token: write. Bump SHA + comment together.
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+        with:
+          # PEP 740 attestations: the action signs each distribution with the
+          # same OIDC identity it publishes under, and PyPI records who built
+          # what. This job already meets every precondition — Trusted Publishing
+          # (no API token), `id-token: write`, and real PyPI — so the signature
+          # is free. It was `false` only because the original scaffold that
+          # introduced this file (ece4550) set it, not from a decision to
+          # decline; the rest of the pipeline is hash-locked and SHA-pinned, and
+          # leaving it off was the one gap in that chain.
+          attestations: true

@@ -1,0 +1,36 @@
+# Pinned test tooling for CI. Applied with `pip install -c`, never as the
+# install list itself — the packages still come from the `[test]` extra in
+# pyproject.toml; this file only fixes WHICH versions resolve.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# `pip install -e ".[test]"` resolves `pytest>=7.0`, `pytest-asyncio>=0.21` and
+# `pytest-cov>=4.0` against whatever PyPI serves that day. pytest-asyncio in
+# particular has repeatedly changed loop and fixture semantics across minor
+# releases, so an unrelated PR can go red because upstream shipped that morning
+# — the same failure mode the pinned ruff/mypy in ci.yml already guards against.
+#
+# WHY NOT PIN IN pyproject.toml
+# -----------------------------
+# `[project.optional-dependencies]` ships in the published wheel's metadata.
+# `==` pins there would propagate to anyone installing `browser-service[test]`
+# and conflict with their own pytest. Ranges belong in the package; exact
+# versions belong to CI. A constraints file is the seam between the two.
+#
+# WHY NOT HASH-LOCKED, unlike requirements/build.txt
+# --------------------------------------------------
+# build.txt is hash-locked because the build backend emits the exact bytes
+# published to PyPI. The test lane produces no published artifact and runs in a
+# job holding `contents: read` and no `id-token`, so version pinning is the
+# proportionate control — the same call already made for twine in publish.yml.
+#
+# TO BUMP: change the version, run the suite, commit the two together.
+
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+
+# Read directly by the coverage job (`coverage combine`/`xml`/`report`) and by
+# the --fail-under gate, not just pulled in through pytest-cov. Pinned so the
+# gate measures with one version across all three lanes.
+coverage==7.15.2

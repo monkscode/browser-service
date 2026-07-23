@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 # Class tokens usable as a bare `.class` selector — anything with CSS meta
 # characters (Tailwind `w-1/2`, `md:flex`) is skipped rather than escaped.
-_CSS_IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_-]*$')
+_CSS_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 
 
 class _PlaywrightConnectionError(RuntimeError):
@@ -76,64 +76,83 @@ def _select_best_page(browser):
 def _extract_dom_node_attributes(dom_node) -> dict:
     """
     Extract standard attributes from a browser-use DOM node.
-    
+
     This helper prevents code duplication across multiple locations
     where element attributes need to be extracted for locator generation.
-    
+
     Args:
         dom_node: EnhancedDOMTreeNode from browser-use
-        
+
     Returns:
         Dictionary with standard element attributes
     """
-    attrs = dom_node.attributes if hasattr(dom_node, 'attributes') else {}
+    attrs = dom_node.attributes if hasattr(dom_node, "attributes") else {}
     # Carry WHICH test attribute produced the value — an element with only
     # data-test must not be looked up as [data-testid=...] (0 matches, hook lost).
     data_test_attr = (
-        'data-test'
-        if (not attrs.get('data-testid') and attrs.get('data-test'))
-        else 'data-testid'
+        "data-test" if (not attrs.get("data-testid") and attrs.get("data-test")) else "data-testid"
     )
     # Task G parent scan: Bootstrap-3-style conventions mark invalid fields
     # on the PARENT div (form-group has-error) while the field's own class
     # list stays clean — carry the immediate parent's classes as evidence.
-    parent = getattr(dom_node, 'parent_node', None)
-    parent_attrs = getattr(parent, 'attributes', None) if parent is not None else None
-    parent_class = parent_attrs.get('class', '') if isinstance(parent_attrs, dict) else ''
+    parent = getattr(dom_node, "parent_node", None)
+    parent_attrs = getattr(parent, "attributes", None) if parent is not None else None
+    parent_class = parent_attrs.get("class", "") if isinstance(parent_attrs, dict) else ""
     return {
-        'tagName': dom_node.node_name.lower() if hasattr(dom_node, 'node_name') else '',
-        'id': attrs.get('id', ''),
-        'name': attrs.get('name', ''),
-        'className': attrs.get('class', ''),
-        'ariaLabel': attrs.get('aria-label', ''),
+        "tagName": dom_node.node_name.lower() if hasattr(dom_node, "node_name") else "",
+        "id": attrs.get("id", ""),
+        "name": attrs.get("name", ""),
+        "className": attrs.get("class", ""),
+        "ariaLabel": attrs.get("aria-label", ""),
         # Task G (nlrf G7): ARIA invalid-state signal — nlrf's state-verification
         # assembler emits a Get Attribute assertion when the field carries it.
-        'ariaInvalid': attrs.get('aria-invalid', ''),
-        'parentClassName': parent_class,
-        'placeholder': attrs.get('placeholder', ''),
-        'title': attrs.get('title', ''),
-        'href': attrs.get('href', ''),
-        'role': attrs.get('role', ''),
-        'dataTestId': attrs.get('data-testid', '') or attrs.get('data-test', ''),
-        'dataTestAttr': data_test_attr,
-        'type': attrs.get('type', ''),  # For input elements
-        'value': attrs.get('value', ''),  # Current value of input
-        'xpath': dom_node.xpath if hasattr(dom_node, 'xpath') else '',
+        "ariaInvalid": attrs.get("aria-invalid", ""),
+        "parentClassName": parent_class,
+        "placeholder": attrs.get("placeholder", ""),
+        "title": attrs.get("title", ""),
+        "href": attrs.get("href", ""),
+        "role": attrs.get("role", ""),
+        "dataTestId": attrs.get("data-testid", "") or attrs.get("data-test", ""),
+        "dataTestAttr": data_test_attr,
+        "type": attrs.get("type", ""),  # For input elements
+        "value": attrs.get("value", ""),  # Current value of input
+        "xpath": dom_node.xpath if hasattr(dom_node, "xpath") else "",
     }
 
+
+def _dom_node_text(dom_node) -> str:
+    """Text content for a DOM node, "" when the node is text-less.
+
+    Both browser-use accessors return None for a node carrying no text (an icon
+    button, an image). Every caller stores this as ``textContent``, which a
+    downstream log line slices — so the default belongs here, in one place,
+    rather than being re-derived at each call site where a miss reintroduces the
+    crash.
+
+    The preferred accessor wins whenever it EXISTS, mirroring the if/elif this
+    replaced: an empty meaningful text is an answer, not a reason to fall back.
+
+    Returns:
+        The node's text, always a str — never None.
+    """
+    if hasattr(dom_node, "get_meaningful_text_for_llm"):
+        return dom_node.get_meaningful_text_for_llm() or ""
+    if hasattr(dom_node, "get_all_children_text"):
+        return dom_node.get_all_children_text() or ""
+    return ""
 
 
 def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
     """
     Detect if element coordinates are inside an iframe's bounding box.
-    
+
     This enables locator extraction for elements inside iframes by checking
     if the target coordinates fall within any iframe's bounds.
-    
+
     Args:
         selector_map: Browser-use selector_map containing all elements
         coords: Tuple of (x, y) coordinates to check
-        
+
     Returns:
         Tuple of (iframe_locator, iframe_id) if inside iframe, (None, None) otherwise.
         iframe_locator is the selector (e.g., 'iframe[id="main"]' or 'iframe[name="content"]')
@@ -145,33 +164,33 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
 
     def _esc(value: str) -> str:
         """Escape \\ and " for a CSS attribute selector."""
-        return value.replace('\\', '\\\\').replace('"', '\\"')
+        return value.replace("\\", "\\\\").replace('"', '\\"')
 
     def _attrs_of(node) -> dict:
-        return node.attributes if hasattr(node, 'attributes') else {}
+        return node.attributes if hasattr(node, "attributes") else {}
 
     # Collect iframes first (selector_map order = ordinal parity with the
     # pre-G6 behavior) so title/class uniqueness can be checked against
     # the other iframes browser-use indexed.
     iframes = [
-        elem for elem in selector_map.values()
-        if hasattr(elem, 'node_name') and elem.node_name.lower() == 'iframe'
+        elem
+        for elem in selector_map.values()
+        if hasattr(elem, "node_name") and elem.node_name.lower() == "iframe"
     ]
 
     for iframe_ordinal, elem in enumerate(iframes):
-        if not (hasattr(elem, 'absolute_position') and elem.absolute_position):
+        if not (hasattr(elem, "absolute_position") and elem.absolute_position):
             continue
         pos = elem.absolute_position
         # Check if coordinates are within iframe bounds
-        if not (pos.x <= x <= pos.x + pos.width and
-                pos.y <= y <= pos.y + pos.height):
+        if not (pos.x <= x <= pos.x + pos.width and pos.y <= y <= pos.y + pos.height):
             continue
 
         attrs = _attrs_of(elem)
-        iframe_id = attrs.get('id', '')
-        iframe_name = attrs.get('name', '')
-        iframe_title = (attrs.get('title', '') or '').strip()
-        iframe_classes = (attrs.get('class', '') or '').split()
+        iframe_id = attrs.get("id", "")
+        iframe_name = attrs.get("name", "")
+        iframe_title = (attrs.get("title", "") or "").strip()
+        iframe_classes = (attrs.get("class", "") or "").split()
         others = [o for o in iframes if o is not elem]
 
         # Generate locator for the iframe using attribute selectors.
@@ -186,11 +205,9 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
             iframe_locator = f'iframe[name="{_esc(iframe_name)}"]'
         else:
             title_taken_by_other = any(
-                (_attrs_of(o).get('title', '') or '').strip() == iframe_title
-                for o in others
+                (_attrs_of(o).get("title", "") or "").strip() == iframe_title for o in others
             )
-            if (iframe_title and not is_dynamic_text(iframe_title)
-                    and not title_taken_by_other):
+            if iframe_title and not is_dynamic_text(iframe_title) and not title_taken_by_other:
                 # CKEditor 4 body: title="Rich Text Editor, {field}" —
                 # deterministic per editor instance, no id/name.
                 iframe_locator = f'iframe[title="{_esc(iframe_title)}"]'
@@ -198,12 +215,11 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
                 for cls in iframe_classes:
                     if not _CSS_IDENTIFIER_RE.match(cls):
                         continue  # CSS meta chars — not a bare .class token
-                    if score_stability('class', cls) != STABLE:
+                    if score_stability("class", cls) != STABLE:
                         continue  # init-order counters (cke_1) die next session
-                    if any(cls in (_attrs_of(o).get('class', '') or '').split()
-                           for o in others):
+                    if any(cls in (_attrs_of(o).get("class", "") or "").split() for o in others):
                         continue  # shared with another iframe — ambiguous
-                    iframe_locator = f'iframe.{cls}'
+                    iframe_locator = f"iframe.{cls}"
                     break
             if iframe_locator is None:
                 # Last resort: ordinal (0-indexed count of iframes).
@@ -211,8 +227,7 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
                 iframe_locator = f"iframe >> nth={iframe_ordinal}"
 
         logger.info(f"🖼️ IFRAME DETECTED: Element at ({x}, {y}) is inside {iframe_locator}")
-        identifier = (iframe_id or iframe_name or iframe_title
-                      or str(iframe_ordinal))
+        identifier = iframe_id or iframe_name or iframe_title or str(iframe_ordinal)
         return iframe_locator, identifier
 
     return None, None
@@ -245,15 +260,19 @@ def _find_smallest_containing_element(selector_map, coords, viewport_area, skip_
     wrapper_threshold = viewport_area * 0.8
     skip_tag_upper = skip_tag.upper() if skip_tag else None
     best_match = (None, None)
-    best_area = float('inf')
+    best_area = float("inf")
 
     for idx, elem in selector_map.items():
-        if not (hasattr(elem, 'absolute_position') and elem.absolute_position):
+        if not (hasattr(elem, "absolute_position") and elem.absolute_position):
             continue
         pos = elem.absolute_position
         if not (pos.x <= x <= pos.x + pos.width and pos.y <= y <= pos.y + pos.height):
             continue
-        if skip_tag_upper and hasattr(elem, 'node_name') and elem.node_name.upper() == skip_tag_upper:
+        if (
+            skip_tag_upper
+            and hasattr(elem, "node_name")
+            and elem.node_name.upper() == skip_tag_upper
+        ):
             continue
         area = pos.width * pos.height
         if area <= 0:
@@ -279,13 +298,13 @@ def _find_smallest_containing_element(selector_map, coords, viewport_area, skip_
 
 # CDP URL pattern: ws[s]://HOST:PORT/devtools/browser/UUID
 # Supports: ws://, wss://, IPv4, IPv6, hostnames
-_CDP_URL_PATTERN = re.compile(r'^wss?://[^\s/]+/devtools/browser/')
+_CDP_URL_PATTERN = re.compile(r"^wss?://[^\s/]+/devtools/browser/")
 
 
 def _extract_cdp_host_port(cdp_url: str) -> str:
     """Extract host:port from CDP URL for cleaner logging."""
-    if '/devtools/' in cdp_url:
-        return cdp_url.split('/devtools/')[0]
+    if "/devtools/" in cdp_url:
+        return cdp_url.split("/devtools/")[0]
     return cdp_url
 
 
@@ -315,37 +334,45 @@ def _get_cdp_url_from_session(browser_session) -> Optional[str]:
     if not browser_session:
         return None
 
-    # Strategy 1: Direct cdp_url attribute (most common)
-    if hasattr(browser_session, 'cdp_url'):
-        try:
-            cdp_url = browser_session.cdp_url
-            if cdp_url and _CDP_URL_PATTERN.match(cdp_url):
-                logger.info(f"✅ CDP URL from browser_session.cdp_url: {_extract_cdp_host_port(cdp_url)}")
-                return cdp_url
-        except Exception as e:
-            logger.debug(f"Strategy 1 (cdp_url): {e}")
+    # Strategy 1: Direct cdp_url attribute (most common).
+    # The read sits inside the try, not behind a hasattr() guard: hasattr()
+    # performs the read itself and swallows only AttributeError, so a property
+    # raising anything else would escape before the try was entered and skip
+    # the remaining strategies.
+    try:
+        cdp_url = getattr(browser_session, "cdp_url", None)
+        if cdp_url and _CDP_URL_PATTERN.match(cdp_url):
+            logger.info(
+                f"✅ CDP URL from browser_session.cdp_url: {_extract_cdp_host_port(cdp_url)}"
+            )
+            return cdp_url
+    except Exception as e:
+        logger.debug(f"Strategy 1 (cdp_url): {e}")
 
-    # Strategy 2: cdp_client.url attribute
-    if hasattr(browser_session, 'cdp_client'):
-        try:
-            cdp_client = browser_session.cdp_client
-            if hasattr(cdp_client, 'url'):
-                cdp_url = cdp_client.url
-                if cdp_url and _CDP_URL_PATTERN.match(cdp_url):
-                    logger.info(f"✅ CDP URL from cdp_client.url: {_extract_cdp_host_port(cdp_url)}")
-                    return cdp_url
-        except Exception as e:
-            logger.debug(f"Strategy 2 (cdp_client.url): {e}")
+    # Strategy 2: cdp_client.url attribute. Same shape as strategy 1 — and the
+    # one that matters: browser-use's BrowserSession.cdp_client asserts the CDP
+    # client is initialised, so reading it on a session that has been reset
+    # raises AssertionError rather than AttributeError.
+    try:
+        cdp_client = getattr(browser_session, "cdp_client", None)
+        cdp_url = getattr(cdp_client, "url", None)
+        if cdp_url and _CDP_URL_PATTERN.match(cdp_url):
+            logger.info(f"✅ CDP URL from cdp_client.url: {_extract_cdp_host_port(cdp_url)}")
+            return cdp_url
+    except Exception as e:
+        logger.debug(f"Strategy 2 (cdp_client.url): {e}")
 
     # Strategy 3: Search all public attributes for WebSocket DevTools URL
     logger.debug("🔍 Searching all attributes for CDP URL...")
     for attr in dir(browser_session):
-        if attr.startswith('_'):
+        if attr.startswith("_"):
             continue
         try:
             value = getattr(browser_session, attr, None)
             if value and isinstance(value, str) and _CDP_URL_PATTERN.match(value):
-                logger.info(f"✅ CDP URL found in attribute '{attr}': {_extract_cdp_host_port(value)}")
+                logger.info(
+                    f"✅ CDP URL found in attribute '{attr}': {_extract_cdp_host_port(value)}"
+                )
                 return value
         except Exception:
             pass
@@ -404,7 +431,6 @@ async def _wait_for_page_stability(active_page) -> None:
         pass
 
 
-
 async def _dispatch_browser_use_event(
     browser_session, node, action: str, value: str, element_id: str, performed_actions: set
 ):
@@ -413,12 +439,19 @@ async def _dispatch_browser_use_event(
     Returns (note, status) on success or not_applicable.
     Returns (None, None) as the universal fall-through signal — Playwright path retries.
     performed_actions.add() is called ONLY on confirmed success, never on fall-through."""
-    from browser_use.browser.events import TypeTextEvent, ClickElementEvent, SelectDropdownOptionEvent
+    from browser_use.browser.events import (
+        ClickElementEvent,
+        SelectDropdownOptionEvent,
+        TypeTextEvent,
+    )
+
     try:
         if action in ("input", "type"):
             if not value:
                 return "", "not_applicable"
-            event = browser_session.event_bus.dispatch(TypeTextEvent(node=node, text=value, clear=True))
+            event = browser_session.event_bus.dispatch(
+                TypeTextEvent(node=node, text=value, clear=True)
+            )
             await event
             await event.event_result(raise_if_any=True, raise_if_none=False)
             # TypeTextEvent types via CDP key events (character-by-character) — reliable if no exception raised.
@@ -441,7 +474,9 @@ async def _dispatch_browser_use_event(
         elif action == "select":
             if not value:
                 return "", "not_applicable"
-            event = browser_session.event_bus.dispatch(SelectDropdownOptionEvent(node=node, text=value))
+            event = browser_session.event_bus.dispatch(
+                SelectDropdownOptionEvent(node=node, text=value)
+            )
             await event
             sel = await event.event_result(raise_if_any=True, raise_if_none=False)
             if isinstance(sel, dict) and sel.get("success") == "true":
@@ -465,8 +500,14 @@ async def _dispatch_browser_use_event(
 
 
 async def _do_interaction_playwright(
-    active_page, locator_str: str, action: str, value: str, element_id: str, performed_actions: set,
-    dropdown_framework: str = "", select_id: str | None = None,
+    active_page,
+    locator_str: str,
+    action: str,
+    value: str,
+    element_id: str,
+    performed_actions: set,
+    dropdown_framework: str = "",
+    select_id: str | None = None,
     datepicker_framework: str = "",
 ):
     """Playwright fallback with layered retry chains.
@@ -503,10 +544,17 @@ async def _do_interaction_playwright(
                     )
                     if diag == "ok":
                         performed_actions.add(element_id)
-                        return f"\n✅ AUTO-ACTION COMPLETE: Set date '{value}' (flatpickr setDate JS)", "auto_ok"
-                    logger.info(f"   ⚠️ flatpickr.tier0_js_failed: reason={diag} locator={locator_str!r} value={value!r}")
+                        return (
+                            f"\n✅ AUTO-ACTION COMPLETE: Set date '{value}' (flatpickr setDate JS)",
+                            "auto_ok",
+                        )
+                    logger.info(
+                        f"   ⚠️ flatpickr.tier0_js_failed: reason={diag} locator={locator_str!r} value={value!r}"
+                    )
                 except Exception as e:
-                    logger.warning(f"   ⚠️ flatpickr.tier0_exception: locator={locator_str!r} error={e}")
+                    logger.warning(
+                        f"   ⚠️ flatpickr.tier0_exception: locator={locator_str!r} error={e}"
+                    )
                 # Fall through to the generic input tiers — fail-open,
                 # same contract as the Tom Select JS tiers.
 
@@ -517,12 +565,18 @@ async def _do_interaction_playwright(
                     actual = await loc.input_value(timeout=2000)
                     if actual == value:
                         performed_actions.add(element_id)
-                        return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (fill, verified)", "auto_ok"
+                        return (
+                            f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (fill, verified)",
+                            "auto_ok",
+                        )
                     # Mismatch — fall through to Tier 2
                 except Exception:
                     # input_value() unsupported (e.g. contenteditable) — accept fill result
                     performed_actions.add(element_id)
-                    return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (fill, unverified)", "auto_partial"
+                    return (
+                        f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (fill, unverified)",
+                        "auto_partial",
+                    )
             except Exception:
                 pass
 
@@ -538,13 +592,22 @@ async def _do_interaction_playwright(
                     actual = await loc.input_value(timeout=2000)
                     performed_actions.add(element_id)
                     return (
-                        (f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (key events, verified)", "auto_ok")
+                        (
+                            f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (key events, verified)",
+                            "auto_ok",
+                        )
                         if actual == value
-                        else (f"\n⚠️ AUTO-ACTION: Typed '{value}' but field shows '{actual}' (key events)", "auto_partial")
+                        else (
+                            f"\n⚠️ AUTO-ACTION: Typed '{value}' but field shows '{actual}' (key events)",
+                            "auto_partial",
+                        )
                     )
                 except Exception:
                     performed_actions.add(element_id)
-                    return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (key events, unverified)", "auto_partial"
+                    return (
+                        f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (key events, unverified)",
+                        "auto_partial",
+                    )
             except Exception:
                 pass
 
@@ -555,9 +618,15 @@ async def _do_interaction_playwright(
                     value,
                 )
                 performed_actions.add(element_id)
-                return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (JS, unverified)", "auto_partial"
+                return (
+                    f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (JS, unverified)",
+                    "auto_partial",
+                )
             except Exception as e:
-                return f"\n⚠️ AUTO-ACTION FAILED (input): all strategies exhausted — {e}", "auto_failed"
+                return (
+                    f"\n⚠️ AUTO-ACTION FAILED (input): all strategies exhausted — {e}",
+                    "auto_failed",
+                )
 
         elif action in ("click", "submit"):
             # Tier 1: standard click
@@ -582,7 +651,10 @@ async def _do_interaction_playwright(
                 performed_actions.add(element_id)
                 return "\n✅ AUTO-ACTION COMPLETE: Clicked (JS)", "auto_ok"
             except Exception as e:
-                return f"\n⚠️ AUTO-ACTION FAILED (click): all strategies exhausted — {e}", "auto_failed"
+                return (
+                    f"\n⚠️ AUTO-ACTION FAILED (click): all strategies exhausted — {e}",
+                    "auto_failed",
+                )
 
         elif action == "select":
             if not value:
@@ -622,11 +694,18 @@ async def _do_interaction_playwright(
                         )
                         if diag == "ok":
                             performed_actions.add(element_id)
-                            return f"\n✅ AUTO-SELECT: Selected '{value}' (Tom Select JS via select_id)", "auto_ok"
+                            return (
+                                f"\n✅ AUTO-SELECT: Selected '{value}' (Tom Select JS via select_id)",
+                                "auto_ok",
+                            )
                         else:
-                            logger.info(f"   ⚠️ tom_select.tier0_js_failed: reason={diag} select_id={select_id!r} value={value!r}")
+                            logger.info(
+                                f"   ⚠️ tom_select.tier0_js_failed: reason={diag} select_id={select_id!r} value={value!r}"
+                            )
                     except Exception as e:
-                        logger.warning(f"   ⚠️ tom_select.tier0_exception: select_id={select_id!r} error={e}")
+                        logger.warning(
+                            f"   ⚠️ tom_select.tier0_exception: select_id={select_id!r} error={e}"
+                        )
 
                 # Tier 0b: locator-based traversal when select_id is unavailable.
                 # Standard Tom Select DOM has <select> as the *previous sibling* of .ts-wrapper,
@@ -663,11 +742,18 @@ async def _do_interaction_playwright(
                     )
                     if diag == "ok":
                         performed_actions.add(element_id)
-                        return f"\n✅ AUTO-SELECT: Selected '{value}' (Tom Select JS via locator)", "auto_ok"
+                        return (
+                            f"\n✅ AUTO-SELECT: Selected '{value}' (Tom Select JS via locator)",
+                            "auto_ok",
+                        )
                     else:
-                        logger.info(f"   ⚠️ tom_select.tier0b_js_failed: reason={diag} locator={locator_str!r} value={value!r}")
+                        logger.info(
+                            f"   ⚠️ tom_select.tier0b_js_failed: reason={diag} locator={locator_str!r} value={value!r}"
+                        )
                 except Exception as e:
-                    logger.warning(f"   ⚠️ tom_select.tier0b_exception: locator={locator_str!r} error={e}")
+                    logger.warning(
+                        f"   ⚠️ tom_select.tier0b_exception: locator={locator_str!r} error={e}"
+                    )
 
                 # Fall through to click-to-open as last resort for Tom Select.
 
@@ -722,10 +808,17 @@ async def _do_interaction_playwright(
                 for scope in [parent, active_page]:
                     for sel in option_selectors:
                         try:
-                            await scope.locator(sel).get_by_text(value, exact=True).first.click(timeout=1500)
+                            await (
+                                scope.locator(sel)
+                                .get_by_text(value, exact=True)
+                                .first.click(timeout=1500)
+                            )
                             dropdown_opened = False
                             performed_actions.add(element_id)
-                            return f"\n✅ AUTO-SELECT: Selected '{value}' (click-to-open, exact, {sel})", "auto_ok"
+                            return (
+                                f"\n✅ AUTO-SELECT: Selected '{value}' (click-to-open, exact, {sel})",
+                                "auto_ok",
+                            )
                         except Exception:
                             continue
 
@@ -736,7 +829,10 @@ async def _do_interaction_playwright(
                             await scope.locator(sel).get_by_text(value).first.click(timeout=1500)
                             dropdown_opened = False
                             performed_actions.add(element_id)
-                            return f"\n✅ AUTO-SELECT: Selected '{value}' (click-to-open, partial, {sel})", "auto_ok"
+                            return (
+                                f"\n✅ AUTO-SELECT: Selected '{value}' (click-to-open, partial, {sel})",
+                                "auto_ok",
+                            )
                         except Exception:
                             continue
 
@@ -776,6 +872,42 @@ async def _do_interaction_playwright(
         return f"\n⚠️ AUTO-ACTION FAILED ({action}): {e}", "auto_failed"
 
 
+def _memory_line(
+    element_id: str,
+    locator: str,
+    interaction_status: str,
+    action: str,
+    already_performed: bool,
+) -> str:
+    """Build the long_term_memory sticky note for one element.
+
+    browser-use 0.12.6 (agent/message_manager/service.py:327-331) is an if/elif:
+    when long_term_memory is set, extracted_content is DISCARDED. So this line is
+    the ONLY thing the model still sees about the call — and a locator-only note
+    says nothing about whether the interaction happened. For an element whose
+    action is invisible on screen (a password field shows dots) the agent then has
+    no evidence in either channel and re-queries, median 19 times, until
+    dynamic_max_steps kills the run.
+
+    Status-accurate by construction: performed_actions is added to only on
+    confirmed success (:419, :494), so auto_failed can never read as performed —
+    the agent must keep seeing that failure to attempt the native recovery.
+
+    This is a FACT about what already happened, not forward-looking guidance, so
+    it does not reopen what the April cf99834 minimal-memory rule guards against.
+    """
+    if interaction_status == "auto_ok":
+        return f"{element_id} ✅ {action} performed · validated = {locator}"
+    if interaction_status == "auto_failed":
+        return f"{element_id} ⚠️ {action} NOT performed · validated = {locator}"
+    # not_applicable is overloaded — "this action performs nothing" (get_text) and
+    # "already done". performed_actions tells them apart; _completed_elements does
+    # NOT, because it also holds elements whose interaction failed.
+    if already_performed:
+        return f"{element_id} ✅ already performed · validated = {locator}"
+    return f"{element_id} validated = {locator}"
+
+
 async def _do_interaction(
     browser_session,
     active_page,
@@ -796,7 +928,7 @@ async def _do_interaction(
         return "", "not_applicable", "", ""
     spec = element_specs.get(element_id, {})
     action = spec.get("action", "get_text")
-    value  = spec.get("value", "")
+    value = spec.get("value", "")
     if action not in ("input", "type", "click", "submit", "select", "check", "uncheck"):
         return "", "not_applicable", action, value
 
@@ -813,13 +945,19 @@ async def _do_interaction(
         value = _strip_rf_select_prefix(value)
         if value != raw_value:
             prefix = raw_value.split(None, 1)[0]
-            logger.info(f"   🔧 RF prefix stripped for {element_id}: '{raw_value}' → '{value}' (prefix='{prefix}')")
+            logger.info(
+                f"   🔧 RF prefix stripped for {element_id}: '{raw_value}' → '{value}' (prefix='{prefix}')"
+            )
         else:
             parts = raw_value.split(None, 1)
             if len(parts) == 2:
-                logger.info(f"   ℹ️  select value for {element_id}: '{value}' (first token '{parts[0]}' not an RF prefix — kept as-is)")
+                logger.info(
+                    f"   ℹ️  select value for {element_id}: '{value}' (first token '{parts[0]}' not an RF prefix — kept as-is)"
+                )
             else:
-                logger.debug(f"   ℹ️  select value for {element_id}: '{value}' (single token — no prefix possible)")
+                logger.debug(
+                    f"   ℹ️  select value for {element_id}: '{value}' (single token — no prefix possible)"
+                )
 
     # check/uncheck skip the event path entirely — browser-use has no state-aware check event.
     # Tom Select skips it too: SelectDropdownOptionEvent targets native <select> elements;
@@ -830,9 +968,11 @@ async def _do_interaction(
     # flatpickr skips it for the same reason: TypeTextEvent "succeeds" against the
     # readonly input without changing widget state — only the Playwright path's
     # setDate JS tier actually sets the date.
-    if (action not in ("check", "uncheck")
-            and dropdown_framework != "tom-select"
-            and datepicker_framework != "flatpickr"):
+    if (
+        action not in ("check", "uncheck")
+        and dropdown_framework != "tom-select"
+        and datepicker_framework != "flatpickr"
+    ):
         if element_index is not None and browser_session is not None:
             try:
                 node = await asyncio.wait_for(
@@ -852,8 +992,14 @@ async def _do_interaction(
 
     # Fallback: Playwright layered retry chain (always used for check/uncheck; fallback for others)
     note, status = await _do_interaction_playwright(
-        active_page, locator_str, action, value, element_id, performed_actions,
-        dropdown_framework=dropdown_framework, select_id=select_id,
+        active_page,
+        locator_str,
+        action,
+        value,
+        element_id,
+        performed_actions,
+        dropdown_framework=dropdown_framework,
+        select_id=select_id,
         datepicker_framework=datepicker_framework,
     )
     if action in ("click", "submit", "select") and status == "auto_ok":
@@ -888,10 +1034,11 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
         logger.info("🔧 Registering custom actions with browser-use agent...")
 
         # Import required classes for custom action registration
-        from browser_use.tools.service import Tools
-        from browser_use.agent.views import ActionResult
-        from pydantic import BaseModel, Field
         from typing import Literal
+
+        from browser_use.agent.views import ActionResult
+        from browser_use.tools.service import Tools
+        from pydantic import BaseModel, Field
 
         # Import the action implementation
         from browser_service.agent.actions import find_unique_locator_action
@@ -921,7 +1068,9 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
         # In locator with a semantically-mismatched dialog found at the
         # WRONG page state (announcement modal up, 43s after validation).
         _completed_quality: dict = {}
-        _performed_actions: set = set()  # idempotency guard — per register_custom_actions() call = per workflow
+        _performed_actions: set = (
+            set()
+        )  # idempotency guard — per register_custom_actions() call = per workflow
 
         # ========================================
         # PER-RUN PLAYWRIGHT CACHE (Change A — Day 04)
@@ -957,12 +1106,16 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         if pw_cache["browser"] is not None:
                             await pw_cache["browser"].close()
                     except Exception as cleanup_exc:
-                        logger.debug(f"browser.close() failed during stale-connection cleanup: {cleanup_exc}")
+                        logger.debug(
+                            f"browser.close() failed during stale-connection cleanup: {cleanup_exc}"
+                        )
                     try:
                         if pw_cache["instance"] is not None:
                             await pw_cache["instance"].stop()
                     except Exception as cleanup_exc:
-                        logger.debug(f"instance.stop() failed during stale-connection cleanup: {cleanup_exc}")
+                        logger.debug(
+                            f"instance.stop() failed during stale-connection cleanup: {cleanup_exc}"
+                        )
                     pw_cache.update({"instance": None, "browser": None, "page": None})
                     raise _PlaywrightConnectionError(
                         f"Playwright connection became stale mid-run ({exc}). "
@@ -986,9 +1139,12 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
 
             # Fresh connect (first call this run).
             from playwright.async_api import async_playwright as _async_playwright
+
             cdp_url = _get_cdp_url_from_session(bs)
             if not cdp_url:
-                raise _PlaywrightConnectionError("No CDP URL on browser_session — cannot connect Playwright")
+                raise _PlaywrightConnectionError(
+                    "No CDP URL on browser_session — cannot connect Playwright"
+                )
             instance = await _async_playwright().start()
             try:
                 connected = await instance.chromium.connect_over_cdp(cdp_url)
@@ -1006,8 +1162,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         )
                     page_obj = contexts[0].pages[0]
                     logger.warning(
-                        f"No non-blank page found; using contexts[0].pages[0] "
-                        f"({page_obj.url!r})"
+                        f"No non-blank page found; using contexts[0].pages[0] ({page_obj.url!r})"
                     )
                 try:
                     await page_obj.wait_for_load_state("domcontentloaded", timeout=5000)
@@ -1042,25 +1197,26 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
         # Define parameter model for find_unique_locator action
         class FindUniqueLocatorParams(BaseModel):
             """Parameters for find_unique_locator custom action"""
+
             x: float = Field(description="X coordinate of element center")
             y: float = Field(description="Y coordinate of element center")
             element_id: str = Field(description="Element identifier (elem_1, elem_2, etc.)")
             element_description: str = Field(description="Human-readable description of element")
             expected_text: Optional[str] = Field(
                 default=None,
-                description="The ACTUAL visible text seen on the element (e.g., 'Submit', 'Nike Air Max 270'). Used for semantic validation to ensure we found the correct element."
+                description="The ACTUAL visible text seen on the element (e.g., 'Submit', 'Nike Air Max 270'). Used for semantic validation to ensure we found the correct element.",
             )
             candidate_locator: Optional[str] = Field(
                 default=None,
-                description="Optional candidate locator to validate first (e.g., 'id=search-input')"
+                description="Optional candidate locator to validate first (e.g., 'id=search-input')",
             )
             element_index: Optional[int] = Field(
                 default=None,
-                description="REQUIRED — always provide it. Element index from the DOM state (e.g., 23 from '[23] Services'); we extract the exact element and its attributes from browser-use's DOM. Omitting it forces less accurate coordinate-based fallbacks."
+                description="REQUIRED — always provide it. Element index from the DOM state (e.g., 23 from '[23] Services'); we extract the exact element and its attributes from browser-use's DOM. Omitting it forces less accurate coordinate-based fallbacks.",
             )
             is_collection: Optional[bool] = Field(
                 default=None,
-                description="Set to true if this element represents a COLLECTION (e.g., table rows, list items). When true, returns multi-element locator instead of single-element locator."
+                description="Set to true if this element represents a COLLECTION (e.g., table rows, list items). When true, returns multi-element locator instead of single-element locator.",
             )
             row_anchor_text: Optional[str] = Field(
                 default=None,
@@ -1074,18 +1230,30 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     "to the row containing this text instead of a brittle "
                     "positional index. Leave blank for elements that appear "
                     "once on the page (toolbar buttons, form fields)."
-                )
+                ),
             )
             # Vision-derived classification piggybacked on the per-step LLM
             # call. The locator pipeline corroborates this against a live
             # Playwright DOM probe before committing to a specialized
             # handler — the hint is one of two required sources of truth,
             # never unilateral. See docs/ELEMENT_TYPE_CLASSIFIER_ARCHITECTURE.md.
-            element_type: Optional[Literal[
-                "dropdown", "checkbox", "radio", "input", "button",
-                "link", "image", "label", "text-area", "table",
-                "file-upload", "date-picker", "other",
-            ]] = Field(
+            element_type: Optional[
+                Literal[
+                    "dropdown",
+                    "checkbox",
+                    "radio",
+                    "input",
+                    "button",
+                    "link",
+                    "image",
+                    "label",
+                    "text-area",
+                    "table",
+                    "file-upload",
+                    "date-picker",
+                    "other",
+                ]
+            ] = Field(
                 default=None,
                 description=(
                     "Based on what you SEE in the screenshot at these "
@@ -1094,21 +1262,31 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     "you are confident from visual inspection — leave blank "
                     "if uncertain. The deterministic locator code uses this "
                     "to route to a specialized handler."
-                )
+                ),
             )
-            framework_hint: Optional[Literal[
-                # Dropdown frameworks
-                "tom-select", "select2", "kendo", "react-select",
-                "vue-select", "ant-design", "material-ui",
-                # Date-picker frameworks
-                "flatpickr",
-                # Table / grid frameworks
-                "datatables", "ag-grid", "material-table", "react-table",
-                # Generic — visible widget looks like a plain HTML control
-                "native",
-                # Vision sees a custom widget that doesn't match any of the above
-                "other",
-            ]] = Field(
+            framework_hint: Optional[
+                Literal[
+                    # Dropdown frameworks
+                    "tom-select",
+                    "select2",
+                    "kendo",
+                    "react-select",
+                    "vue-select",
+                    "ant-design",
+                    "material-ui",
+                    # Date-picker frameworks
+                    "flatpickr",
+                    # Table / grid frameworks
+                    "datatables",
+                    "ag-grid",
+                    "material-table",
+                    "react-table",
+                    # Generic — visible widget looks like a plain HTML control
+                    "native",
+                    # Vision sees a custom widget that doesn't match any of the above
+                    "other",
+                ]
+            ] = Field(
                 default=None,
                 description=(
                     "If the visible widget matches a known UI framework's "
@@ -1119,11 +1297,11 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     "search/pagination chrome, AG-Grid's cell editors. "
                     "Pick 'native' for plain HTML controls without a "
                     "framework wrapper. Leave blank if uncertain."
-                )
+                ),
             )
 
         # Get or create Tools instance from agent
-        if not hasattr(agent, 'tools') or agent.tools is None:
+        if not hasattr(agent, "tools") or agent.tools is None:
             logger.info("   Creating new Tools instance for agent")
             tools = Tools()
             agent.tools = tools
@@ -1134,13 +1312,12 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
         # Register the find_unique_locator action
         @tools.registry.action(
             description="Find and validate unique locator for element at coordinates using 21 systematic strategies. "
-                        "This action runs deterministically without LLM calls and validates all locators with Playwright. "
-                        "Call this action after finding an element's coordinates to get a validated unique locator.",
-            param_model=FindUniqueLocatorParams
+            "This action runs deterministically without LLM calls and validates all locators with Playwright. "
+            "Call this action after finding an element's coordinates to get a validated unique locator.",
+            param_model=FindUniqueLocatorParams,
         )
         async def find_unique_locator(
-            params: FindUniqueLocatorParams,
-            browser_session
+            params: FindUniqueLocatorParams, browser_session
         ) -> ActionResult:
             """
             Custom action wrapper that calls find_unique_locator_action.
@@ -1157,10 +1334,12 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                 logger.info(f"   Element: {params.element_id} - {params.element_description}")
                 logger.info(f"   Coordinates: ({params.x}, {params.y})")
                 if params.expected_text:
-                    logger.info(f"   Expected text: \"{params.expected_text}\"")
-                
+                    logger.info(f'   Expected text: "{params.expected_text}"')
+
                 # ALWAYS log element_index to debug what LLM is passing
-                logger.info(f"   Element index: {params.element_index} (None means LLM did not provide it)")
+                logger.info(
+                    f"   Element index: {params.element_index} (None means LLM did not provide it)"
+                )
 
                 # ========================================
                 # ELEMENT INDEX: Get element directly from browser-use DOM
@@ -1170,81 +1349,110 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                 # 1. Accurate element attributes (id, class, text, aria-label, etc.)
                 # 2. Confirmed bounding box coordinates (actual position, not LLM guess)
                 # 3. Much higher accuracy for locator generation
-                
+
                 element_data_from_index = None
                 confirmed_coords = None
-                selector_map = None  # Will be populated either from element_index lookup or CDP fallback
-                
+                selector_map = (
+                    None  # Will be populated either from element_index lookup or CDP fallback
+                )
+
                 if params.element_index is not None and browser_session:
                     try:
-                        logger.info(f"📋 Getting element [{params.element_index}] from browser-use DOM...")
-                        
+                        logger.info(
+                            f"📋 Getting element [{params.element_index}] from browser-use DOM..."
+                        )
+
                         # ========================================
                         # Get selector_map from browser-use DOM watchdog
                         # ========================================
                         # When element_index is provided, it came from browser-use's snapshot,
                         # so the element WILL be in the selector_map (same data source).
-                        if hasattr(browser_session, '_dom_watchdog') and browser_session._dom_watchdog:
+                        if (
+                            hasattr(browser_session, "_dom_watchdog")
+                            and browser_session._dom_watchdog
+                        ):
                             watchdog = browser_session._dom_watchdog
-                            if hasattr(watchdog, 'selector_map') and watchdog.selector_map:
+                            if hasattr(watchdog, "selector_map") and watchdog.selector_map:
                                 selector_map = watchdog.selector_map
-                                logger.info(f"   📊 Using selector_map: {len(selector_map)} elements")
-                        
+                                logger.info(
+                                    f"   📊 Using selector_map: {len(selector_map)} elements"
+                                )
+
                         # Fallback to get_selector_map() if watchdog not available
                         if not selector_map:
                             selector_map = await browser_session.get_selector_map()
-                            logger.info(f"   📊 Fallback to get_selector_map(): {len(selector_map) if selector_map else 0} elements")
-                        
+                            logger.info(
+                                f"   📊 Fallback to get_selector_map(): {len(selector_map) if selector_map else 0} elements"
+                            )
+
                         # Log diagnostics
                         if selector_map:
                             available_indices = sorted(selector_map.keys())
                             if available_indices:
-                                logger.info(f"   📊 Index range: {min(available_indices)} - {max(available_indices)}")
+                                logger.info(
+                                    f"   📊 Index range: {min(available_indices)} - {max(available_indices)}"
+                                )
                             # Log sample elements to verify table cells (td/th) are indexed
                             sample_types = {}
                             for idx in available_indices[:50]:
-                                tag = selector_map[idx].node_name.upper() if hasattr(selector_map[idx], 'node_name') else '?'
+                                tag = (
+                                    selector_map[idx].node_name.upper()
+                                    if hasattr(selector_map[idx], "node_name")
+                                    else "?"
+                                )
                                 sample_types[tag] = sample_types.get(tag, 0) + 1
-                            logger.info(f"   📊 Element types in sample: {dict(sorted(sample_types.items(), key=lambda x: -x[1]))}")
-                        
+                            logger.info(
+                                f"   📊 Element types in sample: {dict(sorted(sample_types.items(), key=lambda x: -x[1]))}"
+                            )
+
                         # Look up element from selector_map
                         dom_node = selector_map.get(params.element_index) if selector_map else None
-                        
+
                         if dom_node:
                             logger.info(f"   ✅ Found element [{params.element_index}] in DOM")
-                            
+
                             # Extract element attributes for locator generation
                             element_data_from_index = _extract_dom_node_attributes(dom_node)
-                            
-                            # Get text content from the element
-                            if hasattr(dom_node, 'get_meaningful_text_for_llm'):
-                                element_data_from_index['textContent'] = dom_node.get_meaningful_text_for_llm()
-                            elif hasattr(dom_node, 'get_all_children_text'):
-                                element_data_from_index['textContent'] = dom_node.get_all_children_text()
-                            
+
+                            element_data_from_index["textContent"] = _dom_node_text(dom_node)
+
                             # Get confirmed coordinates from bounding box
-                            if hasattr(dom_node, 'absolute_position') and dom_node.absolute_position:
+                            if (
+                                hasattr(dom_node, "absolute_position")
+                                and dom_node.absolute_position
+                            ):
                                 pos = dom_node.absolute_position
                                 confirmed_coords = (
                                     int(pos.x + pos.width / 2),
-                                    int(pos.y + pos.height / 2)
+                                    int(pos.y + pos.height / 2),
                                 )
-                                logger.info(f"   📍 Confirmed coordinates: {confirmed_coords} (from DOM bounding box)")
-                            
-                            logger.info(f"   📝 Element tag: <{element_data_from_index['tagName']}>")
-                            if element_data_from_index.get('id'):
+                                logger.info(
+                                    f"   📍 Confirmed coordinates: {confirmed_coords} (from DOM bounding box)"
+                                )
+
+                            logger.info(
+                                f"   📝 Element tag: <{element_data_from_index['tagName']}>"
+                            )
+                            if element_data_from_index.get("id"):
                                 logger.info(f"   📝 Element id: {element_data_from_index['id']}")
-                            if element_data_from_index.get('xpath'):
-                                logger.info(f"   📝 Element xpath: {element_data_from_index['xpath']}")
-                            if element_data_from_index.get('textContent'):
-                                text_preview = element_data_from_index['textContent'][:50]
-                                logger.info(f"   📝 Element text: \"{text_preview}...\"" if len(element_data_from_index.get('textContent', '')) > 50 else f"   📝 Element text: \"{element_data_from_index['textContent']}\"")
+                            if element_data_from_index.get("xpath"):
+                                logger.info(
+                                    f"   📝 Element xpath: {element_data_from_index['xpath']}"
+                                )
+                            if element_data_from_index.get("textContent"):
+                                text_preview = element_data_from_index["textContent"][:50]
+                                logger.info(
+                                    f'   📝 Element text: "{text_preview}..."'
+                                    if len(element_data_from_index.get("textContent", "")) > 50
+                                    else f'   📝 Element text: "{element_data_from_index["textContent"]}"'
+                                )
                         else:
-                            logger.warning(f"   ⚠️ Element [{params.element_index}] not found in selector_map (available indices: {sorted(selector_map.keys()) if selector_map else 'none'})")
+                            logger.warning(
+                                f"   ⚠️ Element [{params.element_index}] not found in selector_map (available indices: {sorted(selector_map.keys()) if selector_map else 'none'})"
+                            )
                     except Exception as e:
                         logger.warning(f"   ⚠️ Could not get element by index: {e}")
                         logger.debug("   Full error:", exc_info=True)
-
 
                 # ========================================
                 # COORDINATE SCALING: Vision AI → Viewport Pixels
@@ -1267,15 +1475,18 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                 # Scaling formula: pixel_coord = (normalized_coord / 1000) * viewport_size
                 GEMINI_COORD_SPACE = 1000
                 DEFAULT_VIEWPORT = (1920, 1080)
-                
-                viewport_size = getattr(browser_session, '_original_viewport_size', None) or DEFAULT_VIEWPORT
+
+                viewport_size = (
+                    getattr(browser_session, "_original_viewport_size", None) or DEFAULT_VIEWPORT
+                )
                 viewport_w, viewport_h = viewport_size
-                
+
                 scaled_x = int((params.x / GEMINI_COORD_SPACE) * viewport_w)
                 scaled_y = int((params.y / GEMINI_COORD_SPACE) * viewport_h)
-                
-                logger.info(f"Coordinate scaling: ({params.x}, {params.y}) → ({scaled_x}, {scaled_y}) [0-1000 to {viewport_w}x{viewport_h}]")
 
+                logger.info(
+                    f"Coordinate scaling: ({params.x}, {params.y}) → ({scaled_x}, {scaled_y}) [0-1000 to {viewport_w}x{viewport_h}]"
+                )
 
                 # ========================================
                 # FALLBACK: Find element from selector_map using coordinates
@@ -1287,18 +1498,22 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                 # JavaScript extraction.
                 if element_data_from_index is None and browser_session:
                     try:
-                        logger.info(f"🔍 STEP A: Finding element at ({scaled_x}, {scaled_y}) from selector_map...")
+                        logger.info(
+                            f"🔍 STEP A: Finding element at ({scaled_x}, {scaled_y}) from selector_map..."
+                        )
                         selector_map = await browser_session.get_selector_map()
-                        
+
                         if selector_map:
                             # Log element types to verify what's indexed
                             sample_types = {}
                             for idx, elem in list(selector_map.items())[:100]:
-                                tag = elem.node_name.upper() if hasattr(elem, 'node_name') else '?'
+                                tag = elem.node_name.upper() if hasattr(elem, "node_name") else "?"
                                 sample_types[tag] = sample_types.get(tag, 0) + 1
                             logger.info(f"📊 Selector map has {len(selector_map)} elements")
-                            logger.info(f"📊 Types: {dict(sorted(sample_types.items(), key=lambda x: -x[1]))}")
-                            
+                            logger.info(
+                                f"📊 Types: {dict(sorted(sample_types.items(), key=lambda x: -x[1]))}"
+                            )
+
                             viewport_area = viewport_w * viewport_h
                             idx, dom_node = _find_smallest_containing_element(
                                 selector_map,
@@ -1308,33 +1523,38 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
 
                             if dom_node is not None:
                                 logger.info(f"   ✅ Found element [{idx}] at coordinates!")
-                                elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
+                                elem_tag = (
+                                    dom_node.node_name
+                                    if hasattr(dom_node, "node_name")
+                                    else "unknown"
+                                )
                                 logger.info(f"   📝 Element tag: <{elem_tag}>")
-                                
+
                                 # Extract element attributes
                                 element_data_from_index = _extract_dom_node_attributes(dom_node)
-                                
-                                # Get text content
-                                if hasattr(dom_node, 'get_meaningful_text_for_llm'):
-                                    element_data_from_index['textContent'] = dom_node.get_meaningful_text_for_llm()
-                                elif hasattr(dom_node, 'get_all_children_text'):
-                                    element_data_from_index['textContent'] = dom_node.get_all_children_text()
-                                
+
+                                element_data_from_index["textContent"] = _dom_node_text(dom_node)
+
                                 # Get confirmed coordinates from bounding box
-                                if hasattr(dom_node, 'absolute_position') and dom_node.absolute_position:
+                                if (
+                                    hasattr(dom_node, "absolute_position")
+                                    and dom_node.absolute_position
+                                ):
                                     pos = dom_node.absolute_position
                                     confirmed_coords = (
                                         int(pos.x + pos.width / 2),
-                                        int(pos.y + pos.height / 2)
+                                        int(pos.y + pos.height / 2),
                                     )
                                     logger.info(f"   📍 Confirmed coordinates: {confirmed_coords}")
-                                
-                                if element_data_from_index.get('id'):
-                                    logger.info(f"   📝 Element id: {element_data_from_index['id']}")
+
+                                if element_data_from_index.get("id"):
+                                    logger.info(
+                                        f"   📝 Element id: {element_data_from_index['id']}"
+                                    )
                             else:
                                 logger.warning(f"   ⚠️ No element found at ({scaled_x}, {scaled_y})")
                         else:
-                            logger.warning(f"   ⚠️ selector_map is empty or None")
+                            logger.warning("   ⚠️ selector_map is empty or None")
                     except Exception as e:
                         logger.warning(f"   ⚠️ Could not find element by coordinates: {e}")
                         logger.debug("   Full error:", exc_info=True)
@@ -1344,24 +1564,26 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                 # ========================================
                 # IMPORTANT: Check params.element_index (what LLM provided), not element_data_from_index
                 # (which may have been populated by coordinate lookup above)
-                element_index_was_none = (params.element_index is None)
-                
+                element_index_was_none = params.element_index is None
+
                 if element_index_was_none and element_data_from_index is None:
                     # Coordinate lookup also failed - will rely on smart_locator.py fallbacks
-                    logger.info(f"⚠️ element_index not provided AND coordinate lookup failed")
-                    logger.info(f"   Will try TEXT-FIRST/SEMANTIC/COORDINATE strategies in smart_locator.py")
-                    logger.info(f"   If all fail, will request LLM retry with element_index")
-                    
+                    logger.info("⚠️ element_index not provided AND coordinate lookup failed")
+                    logger.info(
+                        "   Will try TEXT-FIRST/SEMANTIC/COORDINATE strategies in smart_locator.py"
+                    )
+                    logger.info("   If all fail, will request LLM retry with element_index")
+
                     # Fetch selector_map for iframe detection
                     try:
-                        if hasattr(browser_session, '_cached_selector_map') and browser_session._cached_selector_map:
+                        if (
+                            hasattr(browser_session, "_cached_selector_map")
+                            and browser_session._cached_selector_map
+                        ):
                             selector_map = browser_session._cached_selector_map
                             logger.info(f"   📊 Got selector_map: {len(selector_map)} elements")
                     except Exception as e:
                         logger.debug(f"   Could not get selector_map: {e}")
-
-
-
 
                 # Lazy connect: one Playwright connection per agent.run(), reused across all calls.
                 active_page = await _ensure_playwright(browser_session)
@@ -1372,19 +1594,16 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     logger.info(f"Using DOM-confirmed coordinates: ({final_x}, {final_y})")
                 else:
                     logger.info(f"Using scaled coordinates: ({final_x}, {final_y})")
-                    
-                    
+
                 # ========================================
                 # IFRAME DETECTION: Check if element is inside an iframe
                 # ========================================
                 iframe_context = None
                 if selector_map:
-                    iframe_context, _ = _detect_iframe_context(
-                        selector_map, (final_x, final_y)
-                    )
+                    iframe_context, _ = _detect_iframe_context(selector_map, (final_x, final_y))
                     if iframe_context:
                         logger.info(f"   Element will be searched inside iframe: {iframe_context}")
-                            
+
                         # ========================================
                         # IFRAME ELEMENT HANDLING (Optional Refinement)
                         # ========================================
@@ -1399,10 +1618,12 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         # GRACEFUL FALLBACK: If bbox matching fails, find_unique_locator_action
                         # handles iframe_context properly with coordinate translation.
                         # This override is an OPTIMIZATION, not required for correctness.
-                            
-                        logger.info(f"🖼️ Iframe detected - attempting element lookup from selector_map")
+
+                        logger.info(
+                            "🖼️ Iframe detected - attempting element lookup from selector_map"
+                        )
                         logger.info(f"   📊 Selector map has {len(selector_map)} elements")
-                            
+
                         try:
                             # Find element by coordinates in selector_map — skip the iframe
                             # itself (we want the contained element) and page wrappers
@@ -1413,31 +1634,42 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                     selector_map,
                                     (final_x, final_y),
                                     viewport_area,
-                                    skip_tag='IFRAME',
+                                    skip_tag="IFRAME",
                                 )
 
                                 if dom_node is not None:
                                     logger.info(f"   ✅ Found element [{idx}] inside iframe!")
-                                    elem_tag = dom_node.node_name if hasattr(dom_node, 'node_name') else 'unknown'
+                                    elem_tag = (
+                                        dom_node.node_name
+                                        if hasattr(dom_node, "node_name")
+                                        else "unknown"
+                                    )
                                     logger.info(f"   📝 Element tag: <{elem_tag}>")
-                                        
+
                                     # Update element_data_from_index with the correct element
                                     element_data_from_index = _extract_dom_node_attributes(dom_node)
-                                    if hasattr(dom_node, 'get_meaningful_text_for_llm'):
-                                        element_data_from_index['textContent'] = dom_node.get_meaningful_text_for_llm()
-                                    elif hasattr(dom_node, 'get_all_children_text'):
-                                        element_data_from_index['textContent'] = dom_node.get_all_children_text()
-                                        
-                                    logger.info(f"   📝 Element id: {element_data_from_index.get('id', 'N/A')}")
+                                    element_data_from_index["textContent"] = _dom_node_text(
+                                        dom_node
+                                    )
+
+                                    logger.info(
+                                        f"   📝 Element id: {element_data_from_index.get('id', 'N/A')}"
+                                    )
                                 else:
-                                    logger.info(f"   ℹ️ No bbox match found - will use find_unique_locator_action fallback")
-                                    logger.debug(f"   (This is normal for cross-origin iframes or coord system mismatch)")
+                                    logger.info(
+                                        "   ℹ️ No bbox match found - will use find_unique_locator_action fallback"
+                                    )
+                                    logger.debug(
+                                        "   (This is normal for cross-origin iframes or coord system mismatch)"
+                                    )
                             else:
-                                logger.info(f"   ℹ️ No selector_map available - will use find_unique_locator_action fallback")
+                                logger.info(
+                                    "   ℹ️ No selector_map available - will use find_unique_locator_action fallback"
+                                )
                         except Exception as e:
                             logger.warning(f"   ⚠️ Element lookup failed: {e}")
                             logger.debug("   Full error:", exc_info=True)
-                    
+
                 result = await find_unique_locator_action(
                     x=final_x,  # Use confirmed or scaled coordinates
                     y=final_y,  # Use confirmed or scaled coordinates
@@ -1457,13 +1689,11 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
 
                 # Convert result to ActionResult format
                 action_result = None
-                if result.get('found'):
-                    best_locator = result.get('best_locator')
+                if result.get("found"):
+                    best_locator = result.get("best_locator")
 
                     # Get validation data from result (not validation_summary)
-                    validated = result.get('validated', False)
-                    count = result.get('count', 0)
-                    validation_method = result.get('validation_method', 'playwright')
+                    validation_method = result.get("validation_method", "playwright")
 
                     # ========================================
                     # D3 — RE-REGISTRATION DOWNGRADE GUARD
@@ -1475,29 +1705,54 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     # ran at the step-order-correct page state, the re-query
                     # did not. The blocked ActionResult carries NO metadata,
                     # so workflow.py's extraction never sees the weak result.
-                    _new_strong = bool(result.get('validated')) and result.get('semantic_match') is not False
+                    _new_strong = (
+                        bool(result.get("validated")) and result.get("semantic_match") is not False
+                    )
                     _prev_locator = _completed_elements.get(params.element_id)
+                    # Second short-circuit reason (2026-07-23 Stage 2): an
+                    # equal-strength repeat of an element whose interaction is
+                    # already CONFIRMED done. Gated on _performed_actions, not
+                    # _completed_elements — the latter also holds elements whose
+                    # interaction failed, and blocking their re-query would kill a
+                    # genuine recovery.
+                    _already_performed = params.element_id in _performed_actions
                     if (
                         _prev_locator is not None
                         and _completed_quality.get(params.element_id, False)
-                        and not _new_strong
+                        and (not _new_strong or _already_performed)
                     ):
-                        logger.info(
-                            f"   ⛔ Re-query for {params.element_id} returned a "
-                            f"lower-confidence result ({result.get('best_locator')}) "
-                            f"— keeping the validated locator {_prev_locator} "
-                            f"(signal: re-registration-downgrade-blocked)"
-                        )
+                        if _new_strong:
+                            logger.info(
+                                f"   ⛔ Re-query for {params.element_id} repeats an "
+                                f"element whose interaction already completed "
+                                f"— keeping the validated locator {_prev_locator} "
+                                f"(signal: repeat-of-completed-element-blocked)"
+                            )
+                            _blocked_reason = "The interaction for this element already completed."
+                        else:
+                            logger.info(
+                                f"   ⛔ Re-query for {params.element_id} returned a "
+                                f"lower-confidence result ({result.get('best_locator')}) "
+                                f"— keeping the validated locator {_prev_locator} "
+                                f"(signal: re-registration-downgrade-blocked)"
+                            )
+                            _blocked_reason = (
+                                "The new lower-confidence result was discarded — "
+                                "the earlier validated locator stands."
+                            )
                         return ActionResult(
                             extracted_content=(
                                 f"✅ Element {params.element_id} is already validated.\n"
                                 f"Locator: {_prev_locator}\n"
-                                f"The new lower-confidence result was discarded — "
-                                f"the earlier validated locator stands. "
+                                f"{_blocked_reason} "
                                 f"Proceed to the next element."
                             ),
-                            long_term_memory=(
-                                f"{params.element_id} validated = {_prev_locator}"
+                            long_term_memory=_memory_line(
+                                params.element_id,
+                                _prev_locator,
+                                "not_applicable",
+                                "",
+                                _already_performed,
                             ),
                         )
 
@@ -1522,8 +1777,13 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     # Unpack 4-tuple — action and value come from _do_interaction directly so this block
                     # never needs to re-read _element_specs. Single source of truth for action/value.
                     interaction_note, interaction_status, _action, _value = await _do_interaction(
-                        browser_session, active_page, best_locator, params.element_id, params.element_index,
-                        _element_specs, _performed_actions,
+                        browser_session,
+                        active_page,
+                        best_locator,
+                        params.element_id,
+                        params.element_index,
+                        _element_specs,
+                        _performed_actions,
                         dropdown_framework=result.get("dropdown_framework") or "",
                         select_id=result.get("select_id") or None,
                         datepicker_framework=result.get("datepicker_framework") or "",
@@ -1585,15 +1845,22 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                 "Locator is valid. Proceed to the next element."
                             )
                     else:
-                        display_note = interaction_note  # ✅ message, empty string, or "not_applicable"
+                        display_note = (
+                            interaction_note  # ✅ message, empty string, or "not_applicable"
+                        )
 
                     # Interactions are now performed inside _do_interaction (see Change C above).
                     # SEQUENTIAL_PROCESSING_RULES no longer owns interaction execution.
                     if all_elements_done:
                         elements_found_json = json.dumps(
                             [
-                                {"element_id": eid, "best_locator": loc,
-                                 "found": True, "validated": True, "count": 1}
+                                {
+                                    "element_id": eid,
+                                    "best_locator": loc,
+                                    "found": True,
+                                    "validated": True,
+                                    "count": 1,
+                                }
                                 for eid, loc in _completed_elements.items()
                             ]
                         )
@@ -1613,24 +1880,34 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             f"{display_note}\n"
                             f"Proceed to the next element."
                         )
-                    # Keep long_term_memory minimal — it persists across every subsequent agent
-                    # step. Embedding action guidance here would bias future decisions.
-                    long_term = f"{params.element_id} validated = {best_locator}"
+                    # long_term_memory is the ONLY channel that survives here —
+                    # browser-use discards extracted_content whenever it is set — so
+                    # the interaction outcome rides along with the locator. See
+                    # _memory_line for why this does not reopen the cf99834 rule.
+                    long_term = _memory_line(
+                        params.element_id,
+                        best_locator,
+                        interaction_status,
+                        _action,
+                        params.element_id in _performed_actions,
+                    )
 
                     logger.info(f"✅ Custom action succeeded: {best_locator}")
-                    logger.info(f"   Completion: {len(_completed_elements)}/{_total_expected} all_done={all_elements_done}")
+                    logger.info(
+                        f"   Completion: {len(_completed_elements)}/{_total_expected} all_done={all_elements_done}"
+                    )
 
                     # Log if this was a fallback success (no element_index provided)
                     if element_index_was_none:
-                        logger.info(f"")
-                        logger.info(f"{'='*80}")
-                        logger.info(f"✅ FALLBACK SUCCESS: Locator found WITHOUT element_index")
-                        logger.info(f"{'='*80}")
+                        logger.info("")
+                        logger.info(f"{'=' * 80}")
+                        logger.info("✅ FALLBACK SUCCESS: Locator found WITHOUT element_index")
+                        logger.info(f"{'=' * 80}")
                         logger.info(f"   Element: {params.element_id}")
                         logger.info(f"   Locator: {best_locator}")
                         logger.info(f"   Method: {validation_method} (no LLM retry needed)")
-                        logger.info(f"{'='*80}")
-                        logger.info(f"")
+                        logger.info(f"{'=' * 80}")
+                        logger.info("")
 
                     action_result = ActionResult(
                         extracted_content=success_msg,
@@ -1641,9 +1918,9 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
 
                 else:
                     # Error message for agent - CLEAR about failure
-                    fallback_error = result.get('error', 'Could not find unique locator')
+                    fallback_error = result.get("error", "Could not find unique locator")
                     logger.error(f"❌ Custom action failed: {fallback_error}")
-                    
+
                     # ========================================
                     # RETRY WITH element_index (only if it was originally None)
                     # ========================================
@@ -1664,25 +1941,34 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             f"Example: if you see '[2181] <input role=\"combobox\">',"
                             f" use element_index=2181"
                         )
-                        logger.info(f"")
-                        logger.info(f"{'='*80}")
-                        logger.info(f"🔄 RETRY TRIGGERED: element_index was None and fallback failed")
-                        logger.info(f"{'='*80}")
+                        logger.info("")
+                        logger.info(f"{'=' * 80}")
+                        logger.info(
+                            "🔄 RETRY TRIGGERED: element_index was None and fallback failed"
+                        )
+                        logger.info(f"{'=' * 80}")
                         logger.info(f"   Element: {params.element_id}")
                         logger.info(f"   Description: {params.element_description}")
                         logger.info(f"   Fallback failure reason: {fallback_error}")
-                        logger.info(f"   Action: Requesting LLM to retry with element_index")
-                        logger.info(f"{'='*80}")
-                        logger.info(f"")
+                        logger.info("   Action: Requesting LLM to retry with element_index")
+                        logger.info(f"{'=' * 80}")
+                        logger.info("")
                         # A1-INLINE escalation: metadata={'include_screenshot': True}
                         # makes browser-use attach the current screenshot to the
                         # NEXT LLM call (message_manager/service.py:444-464) —
                         # vision-off runs get sight at the moment of failure,
                         # same run, same page state.
+                        #
+                        # The engine's failure payload rides along: workflow.py
+                        # drops rejected payloads out of its results list, so
+                        # this is its only channel for WHY an element has no
+                        # locator. metadata is observability-only in browser-use
+                        # (read for include_screenshot, never sent to the model),
+                        # so carrying it costs nothing.
                         action_result = ActionResult(
                             extracted_content=retry_msg,
                             error=retry_msg,
-                            metadata={"include_screenshot": True},
+                            metadata={**result, "include_screenshot": True},
                         )
                     else:
                         # element_index WAS provided but still failed
@@ -1694,7 +1980,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                 f"the element in it and try different coordinates or description."
                             ),
                             is_done=False,  # Let agent try again with different approach
-                            metadata={"include_screenshot": True},
+                            metadata={**result, "include_screenshot": True},
                         )
 
                 return action_result
@@ -1716,7 +2002,9 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
         agent._pw_teardown = _teardown_playwright
 
         logger.info("✅ Custom action 'find_unique_locator' registered successfully")
-        logger.info("   Agent can now call: find_unique_locator(x, y, element_id, element_description, expected_text, candidate_locator, element_index, is_collection)")
+        logger.info(
+            "   Agent can now call: find_unique_locator(x, y, element_id, element_description, expected_text, candidate_locator, element_index, is_collection)"
+        )
         return True
 
     except Exception as e:
@@ -1725,6 +2013,3 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
         logger.error("   Stack trace:", exc_info=True)
         logger.warning("⚠️ Continuing with legacy workflow (custom actions disabled)")
         return False
-
-
-

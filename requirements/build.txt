@@ -1,0 +1,72 @@
+# Hash-locked build tooling for the release pipeline.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# `pip install --upgrade build` resolves whatever PyPI serves that day and runs
+# that code in CI. The build backend produces the exact bytes we publish to
+# PyPI, so a compromised release — of `build` itself or of anything it pulls in
+# — lands malicious code in the `browser-service` wheel. Pinning the top-level
+# name is not enough: it leaves the transitive set floating, which is the vector
+# that actually gets exploited.
+#
+# Installed with `--require-hashes`, so pip refuses anything whose bytes do not
+# match. That also forces every transitive dependency to be pinned here — pip
+# errors out on an unpinned requirement in this mode, which is the property we
+# want: the file cannot silently drift.
+#
+# WHEEL HASHES ONLY — install with `--only-binary=:all:`.
+# Listing the sdist hash alongside the wheel is a trap: corrupt or mismatch the
+# wheel and pip silently falls back to the sdist and compiles it, executing the
+# package's own build backend from source. Verified by tampering with the wheel
+# hash — pip skipped the wheel and built from the tar.gz instead of failing.
+# One hash per package, binary-only, no source fallback: a mismatch is fatal.
+# All six are pure-Python universal wheels, so nothing needs to compile.
+#
+# SCOPE — deliberately just the build backend.
+# `twine` is NOT here. It pulls 23 packages (requests, urllib3, keyring, rich,
+# id, nh3, readme_renderer, ...) and only runs `twine check`, a read-only
+# metadata lint that never touches the published bytes. It lives in the
+# unprivileged build job on an exact version pin; hash-locking 23 packages to
+# guard a linter is not a trade worth making.
+#
+# THE BACKEND IS PINNED HERE TOO — CI must build with `--no-isolation`.
+# `python -m build` defaults to creating an isolated venv and installing this
+# project's `[build-system] requires` into it, resolved fresh from PyPI. Observed
+# on a clean run:
+#     * Installing packages in isolated environment:
+#         - setuptools>=61.0
+#         - wheel
+# setuptools IS the build backend — it is the code that emits the wheel bytes.
+# Hash-locking the `build` frontend while setuptools floats locks the front door
+# and leaves the back one open, which is the exact criticism that motivated this
+# file. So setuptools and wheel are pinned here and CI passes --no-isolation,
+# building against this verified environment instead of an ad-hoc one.
+#
+# pyproject.toml's `[build-system] requires` deliberately keeps its `>=` range:
+# that governs third parties building our sdist and must stay permissive. This
+# file governs our own release pipeline, where reproducibility wins.
+#
+# CLOSURE (python 3.12 / linux, from each package's requires_dist):
+#   build      -> packaging, pyproject_hooks
+#   wheel      -> packaging (satisfied above)
+#   setuptools -> nothing outside extras
+#   colorama  is os_name == "nt" only  — carried for local Windows runs
+#   tomli / importlib-metadata  are python_version < "3.11" only — not reachable
+#
+# TO BUMP: change the version, replace the hash with the `py3-none-any` wheel's
+# sha256 from https://pypi.org/pypi/<name>/<version>/json, then verify with
+#   pip install --require-hashes --only-binary=:all: -r requirements/build.txt
+#   python -m build --no-isolation
+
+build==1.5.0 \
+    --hash=sha256:13f3eecb844759ab66efec90ca17639bbf14dc06cb2fdf37a9010322d9c50a6f
+packaging==26.2 \
+    --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e
+pyproject_hooks==1.2.0 \
+    --hash=sha256:9e5c6bfa8dcc30091c74b0cf803c81fdd29d94f01992a7707bc97babb1141913
+setuptools==83.0.0 \
+    --hash=sha256:29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3
+wheel==0.47.0 \
+    --hash=sha256:212281cab4dff978f6cedd499cd893e1f620791ca6ff7107cf270781e587eced
+colorama==0.4.6; os_name == "nt" \
+    --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6

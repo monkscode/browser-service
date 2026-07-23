@@ -8,9 +8,9 @@ version = "1.0.0"
 description = "Browser automation service with AI-powered element identification and locator generation"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "Apache 2.0"}  # Update if different
+license = {text = "Apache-2.0"}
 authors = [
-    {name = "monkscode", email = "1dhruvilvyas@gmail.com"}  # Update
+    {name = "monkscode", email = "1dhruvilvyas@gmail.com"}
 ]
 maintainers = [
     {name = "monkscode", email = "1dhruvilvyas@gmail.com"}, 
@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Software Development :: Testing",
     "Topic :: Software Development :: Quality Assurance",
     "Topic :: Internet :: WWW/HTTP :: Browsers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -41,12 +41,8 @@ dependencies = [
     "langchain-google-genai>=0.0.5",
     "flask>=3.0.0",
     "requests>=2.31.0",
-    # LLM Observability — OTel-first (Enhancement #3)
-    "traceloop-sdk>=0.30.0",
-    "opentelemetry-api>=1.20.0",
-    "opentelemetry-sdk>=1.20.0",
-    "opentelemetry-exporter-otlp-proto-http>=1.20.0",
-    # Structured Logging — JSON output (Enhancement #4)
+    # Structured logging — REQUIRED: handlers/ and tasks/ import structlog
+    # unconditionally, so the package fails to import without it.
     "structlog>=24.1.0",
 ]
 
@@ -55,15 +51,24 @@ dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
-    "black>=23.0",
-    "flake8>=6.0",
+    "ruff>=0.6",
     "mypy>=1.0",
-    "isort>=5.12",
+    "build>=1.0",
+    "twine>=5.0",
 ]
 test = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
+]
+# LLM tracing via OpenLLMetry — OPT-IN. __init__.py imports these lazily only
+# when OBSERVABILITY_BACKEND != "none" and OTLP_ENDPOINT is set; absent, tracing
+# is silently skipped. Keeps the default install lean.
+observability = [
+    "traceloop-sdk>=0.30.0",
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20.0",
 ]
 
 [project.urls]
@@ -78,14 +83,35 @@ packages = ["browser_service"]
 [tool.setuptools.package-data]
 browser_service = ["py.typed"]
 
-[tool.black]
+[tool.ruff]
 line-length = 100
-target-version = ['py310', 'py311', 'py312']
-include = '\.pyi?$'
+target-version = "py310"
 
-[tool.isort]
-profile = "black"
-line_length = 100
+[tool.ruff.lint]
+# E/W = pycodestyle, F = pyflakes, I = import sorting (replaces isort).
+# Whitespace/line-length rules are owned by `ruff format`, not enforced as lint
+# errors: E501 (line length) and W291/W293, which otherwise flag trailing
+# whitespace the formatter deliberately leaves inside multiline string literals
+# (embedded JS / prompt templates in smart_locator.py).
+select = ["E", "W", "F", "I"]
+ignore = ["E501", "W291", "W293"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests favour readability over lint purity: unused fixtures/imports/vars, redefinition.
+"tests/**" = ["F401", "F811", "F841"]
+# E402 (import-not-at-top) is intentional in these: __init__ must configure logging
+# before imports; smart_locator re-exports handler symbols after a header comment;
+# workflow imports after the module logger is set up.
+"browser_service/__init__.py" = ["E402"]
+"browser_service/locators/smart_locator.py" = ["E402"]
+"browser_service/tasks/workflow.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = false
+# Advisory to start — CI runs mypy non-blocking; tighten per-module over time.
+check_untyped_defs = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -94,5 +120,11 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
 markers = [
-    "integration: marks tests as integration tests requiring live services (Playwright, browser, internet)",
+    "integration: umbrella marker for any test excluded from the default fast lane (-m 'not integration')",
+    "fixture: integration test that drives chromium against local/inline HTML — deterministic, CI-safe",
+    "live: integration test that needs live internet or a full browser-use session — not run in CI",
 ]
+
+[tool.coverage.run]
+source = ["browser_service"]
+omit = ["*/__pycache__/*", "*/tests/*"]

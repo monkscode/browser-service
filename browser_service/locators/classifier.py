@@ -90,51 +90,96 @@ _DROPDOWN_FRAMEWORK_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 _NAV_PREFIXES: tuple[str, ...] = (
-    "nav-", "menu-", "tab-", "breadcrumb-", "pagination-", "dropdown-",
+    "nav-",
+    "menu-",
+    "tab-",
+    "breadcrumb-",
+    "pagination-",
+    "dropdown-",
 )
 
 _DROPDOWN_DESC_KEYWORDS: tuple[str, ...] = (
-    "dropdown", "select", "combobox", "multiselect", "picker", "chooser",
+    "dropdown",
+    "select",
+    "combobox",
+    "multiselect",
+    "picker",
+    "chooser",
 )
 
 _COLLECTION_DESC_KEYWORDS: tuple[str, ...] = (
-    "rows", "items", "all ", "each", "every", "list of",
-    "visible rows", "table rows", "filtered",
-    "cells", "column cell", "column cells",
-    "results table", "data table",
+    "rows",
+    "items",
+    "all ",
+    "each",
+    "every",
+    "list of",
+    "visible rows",
+    "table rows",
+    "filtered",
+    "cells",
+    "column cell",
+    "column cells",
+    "results table",
+    "data table",
 )
 
-_COLLECTION_CLASS_TOKENS: frozenset[str] = frozenset({
-    "row", "item", "card", "entry", "record",
-    "tr-group", "list-item", "grid-item",
-})
+_COLLECTION_CLASS_TOKENS: frozenset[str] = frozenset(
+    {
+        "row",
+        "item",
+        "card",
+        "entry",
+        "record",
+        "tr-group",
+        "list-item",
+        "grid-item",
+    }
+)
 
 _CHECKBOX_DESC_KEYWORDS: tuple[str, ...] = (
-    "checkbox", "tick", "toggle", "switch",
+    "checkbox",
+    "tick",
+    "toggle",
+    "switch",
 )
 
 _RADIO_DESC_KEYWORDS: tuple[str, ...] = (
-    "radio button", "radio option",
+    "radio button",
+    "radio option",
 )
 
 # Deliberately NOT including bare "import": list-page toolbars carry
 # Import buttons that merely navigate (ASTPP #import) — a file-upload
 # hunt there wastes a probe and risks anchoring an unrelated input.
 _FILE_UPLOAD_DESC_KEYWORDS: tuple[str, ...] = (
-    "upload", "choose file", "browse", "attach", "file input",
+    "upload",
+    "choose file",
+    "browse",
+    "attach",
+    "file input",
 )
 
 # Deliberately NOT including bare "date": it substring-matches
 # update/validate/candidate/consolidate — phrase-safe forms only.
 _DATE_PICKER_DESC_KEYWORDS: tuple[str, ...] = (
-    "date picker", "datepicker", "date field", "date range",
-    "date filter", "from date", "to date", "start date", "end date",
-    "due date", "date of", "calendar",
+    "date picker",
+    "datepicker",
+    "date field",
+    "date range",
+    "date filter",
+    "from date",
+    "to date",
+    "start date",
+    "end date",
+    "due date",
+    "date of",
+    "calendar",
 )
 
-_TIER1_HIGH_WEIGHT = 3    # tagName / role / vision hint (each a strong signal)
+_TIER1_HIGH_WEIGHT = 3  # tagName / role / vision hint (each a strong signal)
 _TIER1_MEDIUM_WEIGHT = 2  # className
-_TIER1_LOW_WEIGHT = 1     # description
+_TIER1_LOW_WEIGHT = 1  # description
 
 _CONFIDENCE_HIGH_THRESHOLD = 4
 _CONFIDENCE_MEDIUM_THRESHOLD = 3
@@ -211,24 +256,23 @@ def classify_element_type(
     input_type = (element_data.get("type") or "").lower()
     desc = (element_description or "").lower()
     class_tokens = classes_lower.split()
-    has_nav_class = any(
-        c.startswith(_NAV_PREFIXES) for c in class_tokens
-    )
+    has_nav_class = any(c.startswith(_NAV_PREFIXES) for c in class_tokens)
 
     # Normalize the vision hint to our internal type vocabulary up
     # front. An unmapped hint becomes "" (effectively absent).
     vision_hint_normalized = ""
     if vision_type_hint:
-        vision_hint_normalized = _VISION_HINT_TO_TYPE.get(
-            vision_type_hint.lower().strip(), ""
-        )
+        vision_hint_normalized = _VISION_HINT_TO_TYPE.get(vision_type_hint.lower().strip(), "")
 
     framework_hint = (vision_framework_hint or "").lower().strip()
 
     # ===== Tier 0 — pure DOM rules =====
     tier0 = _tier0_dom_rules(
-        tag=tag, input_type=input_type, classes_lower=classes_lower,
-        role=role, has_nav_class=has_nav_class,
+        tag=tag,
+        input_type=input_type,
+        classes_lower=classes_lower,
+        role=role,
+        has_nav_class=has_nav_class,
     )
     if tier0 is not None:
         # HTML-deterministic verdict. The vision hint NEVER overrides
@@ -238,13 +282,10 @@ def classify_element_type(
         # browser-use hallucinated or coords landed on a wrong node.
         if vision_hint_normalized:
             if vision_hint_normalized == tier0.primary_type:
-                tier0.signals.append(
-                    f"vision-hint-agree:{vision_hint_normalized}"
-                )
+                tier0.signals.append(f"vision-hint-agree:{vision_hint_normalized}")
             else:
                 tier0.signals.append(
-                    f"vision-hint-conflict:hint={vision_hint_normalized},"
-                    f"dom={tier0.primary_type}"
+                    f"vision-hint-conflict:hint={vision_hint_normalized},dom={tier0.primary_type}"
                 )
         if framework_hint and not tier0.framework:
             # DOM didn't reveal a framework but vision named one.
@@ -283,7 +324,9 @@ def _tier0_dom_rules(
     # Rule 1: <select>
     if tag == "select":
         return ElementTypeInfo(
-            "dropdown", "native", "high",
+            "dropdown",
+            "native",
+            "high",
             ["tagName=select", "tier:0"],
         )
 
@@ -291,22 +334,30 @@ def _tier0_dom_rules(
     if tag == "input":
         if input_type == "checkbox":
             return ElementTypeInfo(
-                "checkbox", "native", "high",
+                "checkbox",
+                "native",
+                "high",
                 ["tagName=input", "type=checkbox", "tier:0"],
             )
         if input_type == "radio":
             return ElementTypeInfo(
-                "radio", "native", "high",
+                "radio",
+                "native",
+                "high",
                 ["tagName=input", "type=radio", "tier:0"],
             )
         if input_type == "file":
             return ElementTypeInfo(
-                "file-upload", "native", "high",
+                "file-upload",
+                "native",
+                "high",
                 ["tagName=input", "type=file", "tier:0"],
             )
         if input_type == "date":
             return ElementTypeInfo(
-                "date-picker", "native", "high",
+                "date-picker",
+                "native",
+                "high",
                 ["tagName=input", "type=date", "tier:0"],
             )
         # flatpickr always stamps its class on the real input (ASTPP:
@@ -314,21 +365,27 @@ def _tier0_dom_rules(
         # overlay's own chrome must not classify.
         if "flatpickr-input" in classes_lower.split():
             return ElementTypeInfo(
-                "date-picker", "flatpickr", "high",
+                "date-picker",
+                "flatpickr",
+                "high",
                 ["tagName=input", "className:flatpickr-input", "tier:0"],
             )
 
     # Rule 6: <tr>
     if tag == "tr":
         return ElementTypeInfo(
-            "collection", "table-row", "high",
+            "collection",
+            "table-row",
+            "high",
             ["tagName=tr", "tier:0"],
         )
 
     # Rule 7: <li> NOT in nav context
     if tag == "li" and not has_nav_class:
         return ElementTypeInfo(
-            "collection", "list-item", "medium",
+            "collection",
+            "list-item",
+            "medium",
             ["tagName=li", "tier:0"],
         )
 
@@ -337,29 +394,39 @@ def _tier0_dom_rules(
         for pattern in patterns:
             if pattern in classes_lower:
                 return ElementTypeInfo(
-                    "dropdown", framework, "high",
+                    "dropdown",
+                    framework,
+                    "high",
                     [f"className:{pattern}", "tier:0"],
                 )
 
     # Rules 15-17: role-based
     if role in ("combobox", "listbox"):
         return ElementTypeInfo(
-            "dropdown", "combobox-input", "high",
+            "dropdown",
+            "combobox-input",
+            "high",
             [f"role={role}", "tier:0"],
         )
     if role == "checkbox":
         return ElementTypeInfo(
-            "checkbox", "custom", "high",
+            "checkbox",
+            "custom",
+            "high",
             ["role=checkbox", "tier:0"],
         )
     if role == "radio":
         return ElementTypeInfo(
-            "radio", "custom", "high",
+            "radio",
+            "custom",
+            "high",
             ["role=radio", "tier:0"],
         )
     if role == "switch":
         return ElementTypeInfo(
-            "checkbox", "toggle", "high",
+            "checkbox",
+            "toggle",
+            "high",
             ["role=switch", "tier:0"],
         )
 
@@ -424,9 +491,7 @@ def _tier1_vote(
         for cls in class_tokens:
             if cls in _COLLECTION_CLASS_TOKENS:
                 votes["collection"] += _TIER1_MEDIUM_WEIGHT
-                signal_log.append(
-                    f"className:{cls}=>collection(+{_TIER1_MEDIUM_WEIGHT})"
-                )
+                signal_log.append(f"className:{cls}=>collection(+{_TIER1_MEDIUM_WEIGHT})")
                 break
 
     # className signals for dropdown / checkbox / radio that didn't match
@@ -450,9 +515,7 @@ def _tier1_vote(
     if date_desc_hit:
         # "date picker" contains the dropdown keyword "picker" — the date
         # phrase is more specific, so "picker" alone must not tie the vote.
-        dropdown_desc_keywords = tuple(
-            kw for kw in _DROPDOWN_DESC_KEYWORDS if kw != "picker"
-        )
+        dropdown_desc_keywords = tuple(kw for kw in _DROPDOWN_DESC_KEYWORDS if kw != "picker")
     if any(kw in desc for kw in dropdown_desc_keywords):
         votes["dropdown"] += _TIER1_LOW_WEIGHT
         signal_log.append(f"desc:dropdown(+{_TIER1_LOW_WEIGHT})")
@@ -480,9 +543,7 @@ def _tier1_vote(
     # max_vote >= 4 → "high".
     if vision_hint and vision_hint in votes:
         votes[vision_hint] += _TIER1_HIGH_WEIGHT
-        signal_log.append(
-            f"vision-hint:{vision_hint}(+{_TIER1_HIGH_WEIGHT})"
-        )
+        signal_log.append(f"vision-hint:{vision_hint}(+{_TIER1_HIGH_WEIGHT})")
 
     max_vote = max(votes.values())
     signal_log.append("tier:1")

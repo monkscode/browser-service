@@ -76,8 +76,10 @@ async def test_volatile_id_demoted_stable_name_wins(page):
     result = await _generate_locators_from_element_data(
         search_context=page,
         element_data=_element_data(
-            id="ext-gen1042", name="username",
-            placeholder="Enter username", type="text",
+            id="ext-gen1042",
+            name="username",
+            placeholder="Enter username",
+            type="text",
         ),
         element_id="elem_1",
         element_description="username field",
@@ -96,7 +98,9 @@ async def test_volatile_only_element_returned_marked(page):
     result = await _generate_locators_from_element_data(
         search_context=page,
         element_data=_element_data(
-            tagName="button", id="ext-gen2001", textContent="Refresh grid",
+            tagName="button",
+            id="ext-gen2001",
+            textContent="Refresh grid",
         ),
         element_id="elem_2",
         element_description="refresh button",
@@ -114,7 +118,9 @@ async def test_stable_id_still_wins(page):
     result = await _generate_locators_from_element_data(
         search_context=page,
         element_data=_element_data(
-            id="save_button", name="save", type="text",
+            id="save_button",
+            name="save",
+            type="text",
         ),
         element_id="elem_3",
         element_description="save field",
@@ -155,13 +161,15 @@ def _coord_element_data(**overrides) -> dict:
 def test_step3_strategies_carry_stability_tiers():
     """Every STEP-3 strategy is annotated: volatile framework id, stable
     name, positional nth-child / xpath-position / first-of-class."""
-    strategies = _build_coordinate_strategies(_coord_element_data(
-        id="ext-gen1042",
-        name="username",
-        className="form-control",
-        siblingIndex=2,
-        parentClass="form-group",
-    ))
+    strategies = _build_coordinate_strategies(
+        _coord_element_data(
+            id="ext-gen1042",
+            name="username",
+            className="form-control",
+            siblingIndex=2,
+            parentClass="form-group",
+        )
+    )
     by_type = {s["type"]: s for s in strategies}
 
     assert by_type["id"]["stability"] == "volatile"
@@ -173,9 +181,12 @@ def test_step3_strategies_carry_stability_tiers():
 
 def test_step3_dynamic_text_strategy_is_volatile():
     """text="Cart (3 items)" dies when the count changes — marked volatile."""
-    strategies = _build_coordinate_strategies(_coord_element_data(
-        tagName="button", innerText="Cart (3 items)",
-    ))
+    strategies = _build_coordinate_strategies(
+        _coord_element_data(
+            tagName="button",
+            innerText="Cart (3 items)",
+        )
+    )
     by_type = {s["type"]: s for s in strategies}
     assert by_type["text"]["stability"] == "volatile"
     assert by_type["xpath-text"]["stability"] == "volatile"
@@ -183,9 +194,12 @@ def test_step3_dynamic_text_strategy_is_volatile():
 
 def test_step3_bare_digit_id_stays_stable():
     """Narrowed digit rule flows through STEP-3 too (q01 shape)."""
-    strategies = _build_coordinate_strategies(_coord_element_data(
-        tagName="a", id="880667900",
-    ))
+    strategies = _build_coordinate_strategies(
+        _coord_element_data(
+            tagName="a",
+            id="880667900",
+        )
+    )
     by_type = {s["type"]: s for s in strategies}
     assert by_type["id"]["stability"] == "stable"
 
@@ -219,7 +233,9 @@ async def test_bare_digit_id_stays_stable(page):
     result = await _generate_locators_from_element_data(
         search_context=page,
         element_data=_element_data(
-            tagName="a", id="880667900", textContent="my-repo",
+            tagName="a",
+            id="880667900",
+            textContent="my-repo",
         ),
         element_id="elem_4",
         element_description="first pinned repository link",

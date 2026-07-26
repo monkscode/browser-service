@@ -30,10 +30,18 @@ class _Item:
         self.result = [_Result(error)]
 
 
+class _Usage:
+    """Stands in for browser-use's UsageSummary (tokens/views.py:107)."""
+
+    def __init__(self, entry_count):
+        self.entry_count = entry_count
+
+
 class _History:
-    def __init__(self, items, steps):
+    def __init__(self, items, steps, usage=None):
         self.history = items
         self._steps = steps
+        self.usage = usage
 
     def number_of_steps(self):
         return self._steps
@@ -50,7 +58,6 @@ def test_extract_agent_diagnostics_counts_429_steps_and_their_cost():
         steps=4,
     )
     diag = extract_agent_diagnostics(history, dom_samples=[10, 20, 30])
-    assert diag["agent_steps"] == 4
     assert diag["llm_429_count"] == 2
     assert diag["retry_lost_s"] == pytest.approx(3.4)
     assert diag["dom_elements_max"] == 30
@@ -67,7 +74,7 @@ def test_extract_agent_diagnostics_handles_clean_run():
 def test_extract_agent_diagnostics_never_raises_on_malformed_history():
     """Instrumentation must never break the pipeline it measures."""
     diag = extract_agent_diagnostics(None, dom_samples=[])
-    assert diag["agent_steps"] == 0
+    assert diag["llm_calls_actual"] == 0
     assert diag["dom_elements_max"] == 0
     assert diag["retry_lost_s"] == 0.0
 
@@ -84,6 +91,105 @@ def test_extract_agent_diagnostics_survives_missing_metadata():
 def test_summarize_dom_samples_reports_max_and_median():
     assert summarize_dom_samples([100, 2143, 1876]) == (2143, 1876)
     assert summarize_dom_samples([]) == (0, 0)
+
+
+class _StubTimer:
+    def __init__(self, total_s=0.0, max_s=0.0, calls=0):
+        self.total_s = total_s
+        self.max_s = max_s
+        self.calls = calls
+
+
+def test_diagnostics_no_longer_reports_agent_steps():
+    """agent_steps duplicated browser_use_llm_calls exactly on 30/30 bench rows.
+    llm_calls_actual replaces it with a number that differs whenever a step
+    retries (agent/service.py:1655 calls the model up to twice per step)."""
+    diag = extract_agent_diagnostics(_History([_Item(1.0)], steps=1), dom_samples=[])
+    assert "agent_steps" not in diag
+
+
+def test_diagnostics_reports_exactly_the_nine_measured_fields():
+    diag = extract_agent_diagnostics(_History([_Item(1.0)], steps=1), dom_samples=[])
+    assert set(diag) == {
+        "dom_elements_max", "dom_elements_median", "llm_429_count", "retry_lost_s",
+        "llm_total_s", "llm_max_s", "llm_calls_actual", "steps_total_s",
+        "llm_coverage_gap",
+    }
+
+
+def test_steps_total_sums_step_metadata_durations():
+    history = _History([_Item(2.0), _Item(1.5), _Item(0.25)], steps=3)
+    diag = extract_agent_diagnostics(history, dom_samples=[])
+    assert diag["steps_total_s"] == pytest.approx(3.75)
+
+
+def test_steps_total_is_zero_for_empty_or_missing_history():
+    assert extract_agent_diagnostics(None, dom_samples=[])["steps_total_s"] == 0.0
+    assert extract_agent_diagnostics(
+        _History([], steps=0), dom_samples=[]
+    )["steps_total_s"] == 0.0
+
+
+def test_steps_total_survives_a_step_with_no_metadata():
+    item = _Item(0.0)
+    item.metadata = None
+    history = _History([_Item(2.0), item], steps=2)
+    assert extract_agent_diagnostics(history, dom_samples=[])["steps_total_s"] == 2.0
+
+
+def test_llm_fields_come_from_the_timer():
+    history = _History([_Item(2.0)], steps=1)
+    timer = _StubTimer(total_s=12.3456, max_s=7.8912, calls=3)
+    diag = extract_agent_diagnostics(history, dom_samples=[], llm_timer=timer)
+    assert diag["llm_total_s"] == 12.346
+    assert diag["llm_max_s"] == 7.891
+    assert diag["llm_calls_actual"] == 3
+
+
+def test_llm_fields_are_zero_without_a_timer():
+    diag = extract_agent_diagnostics(_History([_Item(1.0)], steps=1), dom_samples=[])
+    assert diag["llm_total_s"] == 0.0
+    assert diag["llm_max_s"] == 0.0
+    assert diag["llm_calls_actual"] == 0
+
+
+def test_coverage_gap_is_zero_when_every_call_was_ours():
+    history = _History([_Item(1.0)], steps=1, usage=_Usage(entry_count=3))
+    diag = extract_agent_diagnostics(
+        history, dom_samples=[], llm_timer=_StubTimer(calls=3)
+    )
+    assert diag["llm_coverage_gap"] == 0
+
+
+def test_coverage_gap_is_positive_when_calls_escaped_the_wrapper():
+    """The fallback swap at agent/service.py:2003 reassigns self.llm and
+    re-registers it for token tracking, orphaning our wrapper. entry_count then
+    exceeds our count, and the run's numbers are void."""
+    history = _History([_Item(1.0)], steps=1, usage=_Usage(entry_count=5))
+    diag = extract_agent_diagnostics(
+        history, dom_samples=[], llm_timer=_StubTimer(calls=3)
+    )
+    assert diag["llm_coverage_gap"] == 2
+
+
+def test_coverage_gap_is_negative_when_a_call_failed():
+    """Failed calls return no usage (tokens/service.py:356 guards on
+    `if result.usage:`), so we count them and entry_count does not. Benign."""
+    history = _History([_Item(1.0)], steps=1, usage=_Usage(entry_count=2))
+    diag = extract_agent_diagnostics(
+        history, dom_samples=[], llm_timer=_StubTimer(calls=3)
+    )
+    assert diag["llm_coverage_gap"] == -1
+
+
+def test_coverage_gap_is_none_when_usage_is_unavailable():
+    """Not 0: "could not check" must never read as "coverage was perfect". None
+    becomes an empty CSV cell, which trips the populated-on-all-rows gate."""
+    history = _History([_Item(1.0)], steps=1, usage=None)
+    diag = extract_agent_diagnostics(
+        history, dom_samples=[], llm_timer=_StubTimer(calls=3)
+    )
+    assert diag["llm_coverage_gap"] is None
 
 
 class _FakeLLM:

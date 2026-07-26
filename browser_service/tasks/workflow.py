@@ -254,40 +254,60 @@ def instrument_llm_timing(llm) -> LLMCallTimer:
     return timer
 
 
-def extract_agent_diagnostics(agent_result, dom_samples: list[int]) -> dict:
-    """Step count, DOM size, and 429 cost, straight from agent history.
+def extract_agent_diagnostics(agent_result, dom_samples: list[int], llm_timer=None) -> dict:
+    """DOM size, 429 cost, and the LLM / non-LLM split of agent_run_s.
 
     Never raises: instrumentation must not break the pipeline it measures. A
     malformed history yields zeros, which read as "not measured" downstream.
 
     429s are counted here rather than scraped from logs/browser_use.log, which
     accumulates across days and makes a raw count meaningless.
+
+    Raw measurements only. step_non_llm_s (= steps_total_s - llm_total_s) and
+    agent_overhead_s (= agent_run_s - steps_total_s) are derived at analysis
+    time, so a wrong relationship shows up instead of being baked in.
+
+    llm_coverage_gap is the instrument checking itself: entry_count counts
+    tracked calls across every registered LLM instance, ours counts only the one
+    we wrapped. Positive means calls happened somewhere we cannot see.
     """
     dom_max, dom_median = summarize_dom_samples(dom_samples)
     diagnostics = {
-        "agent_steps": 0,
         "dom_elements_max": dom_max,
         "dom_elements_median": dom_median,
         "llm_429_count": 0,
         "retry_lost_s": 0.0,
+        "llm_total_s": round(llm_timer.total_s, 3) if llm_timer else 0.0,
+        "llm_max_s": round(llm_timer.max_s, 3) if llm_timer else 0.0,
+        "llm_calls_actual": llm_timer.calls if llm_timer else 0,
+        "steps_total_s": 0.0,
+        # None, not 0: "we could not check coverage" must never read as
+        # "coverage was perfect". An empty CSV cell is the alarm.
+        "llm_coverage_gap": None,
     }
     if agent_result is None:
         return diagnostics
     try:
-        diagnostics["agent_steps"] = agent_result.number_of_steps()
         count = 0
         lost = 0.0
+        steps_total = 0.0
         for item in getattr(agent_result, "history", []) or []:
+            meta = getattr(item, "metadata", None)
+            duration = float(getattr(meta, "duration_seconds", 0.0) or 0.0)
+            steps_total += duration
             errors = [
                 r.error for r in (getattr(item, "result", None) or [])
                 if getattr(r, "error", None)
             ]
             if any("RESOURCE_EXHAUSTED" in str(e) for e in errors):
                 count += 1
-                meta = getattr(item, "metadata", None)
-                lost += float(getattr(meta, "duration_seconds", 0.0) or 0.0)
+                lost += duration
         diagnostics["llm_429_count"] = count
         diagnostics["retry_lost_s"] = round(lost, 3)
+        diagnostics["steps_total_s"] = round(steps_total, 3)
+        entry_count = getattr(getattr(agent_result, "usage", None), "entry_count", None)
+        if entry_count is not None and llm_timer is not None:
+            diagnostics["llm_coverage_gap"] = int(entry_count) - llm_timer.calls
     except Exception as e:  # never break the pipeline for a metric
         logger.warning(f"Agent diagnostics extraction failed (suppressed): {e}")
     return diagnostics

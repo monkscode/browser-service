@@ -208,22 +208,14 @@ def summarize_dom_samples(samples: list[int]) -> tuple[int, int]:
     return (max(samples), int(statistics.median(samples)))
 
 
-class LLMCallTimer:
-    """Wall-clock accumulator for one LLM instance's ainvoke calls.
+def instrument_llm_timing(llm) -> list[float]:
+    """Wrap llm.ainvoke to record each model call's wall clock.
 
-    Deliberately a plain object, not module state: the service runs up to
-    config.max_concurrent_tasks workflows in a ThreadPoolExecutor, each with its
-    own llm_instance and Agent. Shared state would cross-contaminate them.
-    """
-
-    def __init__(self):
-        self.total_s = 0.0
-        self.max_s = 0.0
-        self.calls = 0
-
-
-def instrument_llm_timing(llm) -> LLMCallTimer:
-    """Wrap llm.ainvoke to time every model call. Returns the accumulator.
+    Returns the list it appends to — one entry per call, retries included.
+    That list is per-instance and closure-local by construction: the service
+    runs up to config.max_concurrent_tasks workflows in a ThreadPoolExecutor,
+    each with its own llm_instance and Agent. Module-level state would
+    cross-contaminate them.
 
     Call this BEFORE Agent(...) is constructed. Agent.__init__ hands the instance
     to register_llm (browser_use/agent/service.py:419), which captures whatever
@@ -237,7 +229,7 @@ def instrument_llm_timing(llm) -> LLMCallTimer:
     Records in a finally and catches nothing: a timed-out or cancelled call still
     burned wall clock, and swallowing the exception would change agent behaviour.
     """
-    timer = LLMCallTimer()
+    durations: list[float] = []
     original = llm.ainvoke
 
     async def timed_ainvoke(messages, output_format=None, **kwargs):
@@ -245,16 +237,15 @@ def instrument_llm_timing(llm) -> LLMCallTimer:
         try:
             return await original(messages, output_format, **kwargs)
         finally:
-            elapsed = time.perf_counter() - started
-            timer.total_s += elapsed
-            timer.max_s = max(timer.max_s, elapsed)
-            timer.calls += 1
+            durations.append(time.perf_counter() - started)
 
     setattr(llm, "ainvoke", timed_ainvoke)
-    return timer
+    return durations
 
 
-def extract_agent_diagnostics(agent_result, dom_samples: list[int], llm_timer=None) -> dict:
+def extract_agent_diagnostics(
+    agent_result, dom_samples: list[int], llm_durations: list[float] | None = None
+) -> dict:
     """DOM size, 429 cost, and the LLM / non-LLM split of agent_run_s.
 
     Never raises: instrumentation must not break the pipeline it measures. A
@@ -272,14 +263,17 @@ def extract_agent_diagnostics(agent_result, dom_samples: list[int], llm_timer=No
     we wrapped. Positive means calls happened somewhere we cannot see.
     """
     dom_max, dom_median = summarize_dom_samples(dom_samples)
+    # `is not None`, never truthiness: an empty list means "wrapped, zero calls",
+    # which is a measurement, not a missing one.
+    calls = llm_durations if llm_durations is not None else []
     diagnostics = {
         "dom_elements_max": dom_max,
         "dom_elements_median": dom_median,
         "llm_429_count": 0,
         "retry_lost_s": 0.0,
-        "llm_total_s": round(llm_timer.total_s, 3) if llm_timer else 0.0,
-        "llm_max_s": round(llm_timer.max_s, 3) if llm_timer else 0.0,
-        "llm_calls_actual": llm_timer.calls if llm_timer else 0,
+        "llm_total_s": round(sum(calls), 3),
+        "llm_max_s": round(max(calls, default=0.0), 3),
+        "llm_calls_actual": len(calls),
         "steps_total_s": 0.0,
         # None, not 0: "we could not check coverage" must never read as
         # "coverage was perfect". An empty CSV cell is the alarm.
@@ -306,8 +300,8 @@ def extract_agent_diagnostics(agent_result, dom_samples: list[int], llm_timer=No
         diagnostics["retry_lost_s"] = round(lost, 3)
         diagnostics["steps_total_s"] = round(steps_total, 3)
         entry_count = getattr(getattr(agent_result, "usage", None), "entry_count", None)
-        if entry_count is not None and llm_timer is not None:
-            diagnostics["llm_coverage_gap"] = int(entry_count) - llm_timer.calls
+        if entry_count is not None and llm_durations is not None:
+            diagnostics["llm_coverage_gap"] = int(entry_count) - len(calls)
     except Exception as e:  # never break the pipeline for a metric
         logger.warning(f"Agent diagnostics extraction failed (suppressed): {e}")
     return diagnostics
@@ -623,7 +617,7 @@ def process_workflow_task(
             # One wrap covers every path: page_extraction_llm defaults to the
             # same object (service.py:249-250), compaction_llm falls back to it
             # (service.py:1156), and judge_llm is never invoked (use_judge=False).
-            llm_timer = instrument_llm_timing(llm_instance)
+            llm_durations = instrument_llm_timing(llm_instance)
 
             use_vision = _resolve_use_vision(config.agent_vision_mode, enable_custom_actions_flag)
             agent = Agent(
@@ -2222,7 +2216,7 @@ def process_workflow_task(
                         "postprocess_s": round(postprocess_s, 3),
                     },
                     "agent_diagnostics": extract_agent_diagnostics(
-                        agent_result, dom_samples, llm_timer
+                        agent_result, dom_samples, llm_durations
                     ),
                 },
                 "validation_summary": validation_summary,  # Add validation summary to results

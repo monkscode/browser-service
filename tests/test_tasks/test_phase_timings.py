@@ -93,13 +93,6 @@ def test_summarize_dom_samples_reports_max_and_median():
     assert summarize_dom_samples([]) == (0, 0)
 
 
-class _StubTimer:
-    def __init__(self, total_s=0.0, max_s=0.0, calls=0):
-        self.total_s = total_s
-        self.max_s = max_s
-        self.calls = calls
-
-
 def test_diagnostics_no_longer_reports_agent_steps():
     """agent_steps duplicated browser_use_llm_calls exactly on 30/30 bench rows.
     llm_calls_actual replaces it with a number that differs whenever a step
@@ -137,10 +130,11 @@ def test_steps_total_survives_a_step_with_no_metadata():
     assert extract_agent_diagnostics(history, dom_samples=[])["steps_total_s"] == 2.0
 
 
-def test_llm_fields_come_from_the_timer():
+def test_llm_fields_are_derived_from_the_recorded_durations():
     history = _History([_Item(2.0)], steps=1)
-    timer = _StubTimer(total_s=12.3456, max_s=7.8912, calls=3)
-    diag = extract_agent_diagnostics(history, dom_samples=[], llm_timer=timer)
+    diag = extract_agent_diagnostics(
+        history, dom_samples=[], llm_durations=[7.8912, 3.0, 1.4544]
+    )
     assert diag["llm_total_s"] == 12.346
     assert diag["llm_max_s"] == 7.891
     assert diag["llm_calls_actual"] == 3
@@ -153,10 +147,21 @@ def test_llm_fields_are_zero_without_a_timer():
     assert diag["llm_calls_actual"] == 0
 
 
+def test_an_empty_duration_list_is_a_measurement_not_a_missing_one():
+    """Wrapped but never called must not read the same as never wrapped: an
+    empty list is falsy, so anything testing truthiness here would silently
+    report "not measured" and skip the coverage check."""
+    history = _History([_Item(1.0)], steps=1, usage=_Usage(entry_count=0))
+    diag = extract_agent_diagnostics(history, dom_samples=[], llm_durations=[])
+    assert diag["llm_total_s"] == 0.0
+    assert diag["llm_calls_actual"] == 0
+    assert diag["llm_coverage_gap"] == 0      # checked, not skipped
+
+
 def test_coverage_gap_is_zero_when_every_call_was_ours():
     history = _History([_Item(1.0)], steps=1, usage=_Usage(entry_count=3))
     diag = extract_agent_diagnostics(
-        history, dom_samples=[], llm_timer=_StubTimer(calls=3)
+        history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0]
     )
     assert diag["llm_coverage_gap"] == 0
 
@@ -167,7 +172,7 @@ def test_coverage_gap_is_positive_when_calls_escaped_the_wrapper():
     exceeds our count, and the run's numbers are void."""
     history = _History([_Item(1.0)], steps=1, usage=_Usage(entry_count=5))
     diag = extract_agent_diagnostics(
-        history, dom_samples=[], llm_timer=_StubTimer(calls=3)
+        history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0]
     )
     assert diag["llm_coverage_gap"] == 2
 
@@ -177,7 +182,7 @@ def test_coverage_gap_is_negative_when_a_call_failed():
     `if result.usage:`), so we count them and entry_count does not. Benign."""
     history = _History([_Item(1.0)], steps=1, usage=_Usage(entry_count=2))
     diag = extract_agent_diagnostics(
-        history, dom_samples=[], llm_timer=_StubTimer(calls=3)
+        history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0]
     )
     assert diag["llm_coverage_gap"] == -1
 
@@ -187,7 +192,7 @@ def test_coverage_gap_is_none_when_usage_is_unavailable():
     becomes an empty CSV cell, which trips the populated-on-all-rows gate."""
     history = _History([_Item(1.0)], steps=1, usage=None)
     diag = extract_agent_diagnostics(
-        history, dom_samples=[], llm_timer=_StubTimer(calls=3)
+        history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0]
     )
     assert diag["llm_coverage_gap"] is None
 
@@ -212,28 +217,27 @@ class _FakeLLM:
 
 async def test_timer_records_one_duration_per_call_and_reports_the_max():
     llm = _FakeLLM()
-    timer = instrument_llm_timing(llm)
+    durations = instrument_llm_timing(llm)
 
     await llm.ainvoke(["a"])
     await llm.ainvoke(["b"])
     await llm.ainvoke(["c"])
 
-    assert timer.calls == 3
-    assert timer.total_s > 0.0
-    assert timer.max_s > 0.0
-    assert timer.max_s <= timer.total_s
+    assert len(durations) == 3
+    assert all(d > 0.0 for d in durations)
+    assert max(durations) <= sum(durations)
 
 
 async def test_timer_max_tracks_the_slowest_call():
     llm = _FakeLLM()
-    timer = instrument_llm_timing(llm)
+    durations = instrument_llm_timing(llm)
 
     await llm.ainvoke(["fast"])
     llm.delay = 0.05
     await llm.ainvoke(["slow"])
 
-    assert timer.max_s >= 0.05
-    assert timer.calls == 2
+    assert max(durations) >= 0.05
+    assert len(durations) == 2
 
 
 async def test_timer_passes_the_return_value_through_untouched():
@@ -246,25 +250,25 @@ async def test_timer_passes_the_return_value_through_untouched():
 async def test_timer_records_a_failed_call_and_re_raises():
     """A failed call still burned wall clock; it must be counted, not swallowed."""
     llm = _FakeLLM(delay=0.02, error=RuntimeError("429 RESOURCE_EXHAUSTED"))
-    timer = instrument_llm_timing(llm)
+    durations = instrument_llm_timing(llm)
 
     with pytest.raises(RuntimeError, match="RESOURCE_EXHAUSTED"):
         await llm.ainvoke(["a"])
 
-    assert timer.calls == 1
-    assert timer.total_s >= 0.02
+    assert len(durations) == 1
+    assert durations[0] >= 0.02
 
 
 async def test_timer_lets_cancellation_propagate():
     """asyncio.wait_for(llm_timeout) at agent/service.py:1173 cancels the inner
     coroutine. Catching that would change agent behaviour."""
     llm = _FakeLLM(delay=0.02, error=asyncio.CancelledError())
-    timer = instrument_llm_timing(llm)
+    durations = instrument_llm_timing(llm)
 
     with pytest.raises(asyncio.CancelledError):
         await llm.ainvoke(["a"])
 
-    assert timer.calls == 1
+    assert len(durations) == 1
 
 
 async def test_timer_forwards_output_format_positionally_and_by_keyword():
@@ -285,12 +289,12 @@ async def test_two_llm_instances_keep_separate_accumulators():
     """Up to 10 workflows run concurrently in a ThreadPoolExecutor, each with its
     own llm_instance. Module-level state would cross-contaminate them."""
     a, b = _FakeLLM(delay=0.03), _FakeLLM()
-    timer_a, timer_b = instrument_llm_timing(a), instrument_llm_timing(b)
+    durations_a, durations_b = instrument_llm_timing(a), instrument_llm_timing(b)
 
     await asyncio.gather(
         a.ainvoke(["a1"]), a.ainvoke(["a2"]), b.ainvoke(["b1"])
     )
 
-    assert timer_a.calls == 2
-    assert timer_b.calls == 1
-    assert timer_a.total_s > timer_b.total_s
+    assert len(durations_a) == 2
+    assert len(durations_b) == 1
+    assert sum(durations_a) > sum(durations_b)

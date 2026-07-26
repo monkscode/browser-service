@@ -54,12 +54,14 @@ import pytest
 class FakeUsage:
     """Stands in for browser-use's UsageSummary."""
 
-    def __init__(self, prompt=100, completion=50, total=150, cached=10, cost=0.0021):
+    def __init__(self, prompt=100, completion=50, total=150, cached=10, cost=0.0021,
+                 entry_count=1):
         self.total_prompt_tokens = prompt
         self.total_completion_tokens = completion
         self.total_tokens = total
         self.total_prompt_cached_tokens = cached
         self.total_cost = cost
+        self.entry_count = entry_count
 
 
 class FakeActionResult:
@@ -120,6 +122,10 @@ class FakeAgent:
         # How many times to fire on_step_end, mirroring the real Agent's
         # `await on_step_end(self)` once per step (service.py:2460-2461).
         self.steps_to_simulate = 1
+        # Snapshot at construction time. Reading llm.ainvoke later would also see
+        # a wrap applied afterwards; only this proves the LLM was already wrapped
+        # when Agent got it, which is what nests token tracking outside our timer.
+        self.llm_ainvoke_at_construction = getattr(kwargs.get("llm"), "ainvoke", None)
 
     async def run(self, max_steps=None, on_step_end=None):
         self.run_calls.append(max_steps)
@@ -1236,7 +1242,35 @@ class TestPhaseTimingsPayload:
 
         diag = workflow_harness.updates[-1][1]["results"]["summary"]["agent_diagnostics"]
         assert set(diag) == {
-            "agent_steps", "dom_elements_max", "dom_elements_median",
+            "dom_elements_max", "dom_elements_median",
             "llm_429_count", "retry_lost_s",
+            "llm_total_s", "llm_max_s", "llm_calls_actual", "steps_total_s",
+            "llm_coverage_gap",
         }
         assert diag["llm_429_count"] == 0
+
+    def test_llm_is_timed_before_the_agent_is_constructed(self, workflow_harness):
+        """Agent.__init__ -> register_llm (agent/service.py:419) captures whatever
+        ainvoke is at that moment. Wrapping after would put browser-use's token
+        bookkeeping inside our timer instead of outside it."""
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+
+        run_workflow(workflow_harness)
+
+        wrapped = workflow_harness.agent.llm_ainvoke_at_construction
+        assert wrapped is not None
+        assert wrapped.__name__ == "timed_ainvoke"
+
+    def test_summary_carries_the_llm_split_fields(self, workflow_harness):
+        arm(
+            workflow_harness,
+            [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])],
+            usage=FakeUsage(entry_count=0),
+        )
+
+        run_workflow(workflow_harness)
+
+        diag = workflow_harness.updates[-1][1]["results"]["summary"]["agent_diagnostics"]
+        assert diag["llm_total_s"] == 0.0        # the fake agent never calls ainvoke
+        assert diag["llm_calls_actual"] == 0
+        assert diag["llm_coverage_gap"] == 0     # 0 tracked - 0 ours

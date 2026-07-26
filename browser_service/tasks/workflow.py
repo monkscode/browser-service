@@ -617,6 +617,14 @@ def process_workflow_task(
                 )
                 logger.info(f"🔑 Using Gemini API: model={config.llm.google_model}")
 
+            # Wrap BEFORE Agent(...): Agent.__init__ hands this instance to
+            # register_llm (agent/service.py:419), which captures whatever
+            # ainvoke is then — so token accounting nests outside this timer.
+            # One wrap covers every path: page_extraction_llm defaults to the
+            # same object (service.py:249-250), compaction_llm falls back to it
+            # (service.py:1156), and judge_llm is never invoked (use_judge=False).
+            llm_timer = instrument_llm_timing(llm_instance)
+
             use_vision = _resolve_use_vision(config.agent_vision_mode, enable_custom_actions_flag)
             agent = Agent(
                 task=unified_objective,
@@ -2214,7 +2222,7 @@ def process_workflow_task(
                         "postprocess_s": round(postprocess_s, 3),
                     },
                     "agent_diagnostics": extract_agent_diagnostics(
-                        agent_result, dom_samples
+                        agent_result, dom_samples, llm_timer
                     ),
                 },
                 "validation_summary": validation_summary,  # Add validation summary to results

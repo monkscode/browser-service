@@ -208,6 +208,52 @@ def summarize_dom_samples(samples: list[int]) -> tuple[int, int]:
     return (max(samples), int(statistics.median(samples)))
 
 
+class LLMCallTimer:
+    """Wall-clock accumulator for one LLM instance's ainvoke calls.
+
+    Deliberately a plain object, not module state: the service runs up to
+    config.max_concurrent_tasks workflows in a ThreadPoolExecutor, each with its
+    own llm_instance and Agent. Shared state would cross-contaminate them.
+    """
+
+    def __init__(self):
+        self.total_s = 0.0
+        self.max_s = 0.0
+        self.calls = 0
+
+
+def instrument_llm_timing(llm) -> LLMCallTimer:
+    """Wrap llm.ainvoke to time every model call. Returns the accumulator.
+
+    Call this BEFORE Agent(...) is constructed. Agent.__init__ hands the instance
+    to register_llm (browser_use/agent/service.py:419), which captures whatever
+    ainvoke is at that moment — so browser-use's token bookkeeping nests OUTSIDE
+    this timer and is excluded from what we measure.
+
+    Mirrors browser-use's own wrapping pattern, signature included
+    (browser_use/tokens/service.py:345-371), so positional and keyword callers
+    both keep working.
+
+    Records in a finally and catches nothing: a timed-out or cancelled call still
+    burned wall clock, and swallowing the exception would change agent behaviour.
+    """
+    timer = LLMCallTimer()
+    original = llm.ainvoke
+
+    async def timed_ainvoke(messages, output_format=None, **kwargs):
+        started = time.perf_counter()
+        try:
+            return await original(messages, output_format, **kwargs)
+        finally:
+            elapsed = time.perf_counter() - started
+            timer.total_s += elapsed
+            timer.max_s = max(timer.max_s, elapsed)
+            timer.calls += 1
+
+    setattr(llm, "ainvoke", timed_ainvoke)
+    return timer
+
+
 def extract_agent_diagnostics(agent_result, dom_samples: list[int]) -> dict:
     """Step count, DOM size, and 429 cost, straight from agent history.
 

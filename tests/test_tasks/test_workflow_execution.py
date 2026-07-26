@@ -117,9 +117,15 @@ class FakeAgent:
         self.run_calls = []
         self.result = FakeHistory()
         self.run_error = None
+        # How many times to fire on_step_end, mirroring the real Agent's
+        # `await on_step_end(self)` once per step (service.py:2460-2461).
+        self.steps_to_simulate = 1
 
-    async def run(self, max_steps=None):
+    async def run(self, max_steps=None, on_step_end=None):
         self.run_calls.append(max_steps)
+        if on_step_end is not None:
+            for _ in range(self.steps_to_simulate):
+                await on_step_end(self)
         if self.run_error:
             raise self.run_error
         return self.result
@@ -133,11 +139,16 @@ class FakeSession:
         self.started = False
         self.llm_screenshot_size = None
         self.start_error = None
+        # Indexed elements the on_step_end DOM sampler will observe.
+        self.selector_map = {}
 
     async def start(self):
         if self.start_error:
             raise self.start_error
         self.started = True
+
+    async def get_selector_map(self):
+        return self.selector_map
 
 
 class FakeClientConfig:
@@ -1143,3 +1154,89 @@ class TestHistoryFallbackExtraction:
 
         results = workflow_harness.updates[-1][1]["results"]["results"]
         assert any(r["element_id"] == "elem_1" for r in results)
+
+
+class TestPhaseTimingsPayload:
+    """The seven-span identify_s breakdown is only useful if it reaches the
+    summary. Everything downstream (backend merge, WorkflowMetrics, bench CSV)
+    reads these two keys by name, and WorkflowMetrics drops undeclared keys
+    silently — so a rename here surfaces as an empty column, not an error.
+    """
+
+    def _arm_dom(self, harness, sizes):
+        """Pre-load what get_selector_map() reports, one entry per agent step."""
+        from browser_service.tasks import workflow as wf
+
+        original = wf.Agent.side_effect
+
+        def make_and_arm(**kwargs):
+            agent = original(**kwargs)
+            agent.steps_to_simulate = len(sizes)
+            return agent
+
+        wf.Agent.side_effect = make_and_arm
+
+        session_factory = harness.browser_session_cls.side_effect
+        counter = {"n": 0}
+
+        class _GrowingMap(dict):
+            """len() changes per step, so max and median are distinguishable."""
+
+            def __len__(self):
+                i = min(counter["n"], len(sizes) - 1)
+                counter["n"] += 1
+                return sizes[i]
+
+        def make_and_arm_session(**kwargs):
+            session = session_factory(**kwargs)
+            session.selector_map = _GrowingMap()
+            return session
+
+        harness.browser_session_cls.side_effect = make_and_arm_session
+
+    def test_summary_carries_all_five_service_side_spans(self, workflow_harness):
+        """submit_s and poll_wait_s are the backend's; these five are ours."""
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+
+        run_workflow(workflow_harness)
+
+        timings = workflow_harness.updates[-1][1]["results"]["summary"]["phase_timings"]
+        assert set(timings) == {
+            "queue_s", "session_setup_s", "agent_setup_s",
+            "agent_run_s", "postprocess_s",
+        }
+        assert all(v >= 0.0 for v in timings.values())
+
+    def test_agent_run_span_mirrors_execution_time(self, workflow_harness):
+        """agent_run_s must be the already-shipped execution_time, not a re-measure."""
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+
+        run_workflow(workflow_harness)
+
+        results = workflow_harness.updates[-1][1]["results"]
+        assert results["summary"]["phase_timings"]["agent_run_s"] == pytest.approx(
+            round(results["execution_time"], 3)
+        )
+
+    def test_dom_samples_are_collected_once_per_step(self, workflow_harness):
+        """The on_step_end hook is what prices cross_origin_iframes=True."""
+        self._arm_dom(workflow_harness, [100, 2143, 1876])
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+
+        run_workflow(workflow_harness)
+
+        diag = workflow_harness.updates[-1][1]["results"]["summary"]["agent_diagnostics"]
+        assert diag["dom_elements_max"] == 2143
+        assert diag["dom_elements_median"] == 1876
+
+    def test_summary_carries_agent_diagnostics(self, workflow_harness):
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+
+        run_workflow(workflow_harness)
+
+        diag = workflow_harness.updates[-1][1]["results"]["summary"]["agent_diagnostics"]
+        assert set(diag) == {
+            "agent_steps", "dom_elements_max", "dom_elements_median",
+            "llm_429_count", "retry_lost_s",
+        }
+        assert diag["llm_429_count"] == 0

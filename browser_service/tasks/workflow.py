@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import re
+import statistics
 import time
 
 import structlog
@@ -196,6 +197,56 @@ def _extract_from_result_lines(text: str) -> List[str]:
     return results
 
 
+def summarize_dom_samples(samples: list[int]) -> tuple[int, int]:
+    """(max, median) indexed-element counts across agent steps.
+
+    Prices cross_origin_iframes=True, which indexes 2000+ elements on some pages
+    and whose token cost has never been measured.
+    """
+    if not samples:
+        return (0, 0)
+    return (max(samples), int(statistics.median(samples)))
+
+
+def extract_agent_diagnostics(agent_result, dom_samples: list[int]) -> dict:
+    """Step count, DOM size, and 429 cost, straight from agent history.
+
+    Never raises: instrumentation must not break the pipeline it measures. A
+    malformed history yields zeros, which read as "not measured" downstream.
+
+    429s are counted here rather than scraped from logs/browser_use.log, which
+    accumulates across days and makes a raw count meaningless.
+    """
+    dom_max, dom_median = summarize_dom_samples(dom_samples)
+    diagnostics = {
+        "agent_steps": 0,
+        "dom_elements_max": dom_max,
+        "dom_elements_median": dom_median,
+        "llm_429_count": 0,
+        "retry_lost_s": 0.0,
+    }
+    if agent_result is None:
+        return diagnostics
+    try:
+        diagnostics["agent_steps"] = agent_result.number_of_steps()
+        count = 0
+        lost = 0.0
+        for item in getattr(agent_result, "history", []) or []:
+            errors = [
+                r.error for r in (getattr(item, "result", None) or [])
+                if getattr(r, "error", None)
+            ]
+            if any("RESOURCE_EXHAUSTED" in str(e) for e in errors):
+                count += 1
+                meta = getattr(item, "metadata", None)
+                lost += float(getattr(meta, "duration_seconds", 0.0) or 0.0)
+        diagnostics["llm_429_count"] = count
+        diagnostics["retry_lost_s"] = round(lost, 3)
+    except Exception as e:  # never break the pipeline for a metric
+        logger.warning(f"Agent diagnostics extraction failed (suppressed): {e}")
+    return diagnostics
+
+
 def _extract_all_element_jsons(text: str) -> List[str]:
     """
     Extract all JSON objects containing element_id from text.
@@ -306,6 +357,11 @@ def process_workflow_task(
         },
     )
 
+    # Time this task spent queued before a worker picked it up. update_task
+    # merges, so created_at (processor.py:88/:131) survives the started_at write.
+    _task_row = task_processor.get_task_status(task_id) or {}
+    queue_s = max(0.0, time.time() - float(_task_row.get("created_at", time.time())))
+
     logger.info(f"🚀 Starting WORKFLOW MODE for task {task_id}")
     logger.info(f"   Elements: {len(elements)}")
     logger.info(f"   URL: {url}")
@@ -344,6 +400,7 @@ def process_workflow_task(
 
         try:
             # Initialize browser session ONCE
+            _t_session = time.perf_counter()
             logger.info("🌐 Initializing browser session...")
 
             # CRITICAL: Set explicit viewport for consistent coordinates
@@ -402,6 +459,8 @@ def process_workflow_task(
             logger.info("🚀 Starting browser session...")
             await session.start()
             logger.info("✅ Browser session started successfully")
+            session_setup_s = time.perf_counter() - _t_session
+            _t_agent_setup = time.perf_counter()
 
             # Capture browser PID immediately — Chrome is guaranteed alive here.
             # Must happen BEFORE agent.run() because browser-use fires
@@ -584,9 +643,23 @@ def process_workflow_task(
             else:
                 logger.info("⚠️ Agent has no tools registered")
 
+            agent_setup_s = time.perf_counter() - _t_agent_setup
+
+            dom_samples: list[int] = []
+
+            async def _on_step_end(agent_obj):
+                # get_selector_map() is a cache read (session.py:2569-2583) —
+                # no CDP call, so this cannot inflate agent_run_s.
+                try:
+                    dom_samples.append(len(await session.get_selector_map()))
+                except Exception:
+                    pass  # a metric must never fail a step
+
             start_time = time.time()
             try:
-                agent_result = await agent.run(max_steps=dynamic_max_steps)
+                agent_result = await agent.run(
+                    max_steps=dynamic_max_steps, on_step_end=_on_step_end
+                )
             finally:
                 execution_time = time.time() - start_time
                 teardown = getattr(agent, "_pw_teardown", None)
@@ -595,6 +668,8 @@ def process_workflow_task(
                         await teardown()
                     except Exception as e:
                         logger.warning(f"Playwright teardown error (suppressed): {e}")
+
+            _t_postprocess = time.perf_counter()
 
             logger.info(f"✅ Agent completed in {execution_time:.1f}s")
 
@@ -2037,6 +2112,8 @@ def process_workflow_task(
                     }
                     element_approach_metrics.append(approach_entry)
 
+            postprocess_s = time.perf_counter() - _t_postprocess
+
             return {
                 "success": all_found,  # Changed from 'successful > 0' to require ALL elements found
                 "workflow_mode": True,
@@ -2061,6 +2138,18 @@ def process_workflow_task(
                     "actual_cost": token_usage["actual_cost"],
                     # Per-element approach metrics for pattern analysis
                     "element_approach_metrics": element_approach_metrics,
+                    # identify_s phase breakdown (2026-07-26 efficiency check).
+                    # The backend adds submit_s and poll_wait_s on its side.
+                    "phase_timings": {
+                        "queue_s": round(queue_s, 3),
+                        "session_setup_s": round(session_setup_s, 3),
+                        "agent_setup_s": round(agent_setup_s, 3),
+                        "agent_run_s": round(execution_time, 3),
+                        "postprocess_s": round(postprocess_s, 3),
+                    },
+                    "agent_diagnostics": extract_agent_diagnostics(
+                        agent_result, dom_samples
+                    ),
                 },
                 "validation_summary": validation_summary,  # Add validation summary to results
                 "execution_time": execution_time,

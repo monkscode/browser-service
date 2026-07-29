@@ -251,6 +251,67 @@ async def _find_collection_locator(
     return None
 
 
+# A one-word beacon is not specific enough to anchor a collection, and the
+# only corpus case it would unlock ("Cierra", from a grid row's concatenated
+# expected_text) is blocked further down the traversal anyway: every ReactTable
+# class matches the isLayoutClass `^[a-z]{1,2}-` rule, so the row container
+# never carries a meaningful class. Verified against a live demoqa-shaped DOM —
+# a perfect "Cierra" beacon still returns no row container.
+_BEACON_MIN_WORDS = 2
+_BEACON_MIN_CHARS = 8
+
+
+def _beacon_prefixes(text: str) -> list[str]:
+    """Word-boundary prefixes of `text`, longest first, excluding `text` itself.
+
+    The beacon the vision agent reports is not always a text node on the page.
+    books.toscrape renders ``<a title="A Light in the Attic">A Light in the
+    ...</a>``: the full title is an attribute, the text node is truncated. The
+    full string matches neither the exact nor the substring lookup, but its
+    prefix "A Light in the" matches the rendered node and the walk up from
+    there finds the collection.
+
+    Longest first, so the most specific beacon that exists on the page wins —
+    a short prefix can start the walk from the wrong instance (A4).
+    """
+    words = text.split()
+    prefixes = []
+    for count in range(len(words) - 1, 0, -1):
+        if count < _BEACON_MIN_WORDS:
+            break
+        prefix = " ".join(words[:count])
+        if len(prefix) < _BEACON_MIN_CHARS:
+            break
+        prefixes.append(prefix)
+    return prefixes
+
+
+async def _resolve_beacon(page, needle: str, truncated: bool, text: str):
+    """Locate the element the walk starts from, or None.
+
+    Exact match first — a substring beacon can start the walk from the wrong
+    instance (A4). Then substring. Then word-boundary prefixes, which are only
+    reached once the reported text has already failed both, so a beacon that
+    resolves today cannot be changed by the retry.
+    """
+    if not truncated and '"' not in needle:
+        exact = page.locator(f'text="{needle}"').first
+        if await exact.count() > 0:
+            return exact
+
+    substring = page.locator(f"text={needle}").first
+    if await substring.count() > 0:
+        return substring
+
+    for prefix in _beacon_prefixes(needle):
+        candidate = page.locator(f"text={prefix}").first
+        if await candidate.count() > 0:
+            logger.info("collection.beacon_prefix_match", text=text, prefix=prefix)
+            return candidate
+
+    return None
+
+
 async def _find_collection_by_text_traversal(page, expected_text: str) -> Optional[dict]:
     """
     Find collection (table rows, list items) by using expected_text as a beacon.
@@ -290,17 +351,8 @@ async def _find_collection_by_text_traversal(page, expected_text: str) -> Option
                 logger.info("collection.beacon_empty_after_truncation", text=text)
                 return None
 
-        text_locator = None
-        if not truncated and '"' not in needle:
-            exact = page.locator(f'text="{needle}"').first
-            if await exact.count() > 0:
-                text_locator = exact
-
+        text_locator = await _resolve_beacon(page, needle, truncated, text)
         if text_locator is None:
-            text_locator = page.locator(f"text={needle}").first
-        count = await text_locator.count()
-
-        if count == 0:
             logger.info("collection.text_not_found", text=text)
             return None
 

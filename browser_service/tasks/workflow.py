@@ -243,6 +243,24 @@ def instrument_llm_timing(llm) -> list[float]:
     return durations
 
 
+# The same indicators browser-use itself uses to classify a provider error as
+# 429 (llm/google/chat.py:512-516), matched the same way — lowercased. Matching
+# only the literal "RESOURCE_EXHAUSTED" token missed every provider that phrases
+# the quota error differently, and a miss reads as llm_429_count = 0, i.e. "no
+# rate limiting", which is the false-clean this metric exists to prevent.
+_RATE_LIMIT_INDICATORS = (
+    "rate limit", "resource exhausted", "resource_exhausted",
+    "quota exceeded", "too many requests", "429",
+)
+
+
+def _is_rate_limit_error(error) -> bool:
+    if not error:
+        return False
+    lowered = str(error).lower()
+    return any(indicator in lowered for indicator in _RATE_LIMIT_INDICATORS)
+
+
 def extract_agent_diagnostics(
     agent_result, dom_samples: list[int], llm_durations: list[float] | None = None
 ) -> dict:
@@ -258,9 +276,25 @@ def extract_agent_diagnostics(
     agent_overhead_s (= agent_run_s - steps_total_s) are derived at analysis
     time, so a wrong relationship shows up instead of being baked in.
 
-    llm_coverage_gap is the instrument checking itself: entry_count counts
-    tracked calls across every registered LLM instance, ours counts only the one
-    we wrapped. Positive means calls happened somewhere we cannot see.
+    llm_coverage_gap is the instrument checking itself, but read it carefully.
+    entry_count is len(usage_history) (tokens/service.py:456), and that list is
+    appended to ONLY under `if result.usage:` inside tracked_ainvoke
+    (tokens/service.py:356) — so it counts successful calls that reported usage,
+    not calls. Ours counts every ainvoke, failures included, and our wrapper is
+    installed BEFORE register_llm, so tracked_ainvoke nests strictly outside it.
+
+    Therefore the gap is <= 0 by construction while one LLM instance is
+    registered:
+      - 0  — every call returned usage metadata.
+      - negative — that many calls raised or came back without usage. Benign
+        and expected; it is NOT an alarm, and total_llm_calls should still use
+        llm_calls_actual, which is the honest count of API calls made.
+      - positive — a second LLM instance got registered and we never saw its
+        calls. Unreachable today: page_extraction_llm and judge_llm both
+        default to the same object (service.py:249-252), register_llm
+        early-returns on a duplicate instance id (tokens/service.py:337-339),
+        and compaction_llm/fallback_llm are None. Kept as a guard against a
+        future Agent(...) kwarg change.
     """
     dom_max, dom_median = summarize_dom_samples(dom_samples)
     # `is not None`, never truthiness: an empty list means "wrapped, zero calls",
@@ -289,11 +323,10 @@ def extract_agent_diagnostics(
             meta = getattr(item, "metadata", None)
             duration = float(getattr(meta, "duration_seconds", 0.0) or 0.0)
             steps_total += duration
-            errors = [
-                r.error for r in (getattr(item, "result", None) or [])
-                if getattr(r, "error", None)
-            ]
-            if any("RESOURCE_EXHAUSTED" in str(e) for e in errors):
+            if any(
+                _is_rate_limit_error(getattr(r, "error", None))
+                for r in getattr(item, "result", None) or []
+            ):
                 count += 1
                 lost += duration
         diagnostics["llm_429_count"] = count
@@ -419,8 +452,20 @@ def process_workflow_task(
 
     # Time this task spent queued before a worker picked it up. update_task
     # merges, so created_at (processor.py:88/:131) survives the started_at write.
-    _task_row = task_processor.get_task_status(task_id) or {}
-    queue_s = max(0.0, time.time() - float(_task_row.get("created_at", time.time())))
+    #
+    # Wrapped because these two lines run BEFORE the try/except that marks a
+    # task failed: an exception here escapes the worker callable entirely, so
+    # the task stays "running" forever, is never TTL-evicted (_evict_completed
+    # only removes completed rows) and permanently consumes one of
+    # max_concurrent_tasks. A metric must never be able to do that. `.get(k, d)`
+    # alone is not enough — it returns None for a present-but-null key, and
+    # float(None) raises.
+    try:
+        _task_row = task_processor.get_task_status(task_id) or {}
+        queue_s = max(0.0, time.time() - float(_task_row.get("created_at") or time.time()))
+    except Exception as e:
+        logger.warning(f"queue_s measurement failed (suppressed): {e}")
+        queue_s = 0.0
 
     logger.info(f"🚀 Starting WORKFLOW MODE for task {task_id}")
     logger.info(f"   Elements: {len(elements)}")
@@ -715,13 +760,18 @@ def process_workflow_task(
 
             dom_samples: list[int] = []
 
-            async def _on_step_end(agent_obj):
-                # get_selector_map() is a cache read (session.py:2569-2583) —
-                # no CDP call, so this cannot inflate agent_run_s.
+            async def _on_step_end(_agent):
+                # get_selector_map() is a cache read (session.py:2569-2584) —
+                # no CDP call, so this cannot inflate agent_run_s. The unused
+                # parameter is required by AgentHookFunc (agent/service.py:128).
                 try:
                     dom_samples.append(len(await session.get_selector_map()))
-                except Exception:
-                    pass  # a metric must never fail a step
+                except Exception as e:
+                    # A metric must never fail a step — but it must not fail
+                    # silently either: an empty sample list yields
+                    # dom_elements_max = 0, which reads as "the page had zero
+                    # indexed elements" rather than "the sampler broke".
+                    logger.debug(f"DOM sampling failed for this step (suppressed): {e}")
 
             start_time = time.time()
             try:
@@ -730,14 +780,19 @@ def process_workflow_task(
                 )
             finally:
                 execution_time = time.time() - start_time
+                # Start postprocess_s HERE, not after the teardown: _pw_teardown
+                # is browser.close() + playwright.stop() (agent/registration.py),
+                # and stop() terminates the node driver subprocess, which is not
+                # free. Timing it after would leave that window in no phase at
+                # all, and the whole point of this breakdown is that the spans
+                # account for identify_s rather than leaving unexplained residue.
+                _t_postprocess = time.perf_counter()
                 teardown = getattr(agent, "_pw_teardown", None)
                 if teardown:
                     try:
                         await teardown()
                     except Exception as e:
                         logger.warning(f"Playwright teardown error (suppressed): {e}")
-
-            _t_postprocess = time.perf_counter()
 
             logger.info(f"✅ Agent completed in {execution_time:.1f}s")
 

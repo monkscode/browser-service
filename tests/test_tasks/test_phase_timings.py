@@ -38,13 +38,11 @@ class _Usage:
 
 
 class _History:
-    def __init__(self, items, steps, usage=None):
-        self.history = items
-        self._steps = steps
-        self.usage = usage
+    """Only .history and .usage are read by extract_agent_diagnostics."""
 
-    def number_of_steps(self):
-        return self._steps
+    def __init__(self, items, usage=None):
+        self.history = items
+        self.usage = usage
 
 
 def test_extract_agent_diagnostics_counts_429_steps_and_their_cost():
@@ -55,7 +53,6 @@ def test_extract_agent_diagnostics_counts_429_steps_and_their_cost():
             _Item(1.9, error="RESOURCE_EXHAUSTED. quota"),
             _Item(3.0, error="element not found"),
         ],
-        steps=4,
     )
     diag = extract_agent_diagnostics(history, dom_samples=[10, 20, 30])
     assert diag["llm_429_count"] == 2
@@ -64,8 +61,38 @@ def test_extract_agent_diagnostics_counts_429_steps_and_their_cost():
     assert diag["dom_elements_median"] == 20
 
 
+@pytest.mark.parametrize("message", [
+    "ModelProviderError: 429 RESOURCE_EXHAUSTED",
+    "Resource exhausted, please retry",
+    "You exceeded your current quota exceeded",
+    "429 Too Many Requests",
+    "Rate limit reached for model",
+])
+def test_every_indicator_browser_use_uses_is_counted(message):
+    """browser-use classifies a provider error as 429 on any of five
+    lowercased indicators (llm/google/chat.py:512-516) precisely because
+    providers phrase quota errors differently. Matching only the literal
+    RESOURCE_EXHAUSTED token missed the rest, and a miss reads as
+    llm_429_count = 0 — "no rate limiting" — which is the false-clean this
+    metric exists to prevent. The bench is pinned to Vertex, not the Gemini
+    Developer API, so the wording is not ours to assume."""
+    diag = extract_agent_diagnostics(
+        _History([_Item(1.5, error=message)]), dom_samples=[]
+    )
+    assert diag["llm_429_count"] == 1
+    assert diag["retry_lost_s"] == pytest.approx(1.5)
+
+
+def test_an_ordinary_error_is_not_counted_as_a_429():
+    diag = extract_agent_diagnostics(
+        _History([_Item(1.5, error="element not found")]), dom_samples=[]
+    )
+    assert diag["llm_429_count"] == 0
+    assert diag["retry_lost_s"] == 0.0
+
+
 def test_extract_agent_diagnostics_handles_clean_run():
-    history = _History([_Item(2.0), _Item(1.0)], steps=2)
+    history = _History([_Item(2.0), _Item(1.0)])
     diag = extract_agent_diagnostics(history, dom_samples=[5])
     assert diag["llm_429_count"] == 0
     assert diag["retry_lost_s"] == 0.0
@@ -83,7 +110,7 @@ def test_extract_agent_diagnostics_survives_missing_metadata():
     """A step with no metadata must not crash the sum."""
     item = _Item(0.0, error="429 RESOURCE_EXHAUSTED")
     item.metadata = None
-    diag = extract_agent_diagnostics(_History([item], steps=1), dom_samples=[])
+    diag = extract_agent_diagnostics(_History([item]), dom_samples=[])
     assert diag["llm_429_count"] == 1
     assert diag["retry_lost_s"] == 0.0
 
@@ -93,16 +120,13 @@ def test_summarize_dom_samples_reports_max_and_median():
     assert summarize_dom_samples([]) == (0, 0)
 
 
-def test_diagnostics_no_longer_reports_agent_steps():
-    """agent_steps duplicated browser_use_llm_calls exactly on 30/30 bench rows.
+def test_diagnostics_reports_exactly_the_nine_measured_fields():
+    """Exactly these nine — which also pins that agent_steps is gone.
+
+    agent_steps duplicated browser_use_llm_calls exactly on 30/30 bench rows.
     llm_calls_actual replaces it with a number that differs whenever a step
     retries (agent/service.py:1655 calls the model up to twice per step)."""
-    diag = extract_agent_diagnostics(_History([_Item(1.0)], steps=1), dom_samples=[])
-    assert "agent_steps" not in diag
-
-
-def test_diagnostics_reports_exactly_the_nine_measured_fields():
-    diag = extract_agent_diagnostics(_History([_Item(1.0)], steps=1), dom_samples=[])
+    diag = extract_agent_diagnostics(_History([_Item(1.0)]), dom_samples=[])
     assert set(diag) == {
         "dom_elements_max", "dom_elements_median", "llm_429_count", "retry_lost_s",
         "llm_total_s", "llm_max_s", "llm_calls_actual", "steps_total_s",
@@ -111,7 +135,7 @@ def test_diagnostics_reports_exactly_the_nine_measured_fields():
 
 
 def test_steps_total_sums_step_metadata_durations():
-    history = _History([_Item(2.0), _Item(1.5), _Item(0.25)], steps=3)
+    history = _History([_Item(2.0), _Item(1.5), _Item(0.25)])
     diag = extract_agent_diagnostics(history, dom_samples=[])
     assert diag["steps_total_s"] == pytest.approx(3.75)
 
@@ -119,19 +143,19 @@ def test_steps_total_sums_step_metadata_durations():
 def test_steps_total_is_zero_for_empty_or_missing_history():
     assert extract_agent_diagnostics(None, dom_samples=[])["steps_total_s"] == 0.0
     assert extract_agent_diagnostics(
-        _History([], steps=0), dom_samples=[]
+        _History([]), dom_samples=[]
     )["steps_total_s"] == 0.0
 
 
 def test_steps_total_survives_a_step_with_no_metadata():
     item = _Item(0.0)
     item.metadata = None
-    history = _History([_Item(2.0), item], steps=2)
+    history = _History([_Item(2.0), item])
     assert extract_agent_diagnostics(history, dom_samples=[])["steps_total_s"] == 2.0
 
 
 def test_llm_fields_are_derived_from_the_recorded_durations():
-    history = _History([_Item(2.0)], steps=1)
+    history = _History([_Item(2.0)])
     diag = extract_agent_diagnostics(
         history, dom_samples=[], llm_durations=[7.8912, 3.0, 1.4544]
     )
@@ -141,7 +165,7 @@ def test_llm_fields_are_derived_from_the_recorded_durations():
 
 
 def test_llm_fields_are_zero_without_a_timer():
-    diag = extract_agent_diagnostics(_History([_Item(1.0)], steps=1), dom_samples=[])
+    diag = extract_agent_diagnostics(_History([_Item(1.0)]), dom_samples=[])
     assert diag["llm_total_s"] == 0.0
     assert diag["llm_max_s"] == 0.0
     assert diag["llm_calls_actual"] == 0
@@ -151,7 +175,7 @@ def test_an_empty_duration_list_is_a_measurement_not_a_missing_one():
     """Wrapped but never called must not read the same as never wrapped: an
     empty list is falsy, so anything testing truthiness here would silently
     report "not measured" and skip the coverage check."""
-    history = _History([_Item(1.0)], steps=1, usage=_Usage(entry_count=0))
+    history = _History([_Item(1.0)], usage=_Usage(entry_count=0))
     diag = extract_agent_diagnostics(history, dom_samples=[], llm_durations=[])
     assert diag["llm_total_s"] == 0.0
     assert diag["llm_calls_actual"] == 0
@@ -159,18 +183,28 @@ def test_an_empty_duration_list_is_a_measurement_not_a_missing_one():
 
 
 def test_coverage_gap_is_zero_when_every_call_was_ours():
-    history = _History([_Item(1.0)], steps=1, usage=_Usage(entry_count=3))
+    history = _History([_Item(1.0)], usage=_Usage(entry_count=3))
     diag = extract_agent_diagnostics(
         history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0]
     )
     assert diag["llm_coverage_gap"] == 0
 
 
-def test_coverage_gap_is_positive_when_calls_escaped_the_wrapper():
-    """The fallback swap at agent/service.py:2003 reassigns self.llm and
-    re-registers it for token tracking, orphaning our wrapper. entry_count then
-    exceeds our count, and the run's numbers are void."""
-    history = _History([_Item(1.0)], steps=1, usage=_Usage(entry_count=5))
+def test_a_positive_coverage_gap_would_mean_a_second_registered_llm():
+    """A positive gap is UNREACHABLE in the current configuration — this pins
+    the arithmetic, not a state the service can reach.
+
+    Our wrapper is installed before register_llm, so tracked_ainvoke nests
+    strictly outside it and entry_count can never exceed our count for the
+    instance we wrapped. The only way to go positive is a SECOND registered
+    LLM whose calls we never saw, and there is none: page_extraction_llm and
+    judge_llm default to the same object (agent/service.py:249-252),
+    register_llm early-returns on a duplicate instance id
+    (tokens/service.py:337-339), and compaction_llm/fallback_llm are None.
+
+    Kept so that if a future Agent(...) kwarg introduces one, the number moves
+    and this test documents what it would mean."""
+    history = _History([_Item(1.0)], usage=_Usage(entry_count=5))
     diag = extract_agent_diagnostics(
         history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0]
     )
@@ -180,7 +214,7 @@ def test_coverage_gap_is_positive_when_calls_escaped_the_wrapper():
 def test_coverage_gap_is_negative_when_a_call_failed():
     """Failed calls return no usage (tokens/service.py:356 guards on
     `if result.usage:`), so we count them and entry_count does not. Benign."""
-    history = _History([_Item(1.0)], steps=1, usage=_Usage(entry_count=2))
+    history = _History([_Item(1.0)], usage=_Usage(entry_count=2))
     diag = extract_agent_diagnostics(
         history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0]
     )
@@ -190,7 +224,7 @@ def test_coverage_gap_is_negative_when_a_call_failed():
 def test_coverage_gap_is_none_when_usage_is_unavailable():
     """Not 0: "could not check" must never read as "coverage was perfect". None
     becomes an empty CSV cell, which trips the populated-on-all-rows gate."""
-    history = _History([_Item(1.0)], steps=1, usage=None)
+    history = _History([_Item(1.0)], usage=None)
     diag = extract_agent_diagnostics(
         history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0]
     )

@@ -41,6 +41,7 @@ Tests:
 
 import logging
 import sys
+import time
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1212,6 +1213,49 @@ class TestPhaseTimingsPayload:
             "agent_run_s", "postprocess_s",
         }
         assert all(v >= 0.0 for v in timings.values())
+
+    def test_queue_s_measures_the_wait_before_a_worker_picked_the_task_up(
+        self, workflow_harness
+    ):
+        """queue_s is the only span derived from a foreign dict plus a cast,
+        and it was the only one with no behavioural test. The harness's
+        task_processor is a MagicMock, so get_task_status(...).get(...) returned
+        a MagicMock, float() of it is 1.0, and queue_s came out around 1.78e9 —
+        which sailed past the `>= 0.0` assertion above."""
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+        workflow_harness.task_processor.get_task_status.return_value = {
+            "created_at": time.time() - 2.0
+        }
+
+        run_workflow(workflow_harness)
+
+        timings = workflow_harness.updates[-1][1]["results"]["summary"]["phase_timings"]
+        assert timings["queue_s"] == pytest.approx(2.0, abs=0.5)
+
+    def test_queue_s_is_zero_when_created_at_is_missing_or_null(self, workflow_harness):
+        """`.get(k, default)` does NOT cover a present-but-null key, and
+        float(None) raises. These two lines run before the try/except that
+        marks a task failed, so an exception here would strand the task as
+        "running" forever and leak one of max_concurrent_tasks."""
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+        workflow_harness.task_processor.get_task_status.return_value = {"created_at": None}
+
+        run_workflow(workflow_harness)
+
+        timings = workflow_harness.updates[-1][1]["results"]["summary"]["phase_timings"]
+        assert timings["queue_s"] == pytest.approx(0.0, abs=0.5)
+
+    def test_a_broken_task_row_does_not_fail_the_workflow(self, workflow_harness):
+        """The guard's whole point: a metric must never be able to strand a
+        task. A non-numeric created_at must degrade to 0.0, not propagate."""
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+        workflow_harness.task_processor.get_task_status.return_value = {"created_at": "n/a"}
+
+        run_workflow(workflow_harness)
+
+        result = workflow_harness.updates[-1][1]["results"]
+        assert result["summary"]["phase_timings"]["queue_s"] == 0.0
+        assert result["success"] is True
 
     def test_agent_run_span_mirrors_execution_time(self, workflow_harness):
         """agent_run_s must be the already-shipped execution_time, not a re-measure."""

@@ -39,8 +39,10 @@ Tests:
   - Metrics are recorded for a root workflow and skipped for a child
 """
 
+import asyncio
 import logging
 import sys
+import time
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -54,12 +56,13 @@ import pytest
 class FakeUsage:
     """Stands in for browser-use's UsageSummary."""
 
-    def __init__(self, prompt=100, completion=50, total=150, cached=10, cost=0.0021):
+    def __init__(self, prompt=100, completion=50, total=150, cached=10, cost=0.0021, entry_count=1):
         self.total_prompt_tokens = prompt
         self.total_completion_tokens = completion
         self.total_tokens = total
         self.total_prompt_cached_tokens = cached
         self.total_cost = cost
+        self.entry_count = entry_count
 
 
 class FakeActionResult:
@@ -117,9 +120,19 @@ class FakeAgent:
         self.run_calls = []
         self.result = FakeHistory()
         self.run_error = None
+        # How many times to fire on_step_end, mirroring the real Agent's
+        # `await on_step_end(self)` once per step (service.py:2460-2461).
+        self.steps_to_simulate = 1
+        # Snapshot at construction time. Reading llm.ainvoke later would also see
+        # a wrap applied afterwards; only this proves the LLM was already wrapped
+        # when Agent got it, which is what nests token tracking outside our timer.
+        self.llm_ainvoke_at_construction = getattr(kwargs.get("llm"), "ainvoke", None)
 
-    async def run(self, max_steps=None):
+    async def run(self, max_steps=None, on_step_end=None):
         self.run_calls.append(max_steps)
+        if on_step_end is not None:
+            for _ in range(self.steps_to_simulate):
+                await on_step_end(self)
         if self.run_error:
             raise self.run_error
         return self.result
@@ -133,11 +146,30 @@ class FakeSession:
         self.started = False
         self.llm_screenshot_size = None
         self.start_error = None
+        # Indexed elements the on_step_end DOM sampler will observe. A plain
+        # dict, so len() and truthiness are honest: reading it changes nothing,
+        # and an extra len(selector_map) or `if selector_map:` anywhere in the
+        # workflow — registration.py:1382-1385 does both on the real map —
+        # cannot shift what the sampler recorded.
+        self.selector_map = {}
+        # Per-step sizes, consumed in order by get_selector_map. The queue is
+        # what advances, not __len__ of the thing handed back. Empty means every
+        # step sees selector_map unchanged.
+        self.selector_map_sizes = []
+        self.selector_map_error = None
 
     async def start(self):
         if self.start_error:
             raise self.start_error
         self.started = True
+
+    async def get_selector_map(self):
+        if self.selector_map_error:
+            raise self.selector_map_error
+        if self.selector_map_sizes:
+            size = self.selector_map_sizes.pop(0)
+            return dict.fromkeys(range(size))
+        return self.selector_map
 
 
 class FakeClientConfig:
@@ -1143,3 +1175,201 @@ class TestHistoryFallbackExtraction:
 
         results = workflow_harness.updates[-1][1]["results"]["results"]
         assert any(r["element_id"] == "elem_1" for r in results)
+
+
+class TestPhaseTimingsPayload:
+    """The seven-span identify_s breakdown is only useful if it reaches the
+    summary. Everything downstream (backend merge, WorkflowMetrics, bench CSV)
+    reads these two keys by name, and WorkflowMetrics drops undeclared keys
+    silently — so a rename here surfaces as an empty column, not an error.
+    """
+
+    def _arm_dom(self, harness, sizes, error=None):
+        """Pre-load what get_selector_map() reports, one entry per agent step.
+
+        The sizes go into an explicit queue that get_selector_map pops, and each
+        step is handed a real dict of that size. Nothing here overrides __len__:
+        a dict subclass that advanced a counter from __len__ would also advance
+        it from `if selector_map:` (dict truthiness routes through __len__), so
+        any incidental read in the workflow would silently shift the asserted
+        max and median.
+        """
+        from browser_service.tasks import workflow as wf
+
+        original = wf.Agent.side_effect
+
+        def make_and_arm(**kwargs):
+            agent = original(**kwargs)
+            agent.steps_to_simulate = len(sizes) or 1
+            return agent
+
+        wf.Agent.side_effect = make_and_arm
+
+        session_factory = harness.browser_session_cls.side_effect
+
+        def make_and_arm_session(**kwargs):
+            session = session_factory(**kwargs)
+            session.selector_map_sizes = list(sizes)
+            session.selector_map_error = error
+            return session
+
+        harness.browser_session_cls.side_effect = make_and_arm_session
+
+    def test_summary_carries_all_five_service_side_spans(self, workflow_harness):
+        """submit_s and poll_wait_s are the backend's; these five are ours."""
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+
+        run_workflow(workflow_harness)
+
+        timings = workflow_harness.updates[-1][1]["results"]["summary"]["phase_timings"]
+        assert set(timings) == {
+            "queue_s",
+            "session_setup_s",
+            "agent_setup_s",
+            "agent_run_s",
+            "postprocess_s",
+        }
+        assert all(v >= 0.0 for v in timings.values())
+
+    def test_queue_s_measures_the_wait_before_a_worker_picked_the_task_up(self, workflow_harness):
+        """queue_s is the only span derived from a foreign dict plus a cast,
+        and it was the only one with no behavioural test. The harness's
+        task_processor is a MagicMock, so get_task_status(...).get(...) returned
+        a MagicMock, float() of it is 1.0, and queue_s came out around 1.78e9 —
+        which sailed past the `>= 0.0` assertion above."""
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+        workflow_harness.task_processor.get_task_status.return_value = {
+            "created_at": time.time() - 2.0
+        }
+
+        run_workflow(workflow_harness)
+
+        timings = workflow_harness.updates[-1][1]["results"]["summary"]["phase_timings"]
+        assert timings["queue_s"] == pytest.approx(2.0, abs=0.5)
+
+    def test_queue_s_is_zero_when_created_at_is_missing_or_null(self, workflow_harness):
+        """`.get(k, default)` does NOT cover a present-but-null key, and
+        float(None) raises. These two lines run before the try/except that
+        marks a task failed, so an exception here would strand the task as
+        "running" forever and leak one of max_concurrent_tasks."""
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+        workflow_harness.task_processor.get_task_status.return_value = {"created_at": None}
+
+        run_workflow(workflow_harness)
+
+        timings = workflow_harness.updates[-1][1]["results"]["summary"]["phase_timings"]
+        assert timings["queue_s"] == pytest.approx(0.0, abs=0.5)
+
+    def test_a_broken_task_row_does_not_fail_the_workflow(self, workflow_harness):
+        """The guard's whole point: a metric must never be able to strand a
+        task. A non-numeric created_at must degrade to 0.0, not propagate."""
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+        workflow_harness.task_processor.get_task_status.return_value = {"created_at": "n/a"}
+
+        run_workflow(workflow_harness)
+
+        result = workflow_harness.updates[-1][1]["results"]
+        assert result["summary"]["phase_timings"]["queue_s"] == 0.0
+        assert result["success"] is True
+
+    def test_agent_run_span_mirrors_execution_time(self, workflow_harness):
+        """agent_run_s must be the already-shipped execution_time, not a re-measure."""
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+
+        run_workflow(workflow_harness)
+
+        results = workflow_harness.updates[-1][1]["results"]
+        assert results["summary"]["phase_timings"]["agent_run_s"] == pytest.approx(
+            round(results["execution_time"], 3)
+        )
+
+    def test_dom_samples_are_collected_once_per_step(self, workflow_harness):
+        """The on_step_end hook is what prices cross_origin_iframes=True."""
+        self._arm_dom(workflow_harness, [100, 2143, 1876])
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+
+        run_workflow(workflow_harness)
+
+        diag = workflow_harness.updates[-1][1]["results"]["summary"]["agent_diagnostics"]
+        assert diag["dom_elements_max"] == 2143
+        assert diag["dom_elements_median"] == 1876
+
+    def test_reading_the_sampled_map_again_does_not_shift_the_samples(self):
+        """What the fake hands back must be inert. The sampler is the only thing
+        that advances the queue; measuring the same map twice — which the real
+        workflow does at registration.py:1382-1385 via `if selector_map:` and
+        `len(selector_map)` — must not consume a step's sample."""
+        session = FakeSession()
+        session.selector_map_sizes = [7, 99]
+
+        first = asyncio.run(session.get_selector_map())
+        assert [len(first), bool(first), len(first)] == [7, True, 7]
+
+        second = asyncio.run(session.get_selector_map())
+        assert len(second) == 99
+        assert session.selector_map_sizes == []
+
+    def test_a_dom_sampler_failure_does_not_fail_the_step_or_the_workflow(
+        self, workflow_harness, caplog
+    ):
+        """The hook runs inside browser-use's step loop, which awaits it without
+        a guard of its own (agent/service.py:2460-2461) — an exception here would
+        propagate into _execute_step and break the run. It must degrade to "not
+        measured" instead, and say so: dom_elements_max = 0 otherwise reads as
+        "the page had zero indexed elements" rather than "the sampler broke".
+        """
+        self._arm_dom(workflow_harness, [], error=RuntimeError("selector map gone"))
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+
+        with caplog.at_level(logging.DEBUG, logger="browser_service.tasks.workflow"):
+            run_workflow(workflow_harness)
+
+        result = workflow_harness.updates[-1][1]["results"]
+        assert result["success"] is True
+        assert result["summary"]["agent_diagnostics"]["dom_elements_max"] == 0
+        assert "DOM sampling failed for this step" in caplog.text
+
+    def test_summary_carries_agent_diagnostics(self, workflow_harness):
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+
+        run_workflow(workflow_harness)
+
+        diag = workflow_harness.updates[-1][1]["results"]["summary"]["agent_diagnostics"]
+        assert set(diag) == {
+            "dom_elements_max",
+            "dom_elements_median",
+            "llm_429_count",
+            "retry_lost_s",
+            "llm_total_s",
+            "llm_max_s",
+            "llm_calls_actual",
+            "steps_total_s",
+            "llm_coverage_gap",
+        }
+        assert diag["llm_429_count"] == 0
+
+    def test_llm_is_timed_before_the_agent_is_constructed(self, workflow_harness):
+        """Agent.__init__ -> register_llm (agent/service.py:419) captures whatever
+        ainvoke is at that moment. Wrapping after would put browser-use's token
+        bookkeeping inside our timer instead of outside it."""
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+
+        run_workflow(workflow_harness)
+
+        wrapped = workflow_harness.agent.llm_ainvoke_at_construction
+        assert wrapped is not None
+        assert wrapped.__name__ == "timed_ainvoke"
+
+    def test_summary_carries_the_llm_split_fields(self, workflow_harness):
+        arm(
+            workflow_harness,
+            [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])],
+            usage=FakeUsage(entry_count=0),
+        )
+
+        run_workflow(workflow_harness)
+
+        diag = workflow_harness.updates[-1][1]["results"]["summary"]["agent_diagnostics"]
+        assert diag["llm_total_s"] == 0.0  # the fake agent never calls ainvoke
+        assert diag["llm_calls_actual"] == 0
+        assert diag["llm_coverage_gap"] == 0  # 0 tracked - 0 ours

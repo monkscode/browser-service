@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import re
+import statistics
 import time
 
 import structlog
@@ -196,6 +197,200 @@ def _extract_from_result_lines(text: str) -> List[str]:
     return results
 
 
+def summarize_dom_samples(samples: list[int]) -> tuple[int, int]:
+    """(max, median) indexed-element counts across agent steps.
+
+    Prices cross_origin_iframes=True, which indexes 2000+ elements on some pages
+    and whose token cost has never been measured.
+    """
+    if not samples:
+        return (0, 0)
+    return (max(samples), int(statistics.median(samples)))
+
+
+def instrument_llm_timing(llm) -> list[float]:
+    """Wrap llm.ainvoke to record each model call's wall clock.
+
+    Returns the list it appends to — one entry per ainvoke, NOT per API call.
+    That distinction matters in one direction only. browser-use's empty-action
+    retry calls ainvoke a second time (agent/service.py:1655), so that retry
+    does get its own entry. But ChatGoogle.ainvoke also retries internally
+    (llm/google/chat.py:475-490), and those attempts are invisible here: they
+    happen inside a single entry, and their backoff sleeps are counted as part
+    of that call's duration.
+
+    That inner loop is narrower than it looks, and it does NOT hide 429s.
+    Measured against browser-use 0.12.6 by driving the real ainvoke with a
+    stubbed client:
+      - A provider 429 makes 1 API call and 0 backoff sleeps. The raw provider
+        exception is not a ModelProviderError, so the loop's retry branch never
+        matches it; the `except Exception` branch converts it to
+        ModelProviderError(429) and re-raises unconditionally. It reaches
+        _handle_step_error and lands in history as ActionResult(error=...),
+        which is what extract_agent_diagnostics counts.
+      - A parse or empty-response failure on the structured-output path — the
+        agent's main path — is raised by _make_api_call itself as
+        ModelProviderError(500), which IS retryable: 5 API calls and 4 backoff
+        sleeps (~1/2/4/9s, ~16s total) inside one entry.
+    So a single entry whose duration exceeds ~15s is that case. llm_max_s is
+    the detector; there is no separate counter for it.
+
+    The list is per-instance and closure-local by construction: the service
+    runs up to config.max_concurrent_tasks workflows in a ThreadPoolExecutor,
+    each with its own llm_instance and Agent. Module-level state would
+    cross-contaminate them.
+
+    Call this BEFORE Agent(...) is constructed. Agent.__init__ hands the instance
+    to register_llm (browser_use/agent/service.py:419), which captures whatever
+    ainvoke is at that moment — so browser-use's token bookkeeping nests OUTSIDE
+    this timer and is excluded from what we measure.
+
+    Mirrors browser-use's own wrapping pattern, signature included
+    (browser_use/tokens/service.py:345-371), so positional and keyword callers
+    both keep working.
+
+    Records in a finally and catches nothing: a timed-out or cancelled call still
+    burned wall clock, and swallowing the exception would change agent behaviour.
+    """
+    durations: list[float] = []
+    original = llm.ainvoke
+
+    async def timed_ainvoke(messages, output_format=None, **kwargs):
+        started = time.perf_counter()
+        try:
+            return await original(messages, output_format, **kwargs)
+        finally:
+            durations.append(time.perf_counter() - started)
+
+    setattr(llm, "ainvoke", timed_ainvoke)
+    return durations
+
+
+# The phrase indicators browser-use itself uses to classify a provider error as
+# 429 (llm/google/chat.py:512-516), matched the same way — lowercased. Matching
+# only the literal "RESOURCE_EXHAUSTED" token missed every provider that phrases
+# the quota error differently, and a miss reads as llm_429_count = 0, i.e. "no
+# rate limiting", which is the false-clean this metric exists to prevent.
+#
+# browser-use's list also carries a bare "429". Ours deliberately does not:
+# browser-use applies its list only to provider error text, whereas this runs
+# against every ActionResult.error, and tool failures quote the element index —
+# "Element index 429 not available" (tools/service.py:623). On a page indexing
+# 2000+ elements, which is exactly what this instrumentation exists to price,
+# index 429 is unremarkable, and the bare token would charge that step's whole
+# duration to retry_lost_s.
+#
+# Dropping it costs no recall on what this project actually sees. Both real
+# Vertex 429 shapes in logs/ carry a phrase: "429 RESOURCE_EXHAUSTED. {'error':
+# … 'status': 'RESOURCE_EXHAUSTED'}}" and "429 Too Many Requests' for url
+# 'https://aiplatform.googleapis.com/…'".
+_RATE_LIMIT_INDICATORS = (
+    "rate limit",
+    "resource exhausted",
+    "resource_exhausted",
+    "quota exceeded",
+    "too many requests",
+)
+
+
+def _is_rate_limit_error(error) -> bool:
+    if not error:
+        return False
+    lowered = str(error).lower()
+    return any(indicator in lowered for indicator in _RATE_LIMIT_INDICATORS)
+
+
+def extract_agent_diagnostics(
+    agent_result, dom_samples: list[int], llm_durations: list[float] | None = None
+) -> dict:
+    """DOM size, 429 cost, and the LLM / non-LLM split of agent_run_s.
+
+    Never raises: instrumentation must not break the pipeline it measures. A
+    malformed history yields zeros, which read as "not measured" downstream.
+
+    429s are counted here rather than scraped from logs/browser_use.log, which
+    accumulates across days and makes a raw count meaningless. Counting them
+    off the history is sound because ChatGoogle does not retry a 429 — it
+    converts the provider error and re-raises on the first attempt, so every
+    429 fails its step and appears as an ActionResult.error. See
+    instrument_llm_timing for the measured evidence and for the one failure
+    class ChatGoogle DOES retry.
+
+    retry_lost_s sums the duration of steps that failed on a rate limit — the
+    work the agent has to redo on a later step. It is not backoff time; no
+    backoff happens for a 429 (see above), and the ~16s a retried parse failure
+    does spend sleeping lands in llm_total_s, not here.
+
+    Raw measurements only. step_non_llm_s (= steps_total_s - llm_total_s) and
+    agent_overhead_s (= agent_run_s - steps_total_s) are derived at analysis
+    time, so a wrong relationship shows up instead of being baked in.
+
+    llm_coverage_gap is the instrument checking itself, but read it carefully.
+    entry_count is len(usage_history) (tokens/service.py:456), and that list is
+    appended to ONLY under `if result.usage:` inside tracked_ainvoke
+    (tokens/service.py:356) — so it counts successful calls that reported usage,
+    not calls. Ours counts every ainvoke, failures included, and our wrapper is
+    installed BEFORE register_llm, so tracked_ainvoke nests strictly outside it.
+
+    Therefore the gap is <= 0 by construction while one LLM instance is
+    registered:
+      - 0  — every call returned usage metadata.
+      - negative — that many calls raised or came back without usage. Benign
+        and expected; it is NOT an alarm, and total_llm_calls should still use
+        llm_calls_actual, which is the honest count of ainvoke calls made. Not
+        of API calls — a provider-side parse retry makes up to 5 API calls
+        inside one ainvoke; see instrument_llm_timing.
+      - positive — a second LLM instance got registered and we never saw its
+        calls. Unreachable today: page_extraction_llm and judge_llm both
+        default to the same object (service.py:249-252), register_llm
+        early-returns on a duplicate instance id (tokens/service.py:337-339),
+        and compaction_llm/fallback_llm are None. Kept as a guard against a
+        future Agent(...) kwarg change.
+    """
+    dom_max, dom_median = summarize_dom_samples(dom_samples)
+    # `is not None`, never truthiness: an empty list means "wrapped, zero calls",
+    # which is a measurement, not a missing one.
+    calls = llm_durations if llm_durations is not None else []
+    diagnostics = {
+        "dom_elements_max": dom_max,
+        "dom_elements_median": dom_median,
+        "llm_429_count": 0,
+        "retry_lost_s": 0.0,
+        "llm_total_s": round(sum(calls), 3),
+        "llm_max_s": round(max(calls, default=0.0), 3),
+        "llm_calls_actual": len(calls),
+        "steps_total_s": 0.0,
+        # None, not 0: "we could not check coverage" must never read as
+        # "coverage was perfect". An empty CSV cell is the alarm.
+        "llm_coverage_gap": None,
+    }
+    if agent_result is None:
+        return diagnostics
+    try:
+        count = 0
+        lost = 0.0
+        steps_total = 0.0
+        for item in getattr(agent_result, "history", []) or []:
+            meta = getattr(item, "metadata", None)
+            duration = float(getattr(meta, "duration_seconds", 0.0) or 0.0)
+            steps_total += duration
+            if any(
+                _is_rate_limit_error(getattr(r, "error", None))
+                for r in getattr(item, "result", None) or []
+            ):
+                count += 1
+                lost += duration
+        diagnostics["llm_429_count"] = count
+        diagnostics["retry_lost_s"] = round(lost, 3)
+        diagnostics["steps_total_s"] = round(steps_total, 3)
+        entry_count = getattr(getattr(agent_result, "usage", None), "entry_count", None)
+        if entry_count is not None and llm_durations is not None:
+            diagnostics["llm_coverage_gap"] = int(entry_count) - len(calls)
+    except Exception as e:  # never break the pipeline for a metric
+        logger.warning(f"Agent diagnostics extraction failed (suppressed): {e}")
+    return diagnostics
+
+
 def _extract_all_element_jsons(text: str) -> List[str]:
     """
     Extract all JSON objects containing element_id from text.
@@ -306,6 +501,23 @@ def process_workflow_task(
         },
     )
 
+    # Time this task spent queued before a worker picked it up. update_task
+    # merges, so created_at (processor.py:88/:131) survives the started_at write.
+    #
+    # Wrapped because these two lines run BEFORE the try/except that marks a
+    # task failed: an exception here escapes the worker callable entirely, so
+    # the task stays "running" forever, is never TTL-evicted (_evict_completed
+    # only removes completed rows) and permanently consumes one of
+    # max_concurrent_tasks. A metric must never be able to do that. `.get(k, d)`
+    # alone is not enough — it returns None for a present-but-null key, and
+    # float(None) raises.
+    try:
+        _task_row = task_processor.get_task_status(task_id) or {}
+        queue_s = max(0.0, time.time() - float(_task_row.get("created_at") or time.time()))
+    except Exception as e:
+        logger.warning(f"queue_s measurement failed (suppressed): {e}")
+        queue_s = 0.0
+
     logger.info(f"🚀 Starting WORKFLOW MODE for task {task_id}")
     logger.info(f"   Elements: {len(elements)}")
     logger.info(f"   URL: {url}")
@@ -344,6 +556,7 @@ def process_workflow_task(
 
         try:
             # Initialize browser session ONCE
+            _t_session = time.perf_counter()
             logger.info("🌐 Initializing browser session...")
 
             # CRITICAL: Set explicit viewport for consistent coordinates
@@ -402,6 +615,8 @@ def process_workflow_task(
             logger.info("🚀 Starting browser session...")
             await session.start()
             logger.info("✅ Browser session started successfully")
+            session_setup_s = time.perf_counter() - _t_session
+            _t_agent_setup = time.perf_counter()
 
             # Capture browser PID immediately — Chrome is guaranteed alive here.
             # Must happen BEFORE agent.run() because browser-use fires
@@ -491,6 +706,14 @@ def process_workflow_task(
                     thinking_budget=0,
                 )
                 logger.info(f"🔑 Using Gemini API: model={config.llm.google_model}")
+
+            # Wrap BEFORE Agent(...): Agent.__init__ hands this instance to
+            # register_llm (agent/service.py:419), which captures whatever
+            # ainvoke is then — so token accounting nests outside this timer.
+            # One wrap covers every path: page_extraction_llm defaults to the
+            # same object (service.py:249-250), compaction_llm falls back to it
+            # (service.py:1156), and judge_llm is never invoked (use_judge=False).
+            llm_durations = instrument_llm_timing(llm_instance)
 
             use_vision = _resolve_use_vision(config.agent_vision_mode, enable_custom_actions_flag)
             agent = Agent(
@@ -584,11 +807,37 @@ def process_workflow_task(
             else:
                 logger.info("⚠️ Agent has no tools registered")
 
+            agent_setup_s = time.perf_counter() - _t_agent_setup
+
+            dom_samples: list[int] = []
+
+            async def _on_step_end(_agent):
+                # get_selector_map() is a cache read (session.py:2569-2584) —
+                # no CDP call, so this cannot inflate agent_run_s. The unused
+                # parameter is required by AgentHookFunc (agent/service.py:128).
+                try:
+                    dom_samples.append(len(await session.get_selector_map()))
+                except Exception as e:
+                    # A metric must never fail a step — but it must not fail
+                    # silently either: an empty sample list yields
+                    # dom_elements_max = 0, which reads as "the page had zero
+                    # indexed elements" rather than "the sampler broke".
+                    logger.debug(f"DOM sampling failed for this step (suppressed): {e}")
+
             start_time = time.time()
             try:
-                agent_result = await agent.run(max_steps=dynamic_max_steps)
+                agent_result = await agent.run(
+                    max_steps=dynamic_max_steps, on_step_end=_on_step_end
+                )
             finally:
                 execution_time = time.time() - start_time
+                # Start postprocess_s HERE, not after the teardown: _pw_teardown
+                # is browser.close() + playwright.stop() (agent/registration.py),
+                # and stop() terminates the node driver subprocess, which is not
+                # free. Timing it after would leave that window in no phase at
+                # all, and the whole point of this breakdown is that the spans
+                # account for identify_s rather than leaving unexplained residue.
+                _t_postprocess = time.perf_counter()
                 teardown = getattr(agent, "_pw_teardown", None)
                 if teardown:
                     try:
@@ -2037,6 +2286,8 @@ def process_workflow_task(
                     }
                     element_approach_metrics.append(approach_entry)
 
+            postprocess_s = time.perf_counter() - _t_postprocess
+
             return {
                 "success": all_found,  # Changed from 'successful > 0' to require ALL elements found
                 "workflow_mode": True,
@@ -2061,6 +2312,18 @@ def process_workflow_task(
                     "actual_cost": token_usage["actual_cost"],
                     # Per-element approach metrics for pattern analysis
                     "element_approach_metrics": element_approach_metrics,
+                    # identify_s phase breakdown (2026-07-26 efficiency check).
+                    # The backend adds submit_s and poll_wait_s on its side.
+                    "phase_timings": {
+                        "queue_s": round(queue_s, 3),
+                        "session_setup_s": round(session_setup_s, 3),
+                        "agent_setup_s": round(agent_setup_s, 3),
+                        "agent_run_s": round(execution_time, 3),
+                        "postprocess_s": round(postprocess_s, 3),
+                    },
+                    "agent_diagnostics": extract_agent_diagnostics(
+                        agent_result, dom_samples, llm_durations
+                    ),
                 },
                 "validation_summary": validation_summary,  # Add validation summary to results
                 "execution_time": execution_time,

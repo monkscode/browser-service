@@ -211,8 +211,31 @@ def summarize_dom_samples(samples: list[int]) -> tuple[int, int]:
 def instrument_llm_timing(llm) -> list[float]:
     """Wrap llm.ainvoke to record each model call's wall clock.
 
-    Returns the list it appends to — one entry per call, retries included.
-    That list is per-instance and closure-local by construction: the service
+    Returns the list it appends to — one entry per ainvoke, NOT per API call.
+    That distinction matters in one direction only. browser-use's empty-action
+    retry calls ainvoke a second time (agent/service.py:1655), so that retry
+    does get its own entry. But ChatGoogle.ainvoke also retries internally
+    (llm/google/chat.py:475-490), and those attempts are invisible here: they
+    happen inside a single entry, and their backoff sleeps are counted as part
+    of that call's duration.
+
+    That inner loop is narrower than it looks, and it does NOT hide 429s.
+    Measured against browser-use 0.12.6 by driving the real ainvoke with a
+    stubbed client:
+      - A provider 429 makes 1 API call and 0 backoff sleeps. The raw provider
+        exception is not a ModelProviderError, so the loop's retry branch never
+        matches it; the `except Exception` branch converts it to
+        ModelProviderError(429) and re-raises unconditionally. It reaches
+        _handle_step_error and lands in history as ActionResult(error=...),
+        which is what extract_agent_diagnostics counts.
+      - A parse or empty-response failure on the structured-output path — the
+        agent's main path — is raised by _make_api_call itself as
+        ModelProviderError(500), which IS retryable: 5 API calls and 4 backoff
+        sleeps (~1/2/4/9s, ~16s total) inside one entry.
+    So a single entry whose duration exceeds ~15s is that case. llm_max_s is
+    the detector; there is no separate counter for it.
+
+    The list is per-instance and closure-local by construction: the service
     runs up to config.max_concurrent_tasks workflows in a ThreadPoolExecutor,
     each with its own llm_instance and Agent. Module-level state would
     cross-contaminate them.
@@ -286,7 +309,17 @@ def extract_agent_diagnostics(
     malformed history yields zeros, which read as "not measured" downstream.
 
     429s are counted here rather than scraped from logs/browser_use.log, which
-    accumulates across days and makes a raw count meaningless.
+    accumulates across days and makes a raw count meaningless. Counting them
+    off the history is sound because ChatGoogle does not retry a 429 — it
+    converts the provider error and re-raises on the first attempt, so every
+    429 fails its step and appears as an ActionResult.error. See
+    instrument_llm_timing for the measured evidence and for the one failure
+    class ChatGoogle DOES retry.
+
+    retry_lost_s sums the duration of steps that failed on a rate limit — the
+    work the agent has to redo on a later step. It is not backoff time; no
+    backoff happens for a 429 (see above), and the ~16s a retried parse failure
+    does spend sleeping lands in llm_total_s, not here.
 
     Raw measurements only. step_non_llm_s (= steps_total_s - llm_total_s) and
     agent_overhead_s (= agent_run_s - steps_total_s) are derived at analysis
@@ -304,7 +337,9 @@ def extract_agent_diagnostics(
       - 0  — every call returned usage metadata.
       - negative — that many calls raised or came back without usage. Benign
         and expected; it is NOT an alarm, and total_llm_calls should still use
-        llm_calls_actual, which is the honest count of API calls made.
+        llm_calls_actual, which is the honest count of ainvoke calls made. Not
+        of API calls — a provider-side parse retry makes up to 5 API calls
+        inside one ainvoke; see instrument_llm_timing.
       - positive — a second LLM instance got registered and we never saw its
         calls. Unreachable today: page_extraction_llm and judge_llm both
         default to the same object (service.py:249-252), register_llm

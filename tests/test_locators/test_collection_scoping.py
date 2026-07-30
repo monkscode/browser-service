@@ -54,6 +54,22 @@ async def page():
             await browser.close()
 
 
+@pytest.fixture
+async def truncated_page():
+    """books.toscrape's real shape — full title in the attribute, truncated
+    text node. The collection_scoping fixture renders titles in full, which is
+    why its tests passed while the live page failed."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        ctx = await browser.new_context(viewport={"width": 1280, "height": 900})
+        page_obj = await ctx.new_page()
+        await page_obj.goto((FIXTURES_DIR / "collection_truncated_render.html").resolve().as_uri())
+        try:
+            yield page_obj
+        finally:
+            await browser.close()
+
+
 async def _matched_texts(page, locator: str) -> list:
     loc = page.locator(locator)
     return [((await loc.nth(i).text_content()) or "").strip() for i in range(await loc.count())]
@@ -89,6 +105,34 @@ async def test_truncated_beacon_prefix_match(page):
     result = await _find_collection_by_text_traversal(page, "A Light in the ...")
     assert result is not None
     assert result["count"] == 4
+
+
+async def test_full_title_resolves_when_the_page_renders_it_truncated(truncated_page):
+    """The q10 production failure. The page shows 'A Light in the ...' and
+    carries the full title only in the title attribute, so neither the exact
+    nor the substring lookup matches what the agent reported. Before the
+    prefix retry this returned None and the chain answered with
+    [title="A Light in the Attic"] — one book, asserted against twenty."""
+    result = await _find_collection_by_text_traversal(truncated_page, "A Light in the Attic")
+    assert result is not None
+    assert result["locator"] == "ol > li"
+    assert result["count"] == 4
+
+
+async def test_truncated_form_still_resolves_on_the_same_page(truncated_page):
+    """The form that already passed in production must not regress."""
+    result = await _find_collection_by_text_traversal(truncated_page, "A Light in the ...")
+    assert result is not None
+    assert result["count"] == 4
+
+
+async def test_prefix_retry_does_not_invent_a_collection(truncated_page):
+    """A beacon that matches nothing on the page must still fail closed —
+    the retry may only rescue text that is really there."""
+    assert (
+        await _find_collection_by_text_traversal(truncated_page, "Some Book That Is Not Here")
+        is None
+    )
 
 
 async def test_flex_grow_is_not_a_row_container(page):

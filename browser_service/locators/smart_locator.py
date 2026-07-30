@@ -4235,7 +4235,16 @@ async def find_unique_locator_at_coordinates(
     # ========================================
     # This is the MOST RELIABLE approach - uses the actual text AI sees
     # (only runs if not a table-row scenario, or if table-row detection failed)
-    if expected_text and expected_text.strip():
+    #
+    # NEVER on a collection request: a text-first locator matches ONE element
+    # by its own text, so it cannot represent a collection — it pins a single
+    # item. Bench q10 ("get the titles of all books ... verify there are 20")
+    # came back as [title="A Light in the Attic"], 1 match, asserted against
+    # 20. Across the captured corpus text_first answers a collection request
+    # 10 times at a 40% pass rate, against 94% (element_data) and 93%
+    # (accessibility). Skipping it strands nothing: semantic, the
+    # accessibility API and the 21 coordinate strategies all still run below.
+    if expected_text and expected_text.strip() and not is_collection_request:
         logger.info(f"🔍 Step 1: Trying TEXT-FIRST locators from expected_text: '{expected_text}'")
 
         text_result = await _find_element_by_expected_text(
@@ -4346,6 +4355,11 @@ async def find_unique_locator_at_coordinates(
             }
         else:
             logger.info("⚠️ TEXT-FIRST approach failed - trying table cell locators")
+    elif is_collection_request:
+        logger.info(
+            "   ⏭️ Collection request - skipping TEXT-FIRST (a single-element "
+            "locator cannot represent a collection)"
+        )
     else:
         logger.info("⚠️ No expected_text provided - skipping TEXT-FIRST approach")
 

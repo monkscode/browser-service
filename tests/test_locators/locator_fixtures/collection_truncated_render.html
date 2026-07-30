@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>truncated render</title></head>
+<body>
+<!-- books.toscrape's real shape: the anchor carries the FULL title in its
+     title attribute while the rendered text node is TRUNCATED with a literal
+     ellipsis. browser-use reports either form depending on the run, so the
+     beacon lookup must resolve both. Verified against the live site via the
+     captured q10 traces (workflow 0972608d failed on the full title,
+     e2ab3c90 passed on the truncated one). -->
+<div class="page_inner">
+  <div class="row">
+    <aside class="sidebar col-sm-4">
+      <div class="col-xs-6 sidebar-promo"><a href="#">sidebar promo latest arrivals</a></div>
+    </aside>
+    <div class="col-sm-8">
+      <ol class="row">
+        <li class="col-xs-6 col-sm-4"><article class="product_pod"><h3><a href="c/1" title="A Light in the Attic">A Light in the ...</a></h3></article></li>
+        <li class="col-xs-6 col-sm-4"><article class="product_pod"><h3><a href="c/2" title="Tipping the Velvet">Tipping the Velvet</a></h3></article></li>
+        <li class="col-xs-6 col-sm-4"><article class="product_pod"><h3><a href="c/3" title="Sapiens: A Brief History of Humankind">Sapiens: A Brief Histo ...</a></h3></article></li>
+        <li class="col-xs-6 col-sm-4"><article class="product_pod"><h3><a href="c/4" title="The Boys in the Boat: Nine Americans and Their Epic Quest">The Boys in the Boat ...</a></h3></article></li>
+      </ol>
+    </div>
+  </div>
+</div>
+</body>
+</html>

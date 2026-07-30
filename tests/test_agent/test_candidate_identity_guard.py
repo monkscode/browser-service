@@ -102,7 +102,10 @@ class FakeLocator:
     def nth(self, i: int) -> "FakeLocator":
         return FakeLocator(1, self._resolved)
 
-    async def evaluate(self, js: str):
+    async def evaluate(self, js: str, arg=None, *, timeout: float = None):
+        # `timeout` mirrors Playwright's Locator.evaluate signature — the
+        # identity read passes it to bound the detached-node race. A fake that
+        # omits it would TypeError on the real call shape.
         if self._evaluate_raises:
             raise RuntimeError("Element is not attached to the DOM")
         if self._evaluate_returns is not None and "labelledbyText" not in js:
@@ -259,6 +262,43 @@ class TestIdentityGateBoundaries:
         page = FakePage({"id=go": FakeLocator(1, resolved)})
         result = await _call(page, candidate_locator="id=go", expected_text=None, element_data=None)
         assert result["all_locators"][0]["type"] == "candidate"
+
+    @pytest.mark.asyncio
+    async def test_absent_element_data_now_describes_from_the_resolved_read(self):
+        """Behaviour EXPANSION, pinned here because it was previously silent.
+
+        Before the guard, element_data=None meant element_info={} and no
+        Tier-0 stamp at all — the composer/idiom routing starved exactly as
+        E1 described. The resolved read is now an independent source of DOM
+        evidence, so this path can describe and stamp without element_data.
+        element_data_available stays False because it reports what browser-use
+        supplied, which is genuinely nothing; element_tag reports the element
+        being RETURNED. Both are accurate, and the cascade path computes
+        element_data_available the same way (smart_locator.py).
+        """
+        resolved = {
+            "id": "from_date",
+            "tagName": "input",
+            "textContent": "",
+            "className": "form-control flatpickr-input",
+            "type": "text",
+        }
+        page = FakePage({"id=from_date": FakeLocator(1, resolved)})
+        result = await _call(
+            page,
+            candidate_locator="id=from_date",
+            expected_text=None,
+            element_data=None,
+            element_description="the from-date field",
+        )
+
+        assert result["all_locators"][0]["type"] == "candidate"
+        assert result["element_info"]["source"] == "candidate_resolved_element"
+        assert result["element_info"]["className"] == "form-control flatpickr-input"
+        assert result["element_type"] == "date-picker"
+        assert result["datepicker_framework"] == "flatpickr"
+        assert result["approach_metrics"]["element_data_available"] is False
+        assert result["approach_metrics"]["element_tag"] == "input"
 
     @pytest.mark.asyncio
     async def test_unreadable_element_falls_back_to_element_data(self):

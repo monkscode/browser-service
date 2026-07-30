@@ -70,16 +70,30 @@ _RESOLVED_ELEMENT_JS = """el => ({
 })"""
 
 
-async def _read_resolved_element(search_root, locator: str) -> Optional[Dict[str, Any]]:
+# The read runs immediately after count()==1, so the element exists and the
+# evaluate is ~2ms. This bound only engages when the node vanishes in between
+# — a race in which Playwright's default would WAIT 30 seconds, six times the
+# entire cascade budget (custom_action_timeout, 5s), on a code path that sits
+# OUTSIDE the asyncio.wait_for guarding STEP 2 and is therefore unbounded
+# otherwise. Timing out is safe by construction: it yields None, which is
+# "unknown", which leaves the pre-existing accept untouched.
+_RESOLVED_READ_TIMEOUT_MS = 2000
+
+
+async def _read_resolved_element(
+    search_root, locator: str, timeout_ms: int = _RESOLVED_READ_TIMEOUT_MS
+) -> Optional[Dict[str, Any]]:
     """Read the element ``locator`` resolves to — what we are about to accept.
 
     Returns None when the element cannot be read (detached node, exotic
-    selector engine). Callers must treat None as "unknown", never as
-    "mismatch": this read exists to make the accept honest, and must never
-    turn a working accept into a found=false.
+    selector engine, or the bounded wait expiring). Callers must treat None as
+    "unknown", never as "mismatch": this read exists to make the accept honest,
+    and must never turn a working accept into a found=false.
     """
     try:
-        resolved = await search_root.locator(locator).evaluate(_RESOLVED_ELEMENT_JS)
+        resolved = await search_root.locator(locator).evaluate(
+            _RESOLVED_ELEMENT_JS, timeout=timeout_ms
+        )
     except Exception as e:
         logger.warning(f"   ⚠️ Could not read resolved element for '{locator}': {e}")
         return None

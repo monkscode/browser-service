@@ -30,6 +30,7 @@ Run: pytest tests/test_integration/test_resolved_element_js.py -m integration -v
 """
 
 import contextlib
+import time
 
 import pytest
 from playwright.async_api import async_playwright
@@ -215,3 +216,30 @@ class TestUnreadableDegradesToNone:
         assert resolved is None
         # None is UNKNOWN, never a mismatch.
         assert _identity_mismatch({"tagName": "li", "id": ""}, None) == ""
+
+    @pytest.mark.asyncio
+    async def test_detached_between_count_and_read_is_bounded(self):
+        """The accept path calls count() then this read. If the node goes away
+        in between, Locator.evaluate would otherwise WAIT — Playwright's
+        default is 30s, six times the whole cascade budget
+        (custom_action_timeout, 5s), and STEP 1 sits outside the
+        asyncio.wait_for that bounds STEP 2. Verified live: unbounded, this
+        stalls the full 30s.
+        """
+        async with _page('<button id="go">Go</button>') as page:
+            assert await page.locator("#go").count() == 1
+            await page.evaluate("document.getElementById('go').remove()")
+
+            started = time.monotonic()
+            resolved = await _read_resolved_element(page, "#go", timeout_ms=400)
+            elapsed = time.monotonic() - started
+
+        assert resolved is None
+        assert elapsed < 5.0, f"read was not bounded: {elapsed:.1f}s"
+
+    @pytest.mark.asyncio
+    async def test_bound_does_not_affect_a_present_element(self):
+        async with _page('<button id="go" class="b">Go</button>') as page:
+            resolved = await _read_resolved_element(page, "#go", timeout_ms=400)
+        assert resolved is not None
+        assert resolved["tagName"] == "button"

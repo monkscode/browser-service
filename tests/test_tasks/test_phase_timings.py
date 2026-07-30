@@ -79,7 +79,11 @@ def test_every_indicator_browser_use_uses_is_counted(message):
     RESOURCE_EXHAUSTED token missed the rest, and a miss reads as
     llm_429_count = 0 — "no rate limiting" — which is the false-clean this
     metric exists to prevent. The bench is pinned to Vertex, not the Gemini
-    Developer API, so the wording is not ours to assume."""
+    Developer API, so the wording is not ours to assume.
+
+    The five here are the phrase indicators. browser-use's list also carries a
+    bare "429", which ours deliberately drops — see
+    test_an_element_index_that_happens_to_be_429_is_not_a_rate_limit."""
     diag = extract_agent_diagnostics(_History([_Item(1.5, error=message)]), dom_samples=[])
     assert diag["llm_429_count"] == 1
     assert diag["retry_lost_s"] == pytest.approx(1.5)
@@ -91,6 +95,54 @@ def test_an_ordinary_error_is_not_counted_as_a_429():
     )
     assert diag["llm_429_count"] == 0
     assert diag["retry_lost_s"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # tools/service.py:623 and :1548 — a tool failure, not a provider error.
+        "Element index 429 not available - page may have changed.",
+        "Element with index 429 does not exist.",
+        "Element index 4290 not found in browser state",
+        # A duration that happens to contain the digits.
+        "Action timed out after 4290ms",
+    ],
+)
+def test_an_element_index_that_happens_to_be_429_is_not_a_rate_limit(message):
+    """`_is_rate_limit_error` runs against every ActionResult.error, not just
+    provider errors — tool failures flow through it too, and they quote the
+    element index. On a page indexing 2000+ elements (the case this
+    instrumentation exists to price) index 429 is ordinary, so a bare "429"
+    substring would charge that step's whole duration to retry_lost_s.
+
+    Dropping the bare token costs no recall on the messages this project
+    actually sees: both real Vertex 429s in logs/ carry a phrase —
+    "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'Resource
+    exhausted...'status': 'RESOURCE_EXHAUSTED'}}" and "429 Too Many
+    Requests' for url 'https://aiplatform.googleapis.com/...".
+    """
+    diag = extract_agent_diagnostics(_History([_Item(1.5, error=message)]), dom_samples=[])
+    assert diag["llm_429_count"] == 0
+    assert diag["retry_lost_s"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # Verbatim shapes taken from logs/ — the two forms Vertex actually returns.
+        "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'Resource exhausted. "
+        "Please try again later.', 'status': 'RESOURCE_EXHAUSTED'}}",
+        "429 Too Many Requests' for url "
+        "'https://aiplatform.googleapis.com/v1/projects/p/locations/global/publishers/"
+        "google/models/gemini-3.5-flash:generateContent'",
+    ],
+)
+def test_the_real_vertex_429_texts_are_still_counted_without_the_bare_token(message):
+    """Guards the recall side of the test above: these are the messages the
+    metric exists to catch, and each is matched on a phrase, not on "429"."""
+    diag = extract_agent_diagnostics(_History([_Item(1.5, error=message)]), dom_samples=[])
+    assert diag["llm_429_count"] == 1
+    assert diag["retry_lost_s"] == pytest.approx(1.5)
 
 
 def test_extract_agent_diagnostics_handles_clean_run():
@@ -106,6 +158,44 @@ def test_extract_agent_diagnostics_never_raises_on_malformed_history():
     assert diag["llm_calls_actual"] == 0
     assert diag["dom_elements_max"] == 0
     assert diag["retry_lost_s"] == 0.0
+
+
+def _item_with_unusable_result():
+    """`.result` present but not iterable — `for r in 42` raises TypeError."""
+    item = _Item(1.0)
+    item.result = 42
+    return item
+
+
+def _item_with_unusable_duration():
+    """`duration_seconds` present but not numeric — `float(...)` raises ValueError."""
+    item = _Item(1.0)
+    item.metadata = _Meta("not a number")
+    return item
+
+
+@pytest.mark.parametrize("make_item", [_item_with_unusable_result, _item_with_unusable_duration])
+def test_a_history_item_that_explodes_mid_scan_is_suppressed(make_item, caplog):
+    """The docstring promises "Never raises", and this is the branch that keeps
+    the promise — the only one the rest of the file left unexercised.
+
+    Whatever raised, the caller still gets a well-formed dict: the three
+    history-derived fields are assigned only after the loop, so they keep their
+    "not measured" zeros rather than a half-summed total. The DOM and LLM
+    fields are computed before the loop and must survive intact.
+    """
+    diag = extract_agent_diagnostics(
+        _History([make_item()]), dom_samples=[10, 30], llm_durations=[2.5]
+    )
+
+    assert diag["llm_429_count"] == 0
+    assert diag["retry_lost_s"] == 0.0
+    assert diag["steps_total_s"] == 0.0
+    # Measured before the loop, so unaffected by the failure.
+    assert diag["dom_elements_max"] == 30
+    assert diag["llm_total_s"] == 2.5
+    assert diag["llm_calls_actual"] == 1
+    assert "Agent diagnostics extraction failed" in caplog.text
 
 
 def test_extract_agent_diagnostics_survives_missing_metadata():

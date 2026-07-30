@@ -243,18 +243,30 @@ def instrument_llm_timing(llm) -> list[float]:
     return durations
 
 
-# The same indicators browser-use itself uses to classify a provider error as
+# The phrase indicators browser-use itself uses to classify a provider error as
 # 429 (llm/google/chat.py:512-516), matched the same way — lowercased. Matching
 # only the literal "RESOURCE_EXHAUSTED" token missed every provider that phrases
 # the quota error differently, and a miss reads as llm_429_count = 0, i.e. "no
 # rate limiting", which is the false-clean this metric exists to prevent.
+#
+# browser-use's list also carries a bare "429". Ours deliberately does not:
+# browser-use applies its list only to provider error text, whereas this runs
+# against every ActionResult.error, and tool failures quote the element index —
+# "Element index 429 not available" (tools/service.py:623). On a page indexing
+# 2000+ elements, which is exactly what this instrumentation exists to price,
+# index 429 is unremarkable, and the bare token would charge that step's whole
+# duration to retry_lost_s.
+#
+# Dropping it costs no recall on what this project actually sees. Both real
+# Vertex 429 shapes in logs/ carry a phrase: "429 RESOURCE_EXHAUSTED. {'error':
+# … 'status': 'RESOURCE_EXHAUSTED'}}" and "429 Too Many Requests' for url
+# 'https://aiplatform.googleapis.com/…'".
 _RATE_LIMIT_INDICATORS = (
     "rate limit",
     "resource exhausted",
     "resource_exhausted",
     "quota exceeded",
     "too many requests",
-    "429",
 )
 
 

@@ -202,7 +202,12 @@ class TestIdentityGateBoundaries:
 
     @pytest.mark.asyncio
     async def test_matching_tag_and_id_accepts(self):
-        resolved = {"id": "email", "tagName": "INPUT", "textContent": "", "className": "form-control"}
+        resolved = {
+            "id": "email",
+            "tagName": "INPUT",
+            "textContent": "",
+            "className": "form-control",
+        }
         page = FakePage({"id=email": FakeLocator(1, resolved)})
         result = await _call(
             page,
@@ -243,9 +248,7 @@ class TestIdentityGateBoundaries:
     async def test_absent_element_data_still_accepts(self):
         resolved = {"id": "go", "tagName": "BUTTON", "textContent": "Go"}
         page = FakePage({"id=go": FakeLocator(1, resolved)})
-        result = await _call(
-            page, candidate_locator="id=go", expected_text=None, element_data=None
-        )
+        result = await _call(page, candidate_locator="id=go", expected_text=None, element_data=None)
         assert result["all_locators"][0]["type"] == "candidate"
 
     @pytest.mark.asyncio

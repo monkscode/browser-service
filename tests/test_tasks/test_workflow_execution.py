@@ -39,6 +39,7 @@ Tests:
   - Metrics are recorded for a root workflow and skipped for a child
 """
 
+import asyncio
 import logging
 import sys
 import time
@@ -145,8 +146,17 @@ class FakeSession:
         self.started = False
         self.llm_screenshot_size = None
         self.start_error = None
-        # Indexed elements the on_step_end DOM sampler will observe.
+        # Indexed elements the on_step_end DOM sampler will observe. A plain
+        # dict, so len() and truthiness are honest: reading it changes nothing,
+        # and an extra len(selector_map) or `if selector_map:` anywhere in the
+        # workflow — registration.py:1382-1385 does both on the real map —
+        # cannot shift what the sampler recorded.
         self.selector_map = {}
+        # Per-step sizes, consumed in order by get_selector_map. The queue is
+        # what advances, not __len__ of the thing handed back. Empty means every
+        # step sees selector_map unchanged.
+        self.selector_map_sizes = []
+        self.selector_map_error = None
 
     async def start(self):
         if self.start_error:
@@ -154,6 +164,11 @@ class FakeSession:
         self.started = True
 
     async def get_selector_map(self):
+        if self.selector_map_error:
+            raise self.selector_map_error
+        if self.selector_map_sizes:
+            size = self.selector_map_sizes.pop(0)
+            return dict.fromkeys(range(size))
         return self.selector_map
 
 
@@ -1169,33 +1184,33 @@ class TestPhaseTimingsPayload:
     silently — so a rename here surfaces as an empty column, not an error.
     """
 
-    def _arm_dom(self, harness, sizes):
-        """Pre-load what get_selector_map() reports, one entry per agent step."""
+    def _arm_dom(self, harness, sizes, error=None):
+        """Pre-load what get_selector_map() reports, one entry per agent step.
+
+        The sizes go into an explicit queue that get_selector_map pops, and each
+        step is handed a real dict of that size. Nothing here overrides __len__:
+        a dict subclass that advanced a counter from __len__ would also advance
+        it from `if selector_map:` (dict truthiness routes through __len__), so
+        any incidental read in the workflow would silently shift the asserted
+        max and median.
+        """
         from browser_service.tasks import workflow as wf
 
         original = wf.Agent.side_effect
 
         def make_and_arm(**kwargs):
             agent = original(**kwargs)
-            agent.steps_to_simulate = len(sizes)
+            agent.steps_to_simulate = len(sizes) or 1
             return agent
 
         wf.Agent.side_effect = make_and_arm
 
         session_factory = harness.browser_session_cls.side_effect
-        counter = {"n": 0}
-
-        class _GrowingMap(dict):
-            """len() changes per step, so max and median are distinguishable."""
-
-            def __len__(self):
-                i = min(counter["n"], len(sizes) - 1)
-                counter["n"] += 1
-                return sizes[i]
 
         def make_and_arm_session(**kwargs):
             session = session_factory(**kwargs)
-            session.selector_map = _GrowingMap()
+            session.selector_map_sizes = list(sizes)
+            session.selector_map_error = error
             return session
 
         harness.browser_session_cls.side_effect = make_and_arm_session
@@ -1278,6 +1293,41 @@ class TestPhaseTimingsPayload:
         diag = workflow_harness.updates[-1][1]["results"]["summary"]["agent_diagnostics"]
         assert diag["dom_elements_max"] == 2143
         assert diag["dom_elements_median"] == 1876
+
+    def test_reading_the_sampled_map_again_does_not_shift_the_samples(self):
+        """What the fake hands back must be inert. The sampler is the only thing
+        that advances the queue; measuring the same map twice — which the real
+        workflow does at registration.py:1382-1385 via `if selector_map:` and
+        `len(selector_map)` — must not consume a step's sample."""
+        session = FakeSession()
+        session.selector_map_sizes = [7, 99]
+
+        first = asyncio.run(session.get_selector_map())
+        assert [len(first), bool(first), len(first)] == [7, True, 7]
+
+        second = asyncio.run(session.get_selector_map())
+        assert len(second) == 99
+        assert session.selector_map_sizes == []
+
+    def test_a_dom_sampler_failure_does_not_fail_the_step_or_the_workflow(
+        self, workflow_harness, caplog
+    ):
+        """The hook runs inside browser-use's step loop, which awaits it without
+        a guard of its own (agent/service.py:2460-2461) — an exception here would
+        propagate into _execute_step and break the run. It must degrade to "not
+        measured" instead, and say so: dom_elements_max = 0 otherwise reads as
+        "the page had zero indexed elements" rather than "the sampler broke".
+        """
+        self._arm_dom(workflow_harness, [], error=RuntimeError("selector map gone"))
+        arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])
+
+        with caplog.at_level(logging.DEBUG, logger="browser_service.tasks.workflow"):
+            run_workflow(workflow_harness)
+
+        result = workflow_harness.updates[-1][1]["results"]
+        assert result["success"] is True
+        assert result["summary"]["agent_diagnostics"]["dom_elements_max"] == 0
+        assert "DOM sampling failed for this step" in caplog.text
 
     def test_summary_carries_agent_diagnostics(self, workflow_harness):
         arm(workflow_harness, [FakeStep([FakeActionResult(locator_metadata("elem_1", "id=q"))])])

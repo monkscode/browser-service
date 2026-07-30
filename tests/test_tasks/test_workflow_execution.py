@@ -55,8 +55,7 @@ import pytest
 class FakeUsage:
     """Stands in for browser-use's UsageSummary."""
 
-    def __init__(self, prompt=100, completion=50, total=150, cached=10, cost=0.0021,
-                 entry_count=1):
+    def __init__(self, prompt=100, completion=50, total=150, cached=10, cost=0.0021, entry_count=1):
         self.total_prompt_tokens = prompt
         self.total_completion_tokens = completion
         self.total_tokens = total
@@ -1209,14 +1208,15 @@ class TestPhaseTimingsPayload:
 
         timings = workflow_harness.updates[-1][1]["results"]["summary"]["phase_timings"]
         assert set(timings) == {
-            "queue_s", "session_setup_s", "agent_setup_s",
-            "agent_run_s", "postprocess_s",
+            "queue_s",
+            "session_setup_s",
+            "agent_setup_s",
+            "agent_run_s",
+            "postprocess_s",
         }
         assert all(v >= 0.0 for v in timings.values())
 
-    def test_queue_s_measures_the_wait_before_a_worker_picked_the_task_up(
-        self, workflow_harness
-    ):
+    def test_queue_s_measures_the_wait_before_a_worker_picked_the_task_up(self, workflow_harness):
         """queue_s is the only span derived from a foreign dict plus a cast,
         and it was the only one with no behavioural test. The harness's
         task_processor is a MagicMock, so get_task_status(...).get(...) returned
@@ -1286,9 +1286,14 @@ class TestPhaseTimingsPayload:
 
         diag = workflow_harness.updates[-1][1]["results"]["summary"]["agent_diagnostics"]
         assert set(diag) == {
-            "dom_elements_max", "dom_elements_median",
-            "llm_429_count", "retry_lost_s",
-            "llm_total_s", "llm_max_s", "llm_calls_actual", "steps_total_s",
+            "dom_elements_max",
+            "dom_elements_median",
+            "llm_429_count",
+            "retry_lost_s",
+            "llm_total_s",
+            "llm_max_s",
+            "llm_calls_actual",
+            "steps_total_s",
             "llm_coverage_gap",
         }
         assert diag["llm_429_count"] == 0
@@ -1315,6 +1320,6 @@ class TestPhaseTimingsPayload:
         run_workflow(workflow_harness)
 
         diag = workflow_harness.updates[-1][1]["results"]["summary"]["agent_diagnostics"]
-        assert diag["llm_total_s"] == 0.0        # the fake agent never calls ainvoke
+        assert diag["llm_total_s"] == 0.0  # the fake agent never calls ainvoke
         assert diag["llm_calls_actual"] == 0
-        assert diag["llm_coverage_gap"] == 0     # 0 tracked - 0 ours
+        assert diag["llm_coverage_gap"] == 0  # 0 tracked - 0 ours

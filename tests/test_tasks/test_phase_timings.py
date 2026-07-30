@@ -3,6 +3,7 @@
 Referenced by: browser_service.tasks.workflow
 Depends on: browser_use.agent.views
 """
+
 import asyncio
 
 import pytest
@@ -61,13 +62,16 @@ def test_extract_agent_diagnostics_counts_429_steps_and_their_cost():
     assert diag["dom_elements_median"] == 20
 
 
-@pytest.mark.parametrize("message", [
-    "ModelProviderError: 429 RESOURCE_EXHAUSTED",
-    "Resource exhausted, please retry",
-    "You exceeded your current quota exceeded",
-    "429 Too Many Requests",
-    "Rate limit reached for model",
-])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "ModelProviderError: 429 RESOURCE_EXHAUSTED",
+        "Resource exhausted, please retry",
+        "You exceeded your current quota exceeded",
+        "429 Too Many Requests",
+        "Rate limit reached for model",
+    ],
+)
 def test_every_indicator_browser_use_uses_is_counted(message):
     """browser-use classifies a provider error as 429 on any of five
     lowercased indicators (llm/google/chat.py:512-516) precisely because
@@ -76,9 +80,7 @@ def test_every_indicator_browser_use_uses_is_counted(message):
     llm_429_count = 0 — "no rate limiting" — which is the false-clean this
     metric exists to prevent. The bench is pinned to Vertex, not the Gemini
     Developer API, so the wording is not ours to assume."""
-    diag = extract_agent_diagnostics(
-        _History([_Item(1.5, error=message)]), dom_samples=[]
-    )
+    diag = extract_agent_diagnostics(_History([_Item(1.5, error=message)]), dom_samples=[])
     assert diag["llm_429_count"] == 1
     assert diag["retry_lost_s"] == pytest.approx(1.5)
 
@@ -128,8 +130,14 @@ def test_diagnostics_reports_exactly_the_nine_measured_fields():
     retries (agent/service.py:1655 calls the model up to twice per step)."""
     diag = extract_agent_diagnostics(_History([_Item(1.0)]), dom_samples=[])
     assert set(diag) == {
-        "dom_elements_max", "dom_elements_median", "llm_429_count", "retry_lost_s",
-        "llm_total_s", "llm_max_s", "llm_calls_actual", "steps_total_s",
+        "dom_elements_max",
+        "dom_elements_median",
+        "llm_429_count",
+        "retry_lost_s",
+        "llm_total_s",
+        "llm_max_s",
+        "llm_calls_actual",
+        "steps_total_s",
         "llm_coverage_gap",
     }
 
@@ -142,9 +150,7 @@ def test_steps_total_sums_step_metadata_durations():
 
 def test_steps_total_is_zero_for_empty_or_missing_history():
     assert extract_agent_diagnostics(None, dom_samples=[])["steps_total_s"] == 0.0
-    assert extract_agent_diagnostics(
-        _History([]), dom_samples=[]
-    )["steps_total_s"] == 0.0
+    assert extract_agent_diagnostics(_History([]), dom_samples=[])["steps_total_s"] == 0.0
 
 
 def test_steps_total_survives_a_step_with_no_metadata():
@@ -156,9 +162,7 @@ def test_steps_total_survives_a_step_with_no_metadata():
 
 def test_llm_fields_are_derived_from_the_recorded_durations():
     history = _History([_Item(2.0)])
-    diag = extract_agent_diagnostics(
-        history, dom_samples=[], llm_durations=[7.8912, 3.0, 1.4544]
-    )
+    diag = extract_agent_diagnostics(history, dom_samples=[], llm_durations=[7.8912, 3.0, 1.4544])
     assert diag["llm_total_s"] == 12.346
     assert diag["llm_max_s"] == 7.891
     assert diag["llm_calls_actual"] == 3
@@ -179,14 +183,12 @@ def test_an_empty_duration_list_is_a_measurement_not_a_missing_one():
     diag = extract_agent_diagnostics(history, dom_samples=[], llm_durations=[])
     assert diag["llm_total_s"] == 0.0
     assert diag["llm_calls_actual"] == 0
-    assert diag["llm_coverage_gap"] == 0      # checked, not skipped
+    assert diag["llm_coverage_gap"] == 0  # checked, not skipped
 
 
 def test_coverage_gap_is_zero_when_every_call_was_ours():
     history = _History([_Item(1.0)], usage=_Usage(entry_count=3))
-    diag = extract_agent_diagnostics(
-        history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0]
-    )
+    diag = extract_agent_diagnostics(history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0])
     assert diag["llm_coverage_gap"] == 0
 
 
@@ -205,9 +207,7 @@ def test_a_positive_coverage_gap_would_mean_a_second_registered_llm():
     Kept so that if a future Agent(...) kwarg introduces one, the number moves
     and this test documents what it would mean."""
     history = _History([_Item(1.0)], usage=_Usage(entry_count=5))
-    diag = extract_agent_diagnostics(
-        history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0]
-    )
+    diag = extract_agent_diagnostics(history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0])
     assert diag["llm_coverage_gap"] == 2
 
 
@@ -215,9 +215,7 @@ def test_coverage_gap_is_negative_when_a_call_failed():
     """Failed calls return no usage (tokens/service.py:356 guards on
     `if result.usage:`), so we count them and entry_count does not. Benign."""
     history = _History([_Item(1.0)], usage=_Usage(entry_count=2))
-    diag = extract_agent_diagnostics(
-        history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0]
-    )
+    diag = extract_agent_diagnostics(history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0])
     assert diag["llm_coverage_gap"] == -1
 
 
@@ -225,9 +223,7 @@ def test_coverage_gap_is_none_when_usage_is_unavailable():
     """Not 0: "could not check" must never read as "coverage was perfect". None
     becomes an empty CSV cell, which trips the populated-on-all-rows gate."""
     history = _History([_Item(1.0)], usage=None)
-    diag = extract_agent_diagnostics(
-        history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0]
-    )
+    diag = extract_agent_diagnostics(history, dom_samples=[], llm_durations=[1.0, 2.0, 3.0])
     assert diag["llm_coverage_gap"] is None
 
 
@@ -325,9 +321,7 @@ async def test_two_llm_instances_keep_separate_accumulators():
     a, b = _FakeLLM(delay=0.03), _FakeLLM()
     durations_a, durations_b = instrument_llm_timing(a), instrument_llm_timing(b)
 
-    await asyncio.gather(
-        a.ainvoke(["a1"]), a.ainvoke(["a2"]), b.ainvoke(["b1"])
-    )
+    await asyncio.gather(a.ainvoke(["a1"]), a.ainvoke(["a2"]), b.ainvoke(["b1"]))
 
     assert len(durations_a) == 2
     assert len(durations_b) == 1

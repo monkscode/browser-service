@@ -249,8 +249,12 @@ def instrument_llm_timing(llm) -> list[float]:
 # the quota error differently, and a miss reads as llm_429_count = 0, i.e. "no
 # rate limiting", which is the false-clean this metric exists to prevent.
 _RATE_LIMIT_INDICATORS = (
-    "rate limit", "resource exhausted", "resource_exhausted",
-    "quota exceeded", "too many requests", "429",
+    "rate limit",
+    "resource exhausted",
+    "resource_exhausted",
+    "quota exceeded",
+    "too many requests",
+    "429",
 )
 
 

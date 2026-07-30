@@ -63,9 +63,7 @@ async def truncated_page():
         browser = await p.chromium.launch(headless=True)
         ctx = await browser.new_context(viewport={"width": 1280, "height": 900})
         page_obj = await ctx.new_page()
-        await page_obj.goto(
-            (FIXTURES_DIR / "collection_truncated_render.html").resolve().as_uri()
-        )
+        await page_obj.goto((FIXTURES_DIR / "collection_truncated_render.html").resolve().as_uri())
         try:
             yield page_obj
         finally:
@@ -115,9 +113,7 @@ async def test_full_title_resolves_when_the_page_renders_it_truncated(truncated_
     nor the substring lookup matches what the agent reported. Before the
     prefix retry this returned None and the chain answered with
     [title="A Light in the Attic"] — one book, asserted against twenty."""
-    result = await _find_collection_by_text_traversal(
-        truncated_page, "A Light in the Attic"
-    )
+    result = await _find_collection_by_text_traversal(truncated_page, "A Light in the Attic")
     assert result is not None
     assert result["locator"] == "ol > li"
     assert result["count"] == 4
@@ -125,9 +121,7 @@ async def test_full_title_resolves_when_the_page_renders_it_truncated(truncated_
 
 async def test_truncated_form_still_resolves_on_the_same_page(truncated_page):
     """The form that already passed in production must not regress."""
-    result = await _find_collection_by_text_traversal(
-        truncated_page, "A Light in the ..."
-    )
+    result = await _find_collection_by_text_traversal(truncated_page, "A Light in the ...")
     assert result is not None
     assert result["count"] == 4
 
@@ -135,9 +129,10 @@ async def test_truncated_form_still_resolves_on_the_same_page(truncated_page):
 async def test_prefix_retry_does_not_invent_a_collection(truncated_page):
     """A beacon that matches nothing on the page must still fail closed —
     the retry may only rescue text that is really there."""
-    assert await _find_collection_by_text_traversal(
-        truncated_page, "Some Book That Is Not Here"
-    ) is None
+    assert (
+        await _find_collection_by_text_traversal(truncated_page, "Some Book That Is Not Here")
+        is None
+    )
 
 
 async def test_flex_grow_is_not_a_row_container(page):

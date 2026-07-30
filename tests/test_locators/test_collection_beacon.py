@@ -60,7 +60,7 @@ class _NeedlePage:
     def locator(self, selector: str):
         if not selector.startswith("text="):
             return _Loc(self.validate_count, None)
-        needle = selector[len("text="):]
+        needle = selector[len("text=") :]
         if needle.startswith('"') and needle.endswith('"'):
             needle = needle[1:-1]
             self.tried.append(needle)

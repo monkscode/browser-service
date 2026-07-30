@@ -30,19 +30,29 @@ class TestTextFirstIsForbiddenOnCollections:
     COLLECTION_DESC = "all book titles on the first page"
     SINGLE_DESC = "the search button in the header"
 
-    async def _run(self, *, is_collection, description,
-                   expected_text="A Light in the Attic", row_anchor_text=None):
+    async def _run(
+        self,
+        *,
+        is_collection,
+        description,
+        expected_text="A Light in the Attic",
+        row_anchor_text=None,
+    ):
         from browser_service.locators import smart_locator
 
         with (
-            patch.object(smart_locator, "_find_collection_by_text_traversal",
-                         AsyncMock(return_value=None)),
-            patch.object(smart_locator, "_find_element_by_expected_text",
-                         AsyncMock(return_value=None)) as text_first,
-            patch.object(smart_locator, "_find_element_by_description",
-                         AsyncMock(return_value=None)) as semantic,
-            patch.object(smart_locator, "_find_element_via_accessibility",
-                         AsyncMock(return_value=None)),
+            patch.object(
+                smart_locator, "_find_collection_by_text_traversal", AsyncMock(return_value=None)
+            ),
+            patch.object(
+                smart_locator, "_find_element_by_expected_text", AsyncMock(return_value=None)
+            ) as text_first,
+            patch.object(
+                smart_locator, "_find_element_by_description", AsyncMock(return_value=None)
+            ) as semantic,
+            patch.object(
+                smart_locator, "_find_element_via_accessibility", AsyncMock(return_value=None)
+            ),
         ):
             page = MagicMock()
             page.evaluate = AsyncMock(return_value=None)
@@ -62,34 +72,29 @@ class TestTextFirstIsForbiddenOnCollections:
 
     @pytest.mark.asyncio
     async def test_explicit_collection_flag_skips_text_first(self):
-        text_first, _ = await self._run(
-            is_collection=True, description=self.COLLECTION_DESC)
+        text_first, _ = await self._run(is_collection=True, description=self.COLLECTION_DESC)
         assert text_first.await_count == 0
 
     @pytest.mark.asyncio
     async def test_keyword_detected_collection_skips_text_first(self):
         # The description alone is enough — _should_treat_as_collection's
         # keyword fallback classifies this without the explicit flag.
-        text_first, _ = await self._run(
-            is_collection=None, description=self.COLLECTION_DESC)
+        text_first, _ = await self._run(is_collection=None, description=self.COLLECTION_DESC)
         assert text_first.await_count == 0
 
     @pytest.mark.asyncio
     async def test_collection_request_still_reaches_semantic(self):
-        _, semantic = await self._run(
-            is_collection=True, description=self.COLLECTION_DESC)
+        _, semantic = await self._run(is_collection=True, description=self.COLLECTION_DESC)
         assert semantic.await_count == 1
 
     @pytest.mark.asyncio
     async def test_single_element_request_still_uses_text_first(self):
-        text_first, _ = await self._run(
-            is_collection=False, description=self.SINGLE_DESC)
+        text_first, _ = await self._run(is_collection=False, description=self.SINGLE_DESC)
         assert text_first.await_count == 1
 
     @pytest.mark.asyncio
     async def test_unflagged_single_element_request_still_uses_text_first(self):
-        text_first, _ = await self._run(
-            is_collection=None, description=self.SINGLE_DESC)
+        text_first, _ = await self._run(is_collection=None, description=self.SINGLE_DESC)
         assert text_first.await_count == 1
 
     @pytest.mark.asyncio

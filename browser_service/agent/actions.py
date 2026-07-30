@@ -41,9 +41,23 @@ logger = logging.getLogger(__name__)
 # One evaluate() on the element the candidate ACTUALLY resolves to. Keys are
 # named to match element_data so the same describe/classify helpers consume
 # either shape unchanged.
+#
+# id/tagName/className are typeof-guarded, not read bare. HTMLFormElement has
+# [OverrideBuiltins], so a named control shadows the same-named property:
+# <form><input name="id"> makes el.id return the INPUT NODE, which serialises
+# as the string 'ref: <Node>' and would read as a PROVABLE mismatch — a
+# spurious reject on a shape (<input name="id">) that is ordinary in CRUD
+# forms. Falling back to '' makes it UNKNOWN instead, which _identity_mismatch
+# already treats as "no evidence". className carried this guard from the start
+# (SVG className is an SVGAnimatedString); id and tagName need it too.
+#
+# tagName is lowercased to match every other element_info producer — the full
+# path's extraction JS lowercases explicitly and browser-use's element_data is
+# lowercase. nlrf falls back to element_info['tagName'] for element_type, so an
+# UPPERCASE value here would change assembler prompt text on this path alone.
 _RESOLVED_ELEMENT_JS = """el => ({
-    id: el.id || '',
-    tagName: el.tagName || '',
+    id: typeof el.id === 'string' ? el.id : '',
+    tagName: typeof el.tagName === 'string' ? el.tagName.toLowerCase() : '',
     textContent: (el.textContent || '').trim().slice(0, 500),
     className: typeof el.className === 'string' ? el.className : '',
     ariaInvalid: el.getAttribute('aria-invalid') || '',

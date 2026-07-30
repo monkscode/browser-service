@@ -29,6 +29,15 @@ The gate is deliberately conservative: it fires only on provable mismatch.
 An unreadable element, absent element_data, or a missing id on either side
 leaves the pre-existing accept behaviour untouched — this guard must never
 turn a working accept into a found=false.
+
+SCOPE — these tests are MOCKED. FakeLocator.evaluate pattern-matches the JS
+string and returns a canned dict; ``_RESOLVED_ELEMENT_JS`` is never executed
+here. So this file pins the gate's DECISION LOGIC only. The payload the JS
+actually produces is verified against real chromium in
+tests/test_integration/test_resolved_element_js.py, and the resolved-* dicts
+below must mirror it — a mock that drifts from the JS hides exactly the bugs
+that lane exists to catch (it previously carried UPPERCASE tagName, which the
+JS no longer emits).
 """
 
 import logging
@@ -52,7 +61,7 @@ Q08_ELEMENT_DATA = {
 # What Q08_CANDIDATE actually resolves to once Option 2 is selected.
 Q08_RESOLVED_OPTION = {
     "id": "",
-    "tagName": "OPTION",
+    "tagName": "option",
     "textContent": "Option 2",
     "className": "",
     "ariaInvalid": "",
@@ -204,7 +213,7 @@ class TestIdentityGateBoundaries:
     async def test_matching_tag_and_id_accepts(self):
         resolved = {
             "id": "email",
-            "tagName": "INPUT",
+            "tagName": "input",
             "textContent": "",
             "className": "form-control",
         }
@@ -219,7 +228,7 @@ class TestIdentityGateBoundaries:
 
     @pytest.mark.asyncio
     async def test_same_tag_different_id_rejects(self, caplog):
-        resolved = {"id": "password", "tagName": "INPUT", "textContent": ""}
+        resolved = {"id": "password", "tagName": "input", "textContent": ""}
         page = FakePage({"id=password": FakeLocator(1, resolved)})
         with caplog.at_level(logging.INFO):
             result = await _call(
@@ -234,7 +243,7 @@ class TestIdentityGateBoundaries:
     @pytest.mark.asyncio
     async def test_missing_id_on_one_side_is_not_provable(self):
         """An empty id proves nothing — accept, as before the guard."""
-        resolved = {"id": "", "tagName": "INPUT", "textContent": ""}
+        resolved = {"id": "", "tagName": "input", "textContent": ""}
         page = FakePage({"[name='email']": FakeLocator(1, resolved)})
         result = await _call(
             page,
@@ -246,7 +255,7 @@ class TestIdentityGateBoundaries:
 
     @pytest.mark.asyncio
     async def test_absent_element_data_still_accepts(self):
-        resolved = {"id": "go", "tagName": "BUTTON", "textContent": "Go"}
+        resolved = {"id": "go", "tagName": "button", "textContent": "Go"}
         page = FakePage({"id=go": FakeLocator(1, resolved)})
         result = await _call(page, candidate_locator="id=go", expected_text=None, element_data=None)
         assert result["all_locators"][0]["type"] == "candidate"
@@ -289,7 +298,7 @@ class TestDescribesWhatWasAccepted:
         input. Deriving from element_data loses the date-picker routing."""
         resolved = {
             "id": "customer_cdr_from_date",
-            "tagName": "INPUT",
+            "tagName": "input",
             "textContent": "",
             "className": "form-control input flatpickr-input",
             "type": "text",
@@ -307,7 +316,7 @@ class TestDescribesWhatWasAccepted:
 
     @pytest.mark.asyncio
     async def test_element_info_reports_resolved_source(self):
-        resolved = {"id": "go", "tagName": "BUTTON", "textContent": "Go", "className": "btn"}
+        resolved = {"id": "go", "tagName": "button", "textContent": "Go", "className": "btn"}
         page = FakePage({"id=go": FakeLocator(1, resolved)})
         result = await _call(
             page,
@@ -316,4 +325,4 @@ class TestDescribesWhatWasAccepted:
             element_data={"tagName": "button", "id": "go"},
         )
         assert result["element_info"]["source"] == "candidate_resolved_element"
-        assert result["element_info"]["tagName"] == "BUTTON"
+        assert result["element_info"]["tagName"] == "button"

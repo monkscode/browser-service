@@ -8,7 +8,10 @@ Purpose: the agent-candidate fast path in actions.py returned
          Downstream (nlrf) composer triggers starved and widget idioms were
          lost: readonly flatpickr degraded to Fill Text (the G4 failure).
 
-Option B contract (owner-approved 2026-07-15):
+Option B contract (owner-approved 2026-07-15; amended 2026-07-30 by the q08
+identity guard — element_info/stamp now derive from the RESOLVED element and
+fall back to element_data only when that read fails, which is the path these
+mocks exercise. See test_candidate_identity_guard.py):
   - element_info copied from the already-extracted element_data
   - classifier stamp gated to Tier-0 DOM-evidence verdicts with attribute
     evidence beyond the bare tag name (type= / className: / role= signals);
@@ -17,7 +20,7 @@ Option B contract (owner-approved 2026-07-15):
   - select_id only when the element is itself a <select> with an id
   - date-picker stamps set dropdown_framework='' (Task D guard)
   - vision hints never feed the stamp (no DOM-probe corroboration on this path)
-  - no page round-trip
+  - no DOM probe (one evaluate() reads the resolved element; nothing more)
 
 Tests:
   element_info copy: full dict / None element_data / partial element_data

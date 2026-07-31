@@ -38,13 +38,116 @@ from browser_service.locators.stability import classify_locator
 logger = logging.getLogger(__name__)
 
 
-def _candidate_element_info(element_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """element_info for a candidate-path accept, copied from element_data (E1).
+# One evaluate() on the element the candidate ACTUALLY resolves to. Keys are
+# named to match element_data so the same describe/classify helpers consume
+# either shape unchanged.
+#
+# id/tagName/className are typeof-guarded, not read bare. HTMLFormElement has
+# [OverrideBuiltins], so a named control shadows the same-named property:
+# <form><input name="id"> makes el.id return the INPUT NODE, which serialises
+# as the string 'ref: <Node>' and would read as a PROVABLE mismatch — a
+# spurious reject on a shape (<input name="id">) that is ordinary in CRUD
+# forms. Falling back to '' makes it UNKNOWN instead, which _identity_mismatch
+# already treats as "no evidence". className carried this guard from the start
+# (SVG className is an SVGAnimatedString); id and tagName need it too.
+#
+# tagName is lowercased to match every other element_info producer — the full
+# path's extraction JS lowercases explicitly and browser-use's element_data is
+# lowercase. nlrf falls back to element_info['tagName'] for element_type, so an
+# UPPERCASE value here would change assembler prompt text on this path alone.
+_RESOLVED_ELEMENT_JS = """el => ({
+    id: typeof el.id === 'string' ? el.id : '',
+    tagName: typeof el.tagName === 'string' ? el.tagName.toLowerCase() : '',
+    textContent: (el.textContent || '').trim().slice(0, 500),
+    className: typeof el.className === 'string' ? el.className : '',
+    ariaInvalid: el.getAttribute('aria-invalid') || '',
+    parentClassName: (el.parentElement && typeof el.parentElement.className === 'string')
+        ? el.parentElement.className : '',
+    name: el.getAttribute('name') || '',
+    dataTestId: el.getAttribute('data-testid') || '',
+    role: el.getAttribute('role') || '',
+    type: el.getAttribute('type') || ''
+})"""
+
+
+# The read runs immediately after count()==1, so the element exists and the
+# evaluate is ~2ms. This bound only engages when the node vanishes in between
+# — a race in which Playwright's default would WAIT 30 seconds, six times the
+# entire cascade budget (custom_action_timeout, 5s), on a code path that sits
+# OUTSIDE the asyncio.wait_for guarding STEP 2 and is therefore unbounded
+# otherwise. Timing out is safe by construction: it yields None, which is
+# "unknown", which leaves the pre-existing accept untouched.
+_RESOLVED_READ_TIMEOUT_MS = 2000
+
+
+async def _read_resolved_element(
+    search_root, locator: str, timeout_ms: int = _RESOLVED_READ_TIMEOUT_MS
+) -> Optional[Dict[str, Any]]:
+    """Read the element ``locator`` resolves to — what we are about to accept.
+
+    Returns None when the element cannot be read (detached node, exotic
+    selector engine, or the bounded wait expiring). Callers must treat None as
+    "unknown", never as "mismatch": this read exists to make the accept honest,
+    and must never turn a working accept into a found=false.
+    """
+    try:
+        resolved = await search_root.locator(locator).evaluate(
+            _RESOLVED_ELEMENT_JS, timeout=timeout_ms
+        )
+    except Exception as e:
+        logger.warning(f"   ⚠️ Could not read resolved element for '{locator}': {e}")
+        return None
+    # Anything but a dict is unusable evidence — treat it as unknown rather
+    # than letting it reach the describe/classify helpers, where an unexpected
+    # shape would raise inside the accept and drop a valid candidate.
+    return resolved if isinstance(resolved, dict) else None
+
+
+def _identity_mismatch(
+    element_data: Optional[Dict[str, Any]], resolved: Optional[Dict[str, Any]]
+) -> str:
+    """Reason string when ``resolved`` is PROVABLY not the indexed element.
+
+    q08: element_data was <select id="dropdown"> while the agent's candidate
+    `select#dropdown option[selected='selected']` resolved to an <option>.
+    The semantic check could not catch it — Chromium moves the `selected`
+    content attribute onto the chosen option, so the resolved element really
+    did read "Option 2". Only identity separates the two.
+
+    Deliberately conservative — two provable signals, nothing inferred. An
+    absent element_data, an unreadable element, or an empty id on either side
+    yields "" (accept unchanged); an empty id is not evidence of a different
+    element, only of a missing attribute.
+    """
+    if not element_data or not resolved:
+        return ""
+
+    indexed_tag = (element_data.get("tagName") or "").lower()
+    resolved_tag = (resolved.get("tagName") or "").lower()
+    if indexed_tag and resolved_tag and indexed_tag != resolved_tag:
+        return f"indexed <{indexed_tag}> but candidate resolves to <{resolved_tag}>"
+
+    indexed_id = (element_data.get("id") or "").strip()
+    resolved_id = (resolved.get("id") or "").strip()
+    if indexed_id and resolved_id and indexed_id != resolved_id:
+        return f"indexed id '{indexed_id}' but candidate resolves to id '{resolved_id}'"
+
+    return ""
+
+
+def _candidate_element_info(
+    element_data: Optional[Dict[str, Any]], source: str = "candidate_element_data"
+) -> Dict[str, Any]:
+    """element_info for a candidate-path accept (E1).
 
     The fast path used to return element_info={} — element_classes /
     aria_invalid / parent_classes and the tagName routing fallback all
     vanished downstream whenever the agent's proposed locator validated.
     Tolerant .get: element_data producers vary in which keys they carry.
+
+    Fed the RESOLVED element where one could be read, so the payload
+    describes the element actually being returned rather than the element
+    the agent indexed (q08: those were a <select> and an <option>).
     """
     if not element_data:
         return {}
@@ -57,7 +160,7 @@ def _candidate_element_info(element_data: Optional[Dict[str, Any]]) -> Dict[str,
         "parentClassName": element_data.get("parentClassName", ""),
         "name": element_data.get("name", ""),
         "testId": element_data.get("dataTestId", ""),
-        "source": "candidate_element_data",
+        "source": source,
     }
 
 
@@ -67,7 +170,8 @@ def _candidate_tier0_stamp(
     """Classifier stamp for a candidate-path accept — Tier-0 DOM evidence only.
 
     The full path corroborates classifier verdicts with a DOM probe before
-    any handler commits; the candidate path has no page round-trip, so the
+    any handler commits; the candidate path has no such probe (it reads the
+    resolved element once, but never probes), so the
     stamp is gated to Tier-0 verdicts carrying attribute evidence beyond the
     bare tag name (type= / className: / role= signals). Bare-tagName verdicts
     (select/tr/li) stay unstamped — nlrf's tagName fallback already routes
@@ -419,12 +523,32 @@ async def find_unique_locator_action(
                                 f"(signal: row-anchor-rejects-candidate)"
                             )
 
+                        # q08 identity guard: read the element the candidate
+                        # actually resolves to. Two jobs — reject it when it is
+                        # provably not the element the agent indexed, and
+                        # describe what we accept instead of what was indexed.
+                        # The semantic check cannot stand in here: an <option>
+                        # under a <select> can carry exactly the expected text.
+                        _resolved_element = None
+                        _identity_reason = ""
+                        if not _anchor_reject:
+                            _resolved_element = await _read_resolved_element(
+                                search_root, playwright_locator
+                            )
+                            _identity_reason = _identity_mismatch(element_data, _resolved_element)
+                            if _identity_reason:
+                                logger.info(
+                                    f"   ⛔ CANDIDATE IDENTITY REJECT: '{playwright_locator}' "
+                                    f"— {_identity_reason}; continuing with smart locator "
+                                    f"finder (signal: candidate-resolves-to-different-element)"
+                                )
+
                         # Close the "unique but semantically wrong" hole (probe 06).
                         # Validate the RESOLVED element — what playwright_locator actually
                         # resolves to on the page — not the intended element from element_data
                         # (audit Issue 2b). Guard with expected_text so we accept on uniqueness
                         # alone when no semantic hint is available (audit Issue 5).
-                        _semantic_ok = not _anchor_reject
+                        _semantic_ok = not _anchor_reject and not _identity_reason
                         if _semantic_ok and expected_text:
                             from browser_service.locators import validate_semantic_match
 
@@ -472,17 +596,27 @@ async def find_unique_locator_action(
 
                             locator_lower = final_locator.lower().lstrip()
 
-                            # Extract element metadata from DOM data (available via element_data param)
+                            # Describe the element being RETURNED. The identity
+                            # gate above has already rejected anything provably
+                            # different, so the resolved read is both safe and
+                            # fresher than element_data (q08 / E1).
+                            _describes = _resolved_element or element_data
+                            _info_source = (
+                                "candidate_resolved_element"
+                                if _resolved_element
+                                else "candidate_element_data"
+                            )
+
+                            # Extract element metadata from DOM data
                             elem_tag = ""
                             elem_has_text = False
-                            elem_data_available = False
-                            if element_data:
-                                elem_tag = element_data.get("tagName", "").lower()
-                                text_content = element_data.get(
-                                    "textContent", ""
-                                ) or element_data.get("text", "")
+                            elem_data_available = bool(element_data)
+                            if _describes:
+                                elem_tag = (_describes.get("tagName") or "").lower()
+                                text_content = _describes.get("textContent", "") or _describes.get(
+                                    "text", ""
+                                )
                                 elem_has_text = bool(text_content and text_content.strip())
-                                elem_data_available = True
 
                             # Acceptance unchanged (a volatile candidate that
                             # falls through could end in found=false, which
@@ -499,7 +633,7 @@ async def find_unique_locator_action(
                             # composer/idiom routing downstream — copy the DOM
                             # evidence and stamp Tier-0 verdicts.
                             candidate_stamp = _candidate_tier0_stamp(
-                                element_data, element_description
+                                _describes, element_description
                             )
                             if candidate_stamp:
                                 logger.info(f"   🏷️ Candidate Tier-0 stamp: {candidate_stamp}")
@@ -527,7 +661,7 @@ async def find_unique_locator_action(
                                         "stability": candidate_stability,
                                     }
                                 ],
-                                "element_info": _candidate_element_info(element_data),
+                                "element_info": _candidate_element_info(_describes, _info_source),
                                 "coordinates": {"x": x, "y": y},
                                 "validation_summary": {
                                     "total_generated": 1,

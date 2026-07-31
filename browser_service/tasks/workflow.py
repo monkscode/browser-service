@@ -96,13 +96,42 @@ def _apply_vision_mode(agent, use_vision) -> None:
     """In 'auto' mode, drop the model-facing screenshot action from the schema.
 
     browser-use auto-excludes it only when use_vision is not 'auto'
-    (agent/service.py:314-320), so 'auto' would otherwise pay the action's
+    (agent/service.py:317-323), so 'auto' would otherwise pay the action's
     schema tokens every call. The failure-triggered attachment is
     registry-independent — message_manager reads ActionResult.metadata only —
     so escalation keeps working with the action excluded (verified live,
     forced-failure replay 2026-07-17)."""
     if use_vision == "auto":
         agent.tools.exclude_action("screenshot")
+
+
+def _prune_unused_actions(agent) -> None:
+    """Drop default actions this service can never use from the model-facing schema.
+
+    Same rationale and mechanism as _apply_vision_mode above: every registered
+    action's parameter schema is serialised into response_format on EVERY LLM
+    call, so an action we never invoke is a fixed per-call tax.
+
+    save_as_pdf renders the page to a PDF. This service only ever resolves
+    locators and hands them back — there is no PDF consumer anywhere in
+    browser_service, and no run has ever invoked it.
+
+    Measured (browser-use 0.13.7, the real 24-action registry, optimised schema
+    as sent): 16,244 chars with it, 14,185 without — ~515 tokens per call.
+    That matters now because 0.13.7 added three verbose fields to
+    SaveAsPdfAction (display_header_footer, header_template, footer_template)
+    which, with a smaller InputTextAction description bump, grew the whole
+    action schema 15,033 -> 16,244 chars vs 0.12.6, i.e. ~+303 tokens on every
+    call — the entire source of the +2.3% token regression measured on the
+    2026-07-31 bench. Excluding this one action more than reverses it.
+
+    Deliberately NOT excluded: read_file/write_file/replace_file/upload_file.
+    They are worth a further ~560 tokens per call, but browser-use's own
+    extract/done flows can write files and the <file_system>/<todo_contents>
+    prompt blocks advertise them to the model, so removing them is a
+    behavioural change that needs its own evidence.
+    """
+    agent.tools.exclude_action("save_as_pdf")
 
 
 # Import browser-use components
@@ -213,9 +242,9 @@ def instrument_llm_timing(llm) -> list[float]:
 
     Returns the list it appends to — one entry per ainvoke, NOT per API call.
     That distinction matters in one direction only. browser-use's empty-action
-    retry calls ainvoke a second time (agent/service.py:1655), so that retry
+    retry calls ainvoke a second time (agent/service.py:1664), so that retry
     does get its own entry. But ChatGoogle.ainvoke also retries internally
-    (llm/google/chat.py:475-490), and those attempts are invisible here: they
+    (llm/google/chat.py:526-541), and those attempts are invisible here: they
     happen inside a single entry, and their backoff sleeps are counted as part
     of that call's duration.
 
@@ -235,19 +264,36 @@ def instrument_llm_timing(llm) -> list[float]:
     So a single entry whose duration exceeds ~15s is that case. llm_max_s is
     the detector; there is no separate counter for it.
 
+    Re-verified on the 0.13.7 bump: the retry loop itself is byte-identical to
+    0.12.6, so both cases above still hold. 0.13.7 adds a THIRD case that did
+    not exist before — a response finishing on MAX_TOKENS now raises
+    ModelOutputTruncatedError (llm/google/chat.py:196-212), status 400,
+    deliberately kept out of the same-provider retry loop. It is "recoverable"
+    only by switching to a fallback_llm, and we configure none, so it fails the
+    step on the first attempt with 0 retries — where 0.12.6 would have fallen
+    through to the parse-repair path above and retried up to 5 times. Currently
+    unreachable in practice: we set no max_output_tokens, and 112k lines of
+    logs/browser_use.log contain zero MAX_TOKENS/truncation events. If step
+    failures ever spike with no matching llm_429_count, look here first.
+
     The list is per-instance and closure-local by construction: the service
     runs up to config.max_concurrent_tasks workflows in a ThreadPoolExecutor,
     each with its own llm_instance and Agent. Module-level state would
     cross-contaminate them.
 
     Call this BEFORE Agent(...) is constructed. Agent.__init__ hands the instance
-    to register_llm (browser_use/agent/service.py:419), which captures whatever
+    to register_llm (browser_use/agent/service.py:425), which captures whatever
     ainvoke is at that moment — so browser-use's token bookkeeping nests OUTSIDE
     this timer and is excluded from what we measure.
 
     Mirrors browser-use's own wrapping pattern, signature included
-    (browser_use/tokens/service.py:345-371), so positional and keyword callers
+    (browser_use/tokens/service.py:369-395), so positional and keyword callers
     both keep working.
+
+    One deliberate divergence since 0.13.7: upstream now patches via
+    object.__setattr__ (tokens/service.py:397) so Pydantic-backed chat models
+    cannot reject the assignment. Plain setattr is still correct here because
+    ChatGoogle is a non-frozen @dataclass, so the two are equivalent for it.
 
     Records in a finally and catches nothing: a timed-out or cancelled call still
     burned wall clock, and swallowing the exception would change agent behaviour.
@@ -267,7 +313,7 @@ def instrument_llm_timing(llm) -> list[float]:
 
 
 # The phrase indicators browser-use itself uses to classify a provider error as
-# 429 (llm/google/chat.py:512-516), matched the same way — lowercased. Matching
+# 429 (llm/google/chat.py:563-567), matched the same way — lowercased. Matching
 # only the literal "RESOURCE_EXHAUSTED" token missed every provider that phrases
 # the quota error differently, and a miss reads as llm_429_count = 0, i.e. "no
 # rate limiting", which is the false-clean this metric exists to prevent.
@@ -275,7 +321,7 @@ def instrument_llm_timing(llm) -> list[float]:
 # browser-use's list also carries a bare "429". Ours deliberately does not:
 # browser-use applies its list only to provider error text, whereas this runs
 # against every ActionResult.error, and tool failures quote the element index —
-# "Element index 429 not available" (tools/service.py:623). On a page indexing
+# "Element index 429 not available" (tools/service.py:712). On a page indexing
 # 2000+ elements, which is exactly what this instrumentation exists to price,
 # index 429 is unremarkable, and the bare token would charge that step's whole
 # duration to retry_lost_s.
@@ -326,9 +372,9 @@ def extract_agent_diagnostics(
     time, so a wrong relationship shows up instead of being baked in.
 
     llm_coverage_gap is the instrument checking itself, but read it carefully.
-    entry_count is len(usage_history) (tokens/service.py:456), and that list is
+    entry_count is len(usage_history) (tokens/service.py:498), and that list is
     appended to ONLY under `if result.usage:` inside tracked_ainvoke
-    (tokens/service.py:356) — so it counts successful calls that reported usage,
+    (tokens/service.py:381) — so it counts successful calls that reported usage,
     not calls. Ours counts every ainvoke, failures included, and our wrapper is
     installed BEFORE register_llm, so tracked_ainvoke nests strictly outside it.
 
@@ -342,8 +388,8 @@ def extract_agent_diagnostics(
         inside one ainvoke; see instrument_llm_timing.
       - positive — a second LLM instance got registered and we never saw its
         calls. Unreachable today: page_extraction_llm and judge_llm both
-        default to the same object (service.py:249-252), register_llm
-        early-returns on a duplicate instance id (tokens/service.py:337-339),
+        default to the same object (service.py:253-255), register_llm
+        early-returns on a duplicate instance id (tokens/service.py:361-363),
         and compaction_llm/fallback_llm are None. Kept as a guard against a
         future Agent(...) kwarg change.
     """
@@ -708,11 +754,11 @@ def process_workflow_task(
                 logger.info(f"🔑 Using Gemini API: model={config.llm.google_model}")
 
             # Wrap BEFORE Agent(...): Agent.__init__ hands this instance to
-            # register_llm (agent/service.py:419), which captures whatever
+            # register_llm (agent/service.py:425), which captures whatever
             # ainvoke is then — so token accounting nests outside this timer.
             # One wrap covers every path: page_extraction_llm defaults to the
-            # same object (service.py:249-250), compaction_llm falls back to it
-            # (service.py:1156), and judge_llm is never invoked (use_judge=False).
+            # same object (service.py:253-255), compaction_llm falls back to it
+            # (service.py:1162), and judge_llm is never invoked (use_judge=False).
             llm_durations = instrument_llm_timing(llm_instance)
 
             use_vision = _resolve_use_vision(config.agent_vision_mode, enable_custom_actions_flag)
@@ -729,6 +775,7 @@ def process_workflow_task(
                 use_judge=False,
             )
             _apply_vision_mode(agent, use_vision)
+            _prune_unused_actions(agent)
             logger.info(
                 f"👁️ Agent vision mode: {config.agent_vision_mode} (use_vision={use_vision!r})"
             )
@@ -814,7 +861,7 @@ def process_workflow_task(
             async def _on_step_end(_agent):
                 # get_selector_map() is a cache read (session.py:2569-2584) —
                 # no CDP call, so this cannot inflate agent_run_s. The unused
-                # parameter is required by AgentHookFunc (agent/service.py:128).
+                # parameter is required by AgentHookFunc (agent/service.py:130).
                 try:
                     dom_samples.append(len(await session.get_selector_map()))
                 except Exception as e:
@@ -878,7 +925,26 @@ def process_workflow_task(
                 except Exception as e:
                     logger.warning(f"🔍 DEBUG: Could not dump usage object: {e}")
 
-                # Extract token counts from UsageSummary
+                # Extract token counts from UsageSummary.
+                #
+                # actual_cost is NOT comparable across the browser-use
+                # 0.12.6/0.13.7 boundary. Up to 0.12.6, UsageSummary.total_cost
+                # was total_prompt_cost + total_completion_cost +
+                # total_prompt_cached_cost, but total_prompt_cost ALREADY
+                # included the cached-read cost via the
+                # TokenCostCalculated.prompt_cost property — so cached tokens
+                # were charged twice. 0.13.7 dropped the trailing term
+                # (tokens/service.py:497), charging them once.
+                #
+                # Measured on the 30-run 2026-07-31 baseline: fitting
+                # cost = a*(prompt-cached) + b*cached + c*completion recovers
+                # litellm's exact gemini-3.5-flash input ($1.50/1M) and output
+                # ($9.00/1M) rates with zero residual, and b = $0.30/1M against
+                # a real cache_read_input_token_cost of $0.15/1M — exactly 2x.
+                # The fix lowers reported cost by $0.15/1M * cached_tokens
+                # (~$0.0018/run, ~3.8% of run total_cost). That drop is
+                # bookkeeping, not efficiency: do not read it as a saving, and
+                # adjust the baseline before gating cost across the boundary.
                 token_usage = {
                     "input_tokens": getattr(usage, "total_prompt_tokens", 0) or 0,
                     "output_tokens": getattr(usage, "total_completion_tokens", 0) or 0,

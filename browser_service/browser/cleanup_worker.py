@@ -133,10 +133,19 @@ def _sweep_leaked_profiles(
     """
     Delete leaked browser-use temp profile dirs, oldest first.
 
-    browser-use 0.12.6 defaults user_data_dir=None → mkdtemp per session
+    browser-use 0.13.7 defaults user_data_dir=None → mkdtemp per session
     (browser-use-user-data-dir-*), and its own teardown never runs because
     cleanup.py hard-kills Chrome first — ~55 leaked dirs/day at ~14 MB each
     (416 dirs / 6.1 GB measured 2026-07-15).
+
+    Re-verified on the 0.13.7 bump: `user_data_dir: str | Path | None = None`
+    and `mkdtemp(prefix='browser-use-user-data-dir-')` are both byte-identical
+    to 0.12.6 (browser/profile.py), and browser-harness 0.1.8 — the new browser
+    management layer in 0.13.x — creates no temp dirs of its own, so the prefix
+    below still matches everything that leaks.
+
+    Not covered, in either version: local_browser_watchdog.py mkdtemps a
+    separate `browseruse-tmp-` dir. Pre-existing, out of this sweep's scope.
 
     Safety: age-gated on the dir's own mtime (a live session's profile is
     being written and stays young; after Chrome dies the mtime freezes), and

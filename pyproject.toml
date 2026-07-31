@@ -7,7 +7,12 @@ name = "browser-service"
 version = "1.0.0"
 description = "Browser automation service with AI-powered element identification and locator generation"
 readme = "README.md"
-requires-python = ">=3.10"
+# Mirrors browser-use's own <4.0,>=3.11. The floor matters most: this file used
+# to declare ">=3.10" alongside a browser-use requiring >=3.11, which made a 3.10
+# install unsatisfiable. The <4.0 cap is carried for the same reason — claiming
+# support for a Python the pinned dependency forbids is the same wrong metadata,
+# and this package publishes to PyPI. Corrected with the 0.13.7 bump.
+requires-python = ">=3.11,<4.0"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "monkscode", email = "1dhruvilvyas@gmail.com"}
@@ -25,20 +30,19 @@ classifiers = [
     "Topic :: Internet :: WWW/HTTP :: Browsers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Operating System :: OS Independent",
 ]
 
 dependencies = [
-    "browser-use==0.12.6",
+    # browser-use exact-pins its own tree (openai, mcp, pydantic, google-genai,
+    # aiohttp) — never co-install with crewai in one venv.
+    "browser-use==0.13.7",
     "playwright>=1.40.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "aiohttp>=3.9.0",
-    "beautifulsoup4>=4.12.0",
-    "langchain-google-genai>=0.0.5",
     "flask>=3.0.0",
     "requests>=2.31.0",
     # Structured logging — REQUIRED: handlers/ and tasks/ import structlog
@@ -85,7 +89,7 @@ browser_service = ["py.typed"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 # E/W = pycodestyle, F = pyflakes, I = import sorting (replaces isort).
@@ -107,7 +111,7 @@ ignore = ["E501", "W291", "W293"]
 "browser_service/tasks/workflow.py" = ["E402"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 ignore_missing_imports = true
 warn_unused_ignores = false
 # Advisory to start — CI runs mypy non-blocking; tighten per-module over time.

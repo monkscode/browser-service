@@ -455,7 +455,7 @@ async def _dispatch_browser_use_event(
             await event
             await event.event_result(raise_if_any=True, raise_if_none=False)
             # TypeTextEvent types via CDP key events (character-by-character) — reliable if no exception raised.
-            # Returns {input_x, input_y, actual_value} (0.12.6). Built-in concatenation-detection retry
+            # Returns {input_x, input_y, actual_value} (0.12.6, re-verified 0.13.7). Built-in concatenation-detection retry
             # self-corrects append-instead-of-replace without caller intervention. No explicit verification needed.
             performed_actions.add(element_id)
             return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}'", "auto_ok"
@@ -881,7 +881,7 @@ def _memory_line(
 ) -> str:
     """Build the long_term_memory sticky note for one element.
 
-    browser-use 0.12.6 (agent/message_manager/service.py:327-331) is an if/elif:
+    browser-use 0.13.7 (agent/message_manager/service.py:332-336) is an if/elif:
     when long_term_memory is set, extracted_content is DISCARDED. So this line is
     the ONLY thing the model still sees about the call — and a locator-only note
     says nothing about whether the interaction happened. For an element whose
@@ -1955,7 +1955,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         logger.info("")
                         # A1-INLINE escalation: metadata={'include_screenshot': True}
                         # makes browser-use attach the current screenshot to the
-                        # NEXT LLM call (message_manager/service.py:444-464) —
+                        # NEXT LLM call (message_manager/service.py:450-470) —
                         # vision-off runs get sight at the moment of failure,
                         # same run, same page state.
                         #

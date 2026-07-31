@@ -7,10 +7,12 @@ name = "browser-service"
 version = "1.0.0"
 description = "Browser automation service with AI-powered element identification and locator generation"
 readme = "README.md"
-# 3.11 floor: browser-use requires <4.0,>=3.11 (already true of the 0.12.6 pin
-# this file used to declare alongside ">=3.10", which made a 3.10 install
-# unsatisfiable). Corrected with the 0.13.7 bump.
-requires-python = ">=3.11"
+# Mirrors browser-use's own <4.0,>=3.11. The floor matters most: this file used
+# to declare ">=3.10" alongside a browser-use requiring >=3.11, which made a 3.10
+# install unsatisfiable. The <4.0 cap is carried for the same reason — claiming
+# support for a Python the pinned dependency forbids is the same wrong metadata,
+# and this package publishes to PyPI. Corrected with the 0.13.7 bump.
+requires-python = ">=3.11,<4.0"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "monkscode", email = "1dhruvilvyas@gmail.com"}

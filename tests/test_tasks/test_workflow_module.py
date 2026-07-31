@@ -743,6 +743,33 @@ class TestAgentVisionModeWiring:
         _prune_unused_actions(agent)
         agent.tools.exclude_action.assert_called_once_with("save_as_pdf")
 
+    def test_prune_unused_actions_removes_save_as_pdf_from_real_registry(self):
+        """Execution-level check against a real browser-use registry.
+
+        The mock test above proves we ask; this proves the ask lands. It also
+        covers the one way this optimisation can rot silently: exclude_action()
+        is a guarded no-op upstream ('if action_name in registry.actions'), so
+        if browser-use ever renames or drops save_as_pdf we would quietly start
+        paying the per-call schema cost again with no error anywhere. Asserting
+        the action is PRESENT before pruning turns that silent regression into a
+        loud test failure.
+        """
+        from types import SimpleNamespace
+
+        from browser_use.tools.service import Tools
+
+        from browser_service.tasks.workflow import _prune_unused_actions
+
+        agent = SimpleNamespace(tools=Tools())
+        actions = agent.tools.registry.registry.actions
+
+        # Fails loudly if upstream renames the action out from under us.
+        assert "save_as_pdf" in actions
+
+        _prune_unused_actions(agent)
+
+        assert "save_as_pdf" not in actions
+
     def test_workflow_prunes_unused_actions(self):
         """The pruning call is wired into the unified workflow, not just defined."""
         import inspect

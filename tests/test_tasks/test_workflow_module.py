@@ -731,6 +731,27 @@ class TestAgentVisionModeWiring:
         _apply_vision_mode(agent, True)
         agent.tools.exclude_action.assert_not_called()
 
+    def test_prune_unused_actions_drops_save_as_pdf(self):
+        """save_as_pdf ships ~515 tokens of parameter schema on EVERY LLM call and
+        this service never produces a PDF. browser-use 0.13.7 added three verbose
+        fields to SaveAsPdfAction (display_header_footer, header_template,
+        footer_template), which is what pushed the action schema from 15,033 to
+        16,244 characters between 0.12.6 and 0.13.7."""
+        from browser_service.tasks.workflow import _prune_unused_actions
+
+        agent = MagicMock()
+        _prune_unused_actions(agent)
+        agent.tools.exclude_action.assert_called_once_with("save_as_pdf")
+
+    def test_workflow_prunes_unused_actions(self):
+        """The pruning call is wired into the unified workflow, not just defined."""
+        import inspect
+
+        import browser_service.tasks.workflow as wf
+
+        src = inspect.getsource(wf.process_workflow_task)
+        assert "_prune_unused_actions(agent)" in src
+
     def test_workflow_wires_vision_mode_from_config(self):
         """The unified workflow builds use_vision from config.agent_vision_mode
         + the custom-actions flag, and applies the schema exclusion — no

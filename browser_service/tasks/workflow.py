@@ -105,6 +105,35 @@ def _apply_vision_mode(agent, use_vision) -> None:
         agent.tools.exclude_action("screenshot")
 
 
+def _prune_unused_actions(agent) -> None:
+    """Drop default actions this service can never use from the model-facing schema.
+
+    Same rationale and mechanism as _apply_vision_mode above: every registered
+    action's parameter schema is serialised into response_format on EVERY LLM
+    call, so an action we never invoke is a fixed per-call tax.
+
+    save_as_pdf renders the page to a PDF. This service only ever resolves
+    locators and hands them back — there is no PDF consumer anywhere in
+    browser_service, and no run has ever invoked it.
+
+    Measured (browser-use 0.13.7, the real 24-action registry, optimised schema
+    as sent): 16,244 chars with it, 14,185 without — ~515 tokens per call.
+    That matters now because 0.13.7 added three verbose fields to
+    SaveAsPdfAction (display_header_footer, header_template, footer_template)
+    which, with a smaller InputTextAction description bump, grew the whole
+    action schema 15,033 -> 16,244 chars vs 0.12.6, i.e. ~+303 tokens on every
+    call — the entire source of the +2.3% token regression measured on the
+    2026-07-31 bench. Excluding this one action more than reverses it.
+
+    Deliberately NOT excluded: read_file/write_file/replace_file/upload_file.
+    They are worth a further ~560 tokens per call, but browser-use's own
+    extract/done flows can write files and the <file_system>/<todo_contents>
+    prompt blocks advertise them to the model, so removing them is a
+    behavioural change that needs its own evidence.
+    """
+    agent.tools.exclude_action("save_as_pdf")
+
+
 # Import browser-use components
 from browser_use import Agent
 
@@ -746,6 +775,7 @@ def process_workflow_task(
                 use_judge=False,
             )
             _apply_vision_mode(agent, use_vision)
+            _prune_unused_actions(agent)
             logger.info(
                 f"👁️ Agent vision mode: {config.agent_vision_mode} (use_vision={use_vision!r})"
             )

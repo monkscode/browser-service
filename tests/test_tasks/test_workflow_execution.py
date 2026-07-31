@@ -847,7 +847,7 @@ class TestAgentConfiguration:
         run_workflow(workflow_harness)
 
         assert workflow_harness.agent.init_kwargs["use_vision"] == "auto"
-        assert workflow_harness.agent.tools.excluded == ["screenshot"]
+        assert "screenshot" in workflow_harness.agent.tools.excluded
 
     def test_vision_on_keeps_screenshot_action(self, workflow_harness):
         """The 'on' escape hatch keeps full vision and the action in the schema."""
@@ -857,7 +857,7 @@ class TestAgentConfiguration:
         run_workflow(workflow_harness)
 
         assert workflow_harness.agent.init_kwargs["use_vision"] is True
-        assert workflow_harness.agent.tools.excluded == []
+        assert "screenshot" not in workflow_harness.agent.tools.excluded
 
 
 class TestCustomActionRegistrationFallback:

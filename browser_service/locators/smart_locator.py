@@ -425,7 +425,8 @@ async def validate_semantic_match(
     Semantic validation that the matched element is the one the user meant.
 
     Primary path (node is not None): read the canonical "what the LLM saw for this node"
-    surface that browser-use 0.12.6 pre-populates on every selector_map entry.
+    surface that browser-use pre-populates on every selector_map entry (verified
+    on 0.12.6 and 0.13.7).
     Probe 16 confirmed this distinguishes target from a wrong-sibling for text-bearing
     buttons, bare inputs, and icon-/aria-only elements — zero CDP round-trips.
 

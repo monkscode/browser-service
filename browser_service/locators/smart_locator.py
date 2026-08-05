@@ -4130,6 +4130,15 @@ async def find_unique_locator_at_coordinates(
     # (e.g., "buttons work better with text_first approach")
     # NOTE: This must be AFTER the iframe reset above to capture the actual
     # target element's characteristics, not the iframe container's.
+    # has_id HERE means "the indexed DOM element carries an id". The candidate
+    # accepts in agent/actions.py write the SAME key from the LOCATOR string
+    # (_locator_has_id), so the field is two-valued across captured metrics —
+    # 2,355 of 3,580 rows in nlrf's bench corpus are the locator form. Split on
+    # locator_approach (actions_candidate*) before aggregating it; reading the
+    # two together silently answers a third question. Its only reader,
+    # tools/analyze_locator_patterns.py, is stale — it loads the
+    # logs/workflow_metrics.jsonl that the Postgres migration retired — so
+    # neither definition is live today. Whichever survives, decide it there.
     _approach_metrics_base = {
         "element_tag": element_data.get("tagName", "").lower() if element_data else "",
         "has_id": bool(element_data.get("id")) if element_data else False,

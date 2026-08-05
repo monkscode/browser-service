@@ -28,6 +28,7 @@ Usage:
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any, Dict, Optional
 
@@ -159,6 +160,21 @@ def _identity_mismatch(
     return ""
 
 
+# Where an id can legitimately appear in a locator: the CSS shorthand, an
+# attribute selector naming `id` (CSS `[id=`/`[id^=`, or xpath's `[@id=`), and
+# Browser Library's `id=` selector engine at the head of a chain segment.
+#
+# Anchored rather than substring-matched because `id=` is a suffix of other
+# attribute names. `[aria-invalid="true"]` ends "...inval|id=|", and the
+# substring form scored it as an id — on an attribute this service emits
+# deliberately (_extract_dom_node_attributes carries ariaInvalid for nlrf's
+# state-verification assembler). Anchoring also retires the old data-* exclusion
+# list, two thirds of which was dead: `data-test=` and `data-qa=` do not contain
+# "id=" at all and could never have fired. Only `data-testid=` ever did, and
+# `\[@?id` cannot match it.
+_ID_LOCATOR_RE = re.compile(r"^\#|\[@?id[\^$*~|]?=|(?:^|>>\s*|\s)id=")
+
+
 def _locator_has_id(locator: str) -> bool:
     """The ``approach_metrics.has_id`` signal for a candidate-path accept.
 
@@ -167,18 +183,15 @@ def _locator_has_id(locator: str) -> bool:
     field across approaches, and two definitions make that count meaningless.
 
     Reads the LOCATOR, not element_data: on this path the question is whether
-    the address we are about to ship is id-anchored. The data-* exclusions stop
-    `[data-testid="x"]` scoring as an id purely because it contains "id=".
+    the address we are about to ship is id-anchored.
+
+    Checked against the 235 distinct locators in nlrf's captured bench corpus.
+    One shape changes verdict versus the substring form: `css=id=searchBox`, the
+    malformed double prefix fixed in nlrf 8f543d2, now scores False. It is not
+    a locator the pipeline emits any more, so it is left unhandled rather than
+    given a branch of its own.
     """
-    low = (locator or "").lower().lstrip()
-    return (
-        low.startswith("#")
-        or "[id=" in low
-        or (
-            "id=" in low
-            and not any(k in low for k in ("data-testid=", "data-test=", "data-qa="))
-        )
-    )
+    return bool(_ID_LOCATOR_RE.search((locator or "").lower().lstrip()))
 
 
 def _candidate_element_info(

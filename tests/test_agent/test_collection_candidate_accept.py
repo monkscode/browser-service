@@ -324,10 +324,15 @@ class TestHasIdIsOnePredicate:
         [
             ("#books li", True),
             ('[id="books"] li', True),
+            ('[id^="row"]', True),
             ("id=books >> li", True),  # the shape the narrow copy missed
-            ('[data-testid="book"] a', False),  # contains "id=" but is not one
+            ("li >> id=title", True),  # engine token mid-chain
+            ('xpath=//div[@id="books"]', True),  # 64 occurrences in the corpus
+            ('[data-testid="book"] a', False),  # ends "...test|id=|"
+            ('[aria-invalid="true"]', False),  # ends "...inval|id=|"
             ('[data-qa="book"] a', False),
             (".product_pod h3 a", False),
+            ("text=Accounts", False),
         ],
     )
     @pytest.mark.asyncio

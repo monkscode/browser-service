@@ -67,15 +67,48 @@ def _render_element_lines(idx: int, elem: Dict[str, Any]) -> List[str]:
     EXAMPLE_WORKFLOW_TEMPLATE: "elem_1's action caused a page change, so
     elem_2 is naturally found on the new page"), a model with no way to
     express "now go here". Without this line the destination reaches the agent
-    only through the goal prose, which it follows only sometimes: 58 of 246
-    post-navigation validations (24%) landed on the wrong page when measured
-    over 2026-07 logs.
+    only through the goal prose, which it follows most of the time but not all
+    of it.
 
-    That rate fell to 0 on 2026-07-31 — coinciding with the browser-use 0.13.7
-    upgrade, though causation was not established — and has stayed there: 0
-    wrong-page validations across 77 workflows and 346 validations on 07-31,
-    08-04 and 08-05. This line is kept as a guard for the corner case, not
-    because the failure currently reproduces.
+    MEASURED 2026-08-05 over the 2026-07-16..2026-08-05 logs, on the
+    population this line actually targets — the elements the caller stamps
+    with ``navigate_before``, each matched against the page its validation ran
+    on. Every workflow self-reports its side, because a rendered line is in
+    the captured prompt:
+
+        browser-use 0.12.6, no line       6 / 82 wrong page   7.3%
+        browser-use 0.13.7, no line       2 / 55 wrong page   3.6%
+        browser-use 0.13.7, line rendered 0 / 18 wrong page   0.0%
+
+    Three things follow, and none of them is "fixed":
+
+    - The failure is NOT extinct. It reproduces on 0.13.7, most recently
+      2026-08-04, and both 0.13.7 occurrences ended in a failed run.
+      Wrong-page runs pass 4/8; right-page runs 122/163. An earlier note here
+      claimed 0 across 07-31, 08-04 and 08-05 — that was a wider population,
+      and it is wrong for this one.
+    - 0.13.7 did not end it. 7.3% -> 3.6% is Fisher two-sided p = 0.475, i.e.
+      noise. Do not repeat the "coincided with the upgrade" causation claim.
+    - This line has NOT been shown to change any outcome. 0/18 against a 3.6%
+      baseline expects 0.65 failures; P(zero | no effect) = 0.51, Fisher
+      p = 1.000. The agent reached the right page unaided in 53 of 55 runs, so
+      the line is redundant roughly 96% of the time.
+
+    REMOVAL CONDITION, so the deferral is explicit rather than permanent:
+    re-measure once >= 80 validations have run WITH the line rendered (81
+    gives 95% confidence of catching a 3.6% rate; about 18 render per pass of
+    the private corpus, so four or five of them). Then decide either way:
+
+    - >= 1 wrong-page validation → the line does not prevent the failure.
+      Delete it, and ``navigate_before`` with it.
+    - 0 wrong-page validations → it has cleared the bar it shipped on. Record
+      the count here and drop this condition.
+
+    Until that count is reached this is a corner-case guard on an unproven
+    effect, kept because the failure still occurs and still costs a run. The
+    entire population is one query shape from one corpus — no query in the
+    30-query suite produces a mid-sequence navigation, so only private-corpus
+    runs advance the count.
 
     ``navigate_before`` is optional in both directions — an element without it
     renders byte-identically to before the key existed, and a service that

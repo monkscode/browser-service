@@ -28,6 +28,7 @@ Usage:
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any, Dict, Optional
 
@@ -81,7 +82,10 @@ _RESOLVED_READ_TIMEOUT_MS = 2000
 
 
 async def _read_resolved_element(
-    search_root, locator: str, timeout_ms: int = _RESOLVED_READ_TIMEOUT_MS
+    search_root,
+    locator: str,
+    timeout_ms: int = _RESOLVED_READ_TIMEOUT_MS,
+    first_only: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Read the element ``locator`` resolves to — what we are about to accept.
 
@@ -89,11 +93,18 @@ async def _read_resolved_element(
     selector engine, or the bounded wait expiring). Callers must treat None as
     "unknown", never as "mismatch": this read exists to make the accept honest,
     and must never turn a working accept into a found=false.
+
+    ``first_only`` scopes the read to the first match. A many-match locator is
+    a Playwright strict-mode violation for ``Locator.evaluate``, so the
+    collection accept — which is asking about a locator that SHOULD match many
+    — would otherwise get None back and read it as "unknown", i.e. accept
+    unchecked. That would silently disarm the q08 identity guard.
     """
     try:
-        resolved = await search_root.locator(locator).evaluate(
-            _RESOLVED_ELEMENT_JS, timeout=timeout_ms
-        )
+        target = search_root.locator(locator)
+        if first_only:
+            target = target.nth(0)
+        resolved = await target.evaluate(_RESOLVED_ELEMENT_JS, timeout=timeout_ms)
     except Exception as e:
         logger.warning(f"   ⚠️ Could not read resolved element for '{locator}': {e}")
         return None
@@ -104,7 +115,10 @@ async def _read_resolved_element(
 
 
 def _identity_mismatch(
-    element_data: Optional[Dict[str, Any]], resolved: Optional[Dict[str, Any]]
+    element_data: Optional[Dict[str, Any]],
+    resolved: Optional[Dict[str, Any]],
+    *,
+    compare_id: bool = True,
 ) -> str:
     """Reason string when ``resolved`` is PROVABLY not the indexed element.
 
@@ -118,6 +132,16 @@ def _identity_mismatch(
     absent element_data, an unreadable element, or an empty id on either side
     yields "" (accept unchanged); an empty id is not evidence of a different
     element, only of a missing attribute.
+
+    ``compare_id=False`` for the COLLECTION accept, where the id signal is not
+    merely weaker but unsound. That caller reads ``.nth(0)`` while the agent
+    indexes whichever member it clicked, and the members of a keyed list carry
+    distinct ids by construction — so a server-rendered table keyed by database
+    id mismatches on every row but the first. The reject then falls through to
+    the cascade, which returns the ANCESTOR and reinstates the unvalidated
+    child selector that accept exists to eliminate. Tag stays compared on both
+    paths: that is the half with evidence behind it (the bench rejected
+    `article.product_pod` as "indexed <a> but resolves to <article>").
     """
     if not element_data or not resolved:
         return ""
@@ -127,12 +151,67 @@ def _identity_mismatch(
     if indexed_tag and resolved_tag and indexed_tag != resolved_tag:
         return f"indexed <{indexed_tag}> but candidate resolves to <{resolved_tag}>"
 
-    indexed_id = (element_data.get("id") or "").strip()
-    resolved_id = (resolved.get("id") or "").strip()
-    if indexed_id and resolved_id and indexed_id != resolved_id:
-        return f"indexed id '{indexed_id}' but candidate resolves to id '{resolved_id}'"
+    if compare_id:
+        indexed_id = (element_data.get("id") or "").strip()
+        resolved_id = (resolved.get("id") or "").strip()
+        if indexed_id and resolved_id and indexed_id != resolved_id:
+            return f"indexed id '{indexed_id}' but candidate resolves to id '{resolved_id}'"
 
     return ""
+
+
+# The two places an id can appear in a locator other than the `#` shorthand.
+# Kept as separate patterns rather than one alternation: the engine form is
+# anchorable and the attribute form is not, and mixing the two under a single
+# `|` makes the reach of `^` ambiguous to a reader (and trips Sonar S5850).
+#
+# Matched structurally rather than by substring because `id=` is a SUFFIX of
+# other attribute names. `[aria-invalid="true"]` ends "...inval|id=|", and the
+# substring form scored it as an id — on an attribute this service emits
+# deliberately (_extract_dom_node_attributes carries ariaInvalid for nlrf's
+# state-verification assembler). Structure also retires the old data-* exclusion
+# list, two thirds of which was dead: `data-test=` and `data-qa=` do not contain
+# "id=" at all and could never have fired. Only `data-testid=` ever did, and
+# `\[@?id` cannot match it.
+
+# An attribute selector whose attribute NAME is id: [id= [id^= and xpath's [@id=
+_ID_ATTRIBUTE_RE = re.compile(r"\[@?id[\^$*~|]?=")
+
+# Browser Library's `id=` selector engine, at the head of a chain segment.
+_ID_ENGINE_RE = re.compile(r"(?:^|>>\s*|\s)id=")
+
+
+def _locator_has_id(locator: str) -> bool:
+    """The ``approach_metrics.has_id`` signal for a candidate-path accept.
+
+    Both accept branches report the same locator shapes, so both must answer
+    this the same way; two definitions inside one file make the field mean two
+    things depending only on which branch accepted. TestHasIdIsOnePredicate
+    pins that agreement.
+
+    Reads the LOCATOR, not element_data: on this path the question is whether
+    the address we are about to ship is id-anchored.
+
+    NOTE — nothing reads this field. The reader this once cited, nlrf's
+    tools/analyze_locator_patterns.py, was deleted: its input (a JSONL metrics
+    file) had been retired by the Postgres migration years of runs ago, and its
+    depth→strategy map had drifted far enough to invert a bucket. smart_locator
+    writes the same KEY from the DOM element instead (see the note at
+    _approach_metrics_base), so a future reader must split on locator_approach.
+    The field is kept because 1,840 captured runs carry it.
+
+    Checked against the 235 distinct locators in nlrf's captured bench corpus.
+    One shape changes verdict versus the substring form: `css=id=searchBox`, the
+    malformed double prefix fixed in nlrf 8f543d2, now scores False. It is not
+    a locator the pipeline emits any more, so it is left unhandled rather than
+    given a branch of its own.
+    """
+    low = (locator or "").lower().lstrip()
+    return (
+        low.startswith("#")
+        or _ID_ATTRIBUTE_RE.search(low) is not None
+        or _ID_ENGINE_RE.search(low) is not None
+    )
 
 
 def _candidate_element_info(
@@ -594,8 +673,6 @@ async def find_unique_locator_action(
                             logger.info(f"{'=' * 80}")
                             logger.info("")
 
-                            locator_lower = final_locator.lower().lstrip()
-
                             # Describe the element being RETURNED. The identity
                             # gate above has already rejected anything provably
                             # different, so the resolved read is both safe and
@@ -687,20 +764,126 @@ async def find_unique_locator_action(
                                     "fallback_depth": 0,  # Best case - candidate worked
                                     "success": True,
                                     "element_tag": elem_tag,
-                                    "has_id": (
-                                        locator_lower.startswith("#")
-                                        or "[id=" in locator_lower
-                                        or (
-                                            "id=" in locator_lower
-                                            and not any(
-                                                k in locator_lower
-                                                for k in ("data-testid=", "data-test=", "data-qa=")
-                                            )
-                                        )
-                                    ),
+                                    "has_id": _locator_has_id(final_locator),
                                     "has_text_content": elem_has_text,
                                     "element_data_available": elem_data_available,
                                     "is_collection": is_collection is True,
+                                    "is_in_iframe": bool(iframe_context),
+                                },
+                            }
+                    elif count > 1 and is_collection:
+                        # A COLLECTION request asked for many, so many matches
+                        # is the answer — not a failure. Rejecting the agent's
+                        # own address here is what forced the traversal to
+                        # return an ANCESTOR of the indexed element (`ol > li`
+                        # for an indexed <a>), leaving the assembler to invent
+                        # an unvalidated child selector to get back down. Both
+                        # captured collection failures start there:
+                        #   31a66a98  Get Attribute <li> title -> AttributeError
+                        #   q06 rep2  tbody tr -> div[role=gridcell] -> timeout
+                        #
+                        # The unique path's identity guard cannot stand in: its
+                        # read raises strict mode on a many-match locator and
+                        # returns None, which means "unknown -> accept". Read
+                        # the FIRST match instead and apply the same provable
+                        # tag/id comparison. First match only, matching that
+                        # guard's strength — a collection may legitimately mix
+                        # element kinds, and over-rejecting costs a good
+                        # locator.
+                        #
+                        # TAG ONLY. The id half of the comparison is unsound
+                        # here: the read is pinned to .nth(0) while the agent
+                        # indexes whichever member it clicked, and a keyed
+                        # list's members carry distinct ids by construction.
+                        _first = await _read_resolved_element(
+                            search_root, playwright_locator, first_only=True
+                        )
+                        _collection_reason = _identity_mismatch(
+                            element_data, _first, compare_id=False
+                        )
+                        if _collection_reason:
+                            logger.info(
+                                f"   ⛔ COLLECTION CANDIDATE IDENTITY REJECT: "
+                                f"'{playwright_locator}' — {_collection_reason}; continuing "
+                                f"with smart locator finder (signal: "
+                                f"collection-candidate-resolves-to-different-element)"
+                            )
+                        else:
+                            final_locator = playwright_locator
+                            logger.info(
+                                f"   ✅ COLLECTION CANDIDATE ACCEPTED: '{final_locator}' "
+                                f"matches {count} elements and resolves to the indexed "
+                                f"element (signal: collection-candidate-accepted)"
+                            )
+                            _describes = _first or element_data
+                            _info_source = (
+                                "candidate_resolved_element" if _first else "candidate_element_data"
+                            )
+                            elem_tag = ""
+                            elem_has_text = False
+                            if _describes:
+                                elem_tag = (_describes.get("tagName") or "").lower()
+                                _text = _describes.get("textContent", "") or _describes.get(
+                                    "text", ""
+                                )
+                                elem_has_text = bool(_text and _text.strip())
+                            collection_stability = classify_locator(final_locator)
+                            return {
+                                # element_type LAST-writes 'collection': nlrf
+                                # routes the assembler's FOR-loop block on it
+                                # (tasks._needs_loop). Without it a
+                                # single-element keyword gets pointed at a
+                                # many-match locator and Browser raises strict
+                                # mode at run time, which --dryrun cannot see.
+                                **_candidate_tier0_stamp(_describes, element_description),
+                                "element_type": "collection",
+                                "element_id": element_id,
+                                "description": element_description,
+                                "found": True,
+                                "best_locator": final_locator,
+                                "stability": collection_stability,
+                                "all_locators": [
+                                    {
+                                        "type": "collection",
+                                        "locator": final_locator,
+                                        "priority": 0,
+                                        "strategy": "Agent-provided collection candidate",
+                                        "count": count,
+                                        "unique": False,
+                                        "valid": True,
+                                        "validated": True,
+                                        "validation_method": "playwright",
+                                        "stability": collection_stability,
+                                    }
+                                ],
+                                "element_info": _candidate_element_info(_describes, _info_source),
+                                "coordinates": {"x": x, "y": y},
+                                "validation_summary": {
+                                    "total_generated": 1,
+                                    "valid": 1,
+                                    "unique": 0,
+                                    "validated": 1,
+                                    "not_found": 0,
+                                    "not_unique": 1,
+                                    "errors": 0,
+                                    "best_type": "collection",
+                                    "best_strategy": "Agent-provided collection candidate",
+                                    "validation_method": "playwright",
+                                },
+                                "validated": True,
+                                "count": count,
+                                "unique": False,
+                                "valid": True,
+                                "validation_method": "playwright",
+                                "approach_metrics": {
+                                    "locator_approach": "actions_candidate_collection",
+                                    "fallback_depth": 0,
+                                    "success": True,
+                                    "element_tag": elem_tag,
+                                    "has_id": _locator_has_id(final_locator),
+                                    "has_text_content": elem_has_text,
+                                    "element_data_available": bool(element_data),
+                                    "is_collection": True,
                                     "is_in_iframe": bool(iframe_context),
                                 },
                             }

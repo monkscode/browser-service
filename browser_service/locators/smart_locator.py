@@ -2790,6 +2790,52 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
     return locator_candidates
 
 
+# Candidate types that identify the ELEMENT ITSELF. Parent-context CSS is
+# deliberately absent: it describes the neighbourhood, so its existence says
+# nothing about whether this element can be found semantically.
+#
+# Allowlist, not denylist, and the direction of the failure is the reason. A
+# genuinely semantic type added here and forgotten makes the gate stricter —
+# more elements route to TEXT-FIRST, which is the pre-2026-07-22 behaviour and
+# safe. A new NON-semantic type under a denylist would silently re-enable the
+# xpath branch, which is the bug this exists to prevent.
+# test_semantic_gate.test_every_emitted_type_is_classified holds the set in
+# sync with what _build_element_data_candidates can emit.
+_SEMANTIC_CANDIDATE_TYPES = frozenset(
+    {
+        "id",
+        "id-attr",
+        "data-testid",
+        "data-test",
+        "name",
+        "aria-role",
+        "aria-label",
+        "placeholder",
+    }
+)
+
+
+def _has_semantic_locators(locator_candidates: list[dict]) -> bool:
+    """Does this element have a candidate that identifies IT, rather than
+    where it sits?
+
+    Gates the shortened-/full-xpath branch in
+    ``_generate_locators_from_element_data``. The question it answers is "is
+    there something better than text to try first?" — and a parent-context
+    CSS selector is not, because it may match every sibling.
+
+    Why this is not ``len(locator_candidates) > 0`` (2026-07-22, ``9e3fe36``):
+    repairing the parentClassName read made the parent-context branch fire for
+    every no-id/no-name element with a classed parent. On the ASTPP sidebar
+    that candidate is ``.menuclass a`` — 16 matches, fails validation, wins
+    nothing — but its mere presence flipped the gate, enabled the xpath
+    branch, and STEP 0 then returned a positional suffix instead of declining
+    to TEXT-FIRST. A candidate that fails validation was gating the decision
+    to abandon semantic locators.
+    """
+    return any(c.get("type") in _SEMANTIC_CANDIDATE_TYPES for c in locator_candidates)
+
+
 async def _generate_locators_from_element_data(
     search_context,  # Can be page or frame_locator when in iframe context
     element_data: dict[str, Any],
@@ -3114,7 +3160,8 @@ async def _generate_locators_from_element_data(
     # 2. Shortened xpath (unique suffix) - more stable than full xpath
     # 3. Full xpath - last resort, fragile
 
-    has_semantic_locators = len(locator_candidates) > 0  # id, name, aria-label, etc.
+    # id, name, aria-label, etc. — NOT parent-context CSS (see the helper).
+    has_semantic_locators = _has_semantic_locators(locator_candidates)
 
     # STEP A: Try attribute-based CSS from element data (role, type, class)
     # These are more stable than xpath and work even when element has no id
@@ -4083,6 +4130,17 @@ async def find_unique_locator_at_coordinates(
     # (e.g., "buttons work better with text_first approach")
     # NOTE: This must be AFTER the iframe reset above to capture the actual
     # target element's characteristics, not the iframe container's.
+    # has_id HERE means "the indexed DOM element carries an id". The candidate
+    # accepts in agent/actions.py write the SAME key from the LOCATOR string
+    # (_locator_has_id), so the field is two-valued across captured metrics —
+    # 2,355 of 3,580 rows in nlrf's bench corpus are the locator form. Split on
+    # locator_approach (actions_candidate*) before aggregating it; reading the
+    # two together silently answers a third question. NOTHING reads the field
+    # today — the one reader, nlrf's tools/analyze_locator_patterns.py, was
+    # deleted as unrunnable (retired JSONL input, and a depth→strategy map that
+    # labelled the accessibility bucket "Coordinate Fallback"). It is kept
+    # because 1,840 captured runs carry it. A future reader decides which
+    # definition it wants — in the reader, not here.
     _approach_metrics_base = {
         "element_tag": element_data.get("tagName", "").lower() if element_data else "",
         "has_id": bool(element_data.get("id")) if element_data else False,

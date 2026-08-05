@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Parent-context CSS is unique — it must still win</title>
+  <!--
+    SYNTHETIC. Companion to sidebar_parent_class_gate.html.
+
+    Same candidate FAMILY, opposite outcome: here ".loginbox input" matches
+    exactly one element, so parent-context CSS is a genuinely useful locator
+    and must keep winning. This is the capability 9e3fe36 added; the
+    has_semantic_locators fix removes parent-context CSS from the xpath GATE
+    without removing it from the candidate list, and this fixture is what
+    proves the difference.
+
+    The field deliberately has no id, no name, no placeholder and no
+    aria-label — those are the attributes that would make parent-context CSS
+    unnecessary, and _build_element_data_candidates only emits the
+    parent-context branch when id and name are both absent.
+  -->
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 2rem; }
+    .loginbox { border: 1px solid #d0d5dd; padding: 1rem; width: 320px; }
+    .footerbox input { width: 100%; }
+    label { display: block; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <form>
+    <div class="loginbox">
+      <label>Account</label>
+      <input type="text" value="admin">
+    </div>
+
+    <!-- Decoys: other inputs on the page, under a DIFFERENT parent class, so
+         a bare "input" or 'input[type="text"]' selector is not unique. -->
+    <div class="footerbox">
+      <input type="text" value="">
+      <input type="text" value="">
+    </div>
+  </form>
+</body>
+</html>

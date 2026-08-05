@@ -1800,7 +1800,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             if _idx is not None:
                                 display_note = (
                                     f"\n⚠️ Automated click failed — all strategies exhausted. "
-                                    f"FALLBACK REQUIRED: Call click_element(index={_idx}). "
+                                    f"FALLBACK REQUIRED: Call click(index={_idx}). "
                                     f"After clicking, wait for page updates — this may navigate to a new page."
                                 )
                             else:
@@ -1815,7 +1815,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             if _idx is not None:
                                 display_note = (
                                     f"\n⚠️ Automated input failed — all strategies exhausted. "
-                                    f'FALLBACK REQUIRED: Call input_text(index={_idx}, text="{_value}").'
+                                    f'FALLBACK REQUIRED: Call input(index={_idx}, text="{_value}").'
                                 )
                             else:
                                 display_note = (
@@ -1829,7 +1829,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             if _idx is not None:
                                 display_note = (
                                     f"\n⚠️ Automated select failed — all strategies exhausted. "
-                                    f'FALLBACK REQUIRED: Call select_dropdown_option(index={_idx}, text="{_value}").'
+                                    f'FALLBACK REQUIRED: Call select_dropdown(index={_idx}, text="{_value}").'
                                 )
                             else:
                                 display_note = (

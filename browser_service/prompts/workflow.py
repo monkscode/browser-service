@@ -44,6 +44,106 @@ from browser_service.prompts.templates import (
 )
 
 
+def _sanitize_prompt_field(value: Any) -> str:
+    """Flatten an interpolated value to one line.
+
+    Every field below is authored by an LLM (the plan) or echoed from user
+    input, so a newline in one would otherwise inject prompt structure.
+    """
+    return str(value or "").replace("\n", " ").replace("\r", " ").strip()
+
+
+def _render_element_lines(idx: int, elem: Dict[str, Any]) -> List[str]:
+    """The prompt lines for ONE element, in order.
+
+    Extracted from build_workflow_prompt's loop when the orphan-navigation
+    line was added: that function was already at the configured cognitive
+    complexity ceiling, so the branch had nowhere to go.
+
+    Usually one line. Two when the element carries ``navigate_before`` — an
+    ORPHAN navigation, one the plan states explicitly and no element's action
+    triggers. Elements are processed in order and the agent normally changes
+    pages as a side effect of the previous element's action (see
+    EXAMPLE_WORKFLOW_TEMPLATE: "elem_1's action caused a page change, so
+    elem_2 is naturally found on the new page"), a model with no way to
+    express "now go here". Without this line the destination reaches the agent
+    only through the goal prose, which it follows most of the time but not all
+    of it.
+
+    MEASURED 2026-08-05 over the 2026-07-16..2026-08-05 logs, on the
+    population this line actually targets — the elements the caller stamps
+    with ``navigate_before``, each matched against the page its validation ran
+    on. Every workflow self-reports its side, because a rendered line is in
+    the captured prompt:
+
+        browser-use 0.12.6, no line       6 / 82 wrong page   7.3%
+        browser-use 0.13.7, no line       2 / 55 wrong page   3.6%
+        browser-use 0.13.7, line rendered 0 / 18 wrong page   0.0%
+
+    Three things follow, and none of them is "fixed":
+
+    - The failure is NOT extinct. It reproduces on 0.13.7, most recently
+      2026-08-04, and both 0.13.7 occurrences ended in a failed run.
+      Wrong-page runs pass 4/8; right-page runs 122/163. An earlier note here
+      claimed 0 across 07-31, 08-04 and 08-05 — that was a wider population,
+      and it is wrong for this one.
+    - 0.13.7 did not end it. 7.3% -> 3.6% is Fisher two-sided p = 0.475, i.e.
+      noise. Do not repeat the "coincided with the upgrade" causation claim.
+    - This line has NOT been shown to change any outcome. 0/18 against a 3.6%
+      baseline expects 0.65 failures; P(zero | no effect) = 0.51, Fisher
+      p = 1.000. The agent reached the right page unaided in 53 of 55 runs, so
+      the line is redundant roughly 96% of the time.
+
+    REMOVAL CONDITION, so the deferral is explicit rather than permanent:
+    re-measure once >= 80 validations have run WITH the line rendered (81
+    gives 95% confidence of catching a 3.6% rate; about 18 render per pass of
+    the private corpus, so four or five of them). Then decide either way:
+
+    - >= 1 wrong-page validation → the line does not prevent the failure.
+      Delete it, and ``navigate_before`` with it.
+    - 0 wrong-page validations → it has cleared the bar it shipped on. Record
+      the count here and drop this condition.
+
+    Until that count is reached this is a corner-case guard on an unproven
+    effect, kept because the failure still occurs and still costs a run. The
+    entire population is one query shape from one corpus — no query in the
+    30-query suite produces a mid-sequence navigation, so only private-corpus
+    runs advance the count.
+
+    ``navigate_before`` is optional in both directions — an element without it
+    renders byte-identically to before the key existed, and a service that
+    predates the key simply ignores it.
+    """
+    elem_id = elem.get("id", f"elem_unknown_{idx}")  # Default with index if missing
+    elem_action = elem.get("action", "get_text")  # Default to get_text if missing
+    elem_value = elem.get("value", "")  # Get value for input actions
+    elem_loop_type = elem.get("loop_type", None)  # Get loop type for collection detection
+
+    # .get with a default, NOT `or` — an element carrying description="" kept
+    # the empty string before this was extracted, and must keep it.
+    elem_desc = _sanitize_prompt_field(elem.get("description", "No description provided"))
+    if len(elem_desc) > 200:
+        elem_desc = elem_desc[:200] + "..."
+
+    lines: List[str] = []
+
+    elem_navigate = _sanitize_prompt_field(elem.get("navigate_before"))
+    if elem_navigate:
+        lines.append(f"   → Then navigate to {elem_navigate}")
+
+    # Format element based on action type and loop_type
+    if elem_value and elem_action in ["input", "type"]:
+        # Input actions with value (CRITICAL for credentials/search terms)
+        lines.append(f'   - {elem_id}: {elem_desc} (action: {elem_action}, value: "{elem_value}")')
+    elif elem_loop_type:
+        # Collection elements (loop: FOR indicates multi-element)
+        lines.append(f"   - {elem_id}: {elem_desc} (action: {elem_action}, loop: {elem_loop_type})")
+    else:
+        lines.append(f"   - {elem_id}: {elem_desc} (action: {elem_action})")
+
+    return lines
+
+
 def build_workflow_prompt(
     user_query: str,
     url: str,
@@ -115,30 +215,7 @@ def build_workflow_prompt(
     # Build element list with validation
     element_list = []
     for idx, elem in enumerate(elements):
-        elem_id = elem.get("id", f"elem_unknown_{idx}")  # Default with index if missing
-        elem_desc = elem.get("description", "No description provided")  # Default description
-        elem_action = elem.get("action", "get_text")  # Default to get_text if missing
-        elem_value = elem.get("value", "")  # Get value for input actions
-        elem_loop_type = elem.get("loop_type", None)  # Get loop type for collection detection
-
-        # Sanitize description to prevent prompt issues
-        elem_desc = elem_desc.replace("\n", " ").replace("\r", " ").strip()
-        if len(elem_desc) > 200:
-            elem_desc = elem_desc[:200] + "..."
-
-        # Format element based on action type and loop_type
-        if elem_value and elem_action in ["input", "type"]:
-            # Input actions with value (CRITICAL for credentials/search terms)
-            element_list.append(
-                f'   - {elem_id}: {elem_desc} (action: {elem_action}, value: "{elem_value}")'
-            )
-        elif elem_loop_type:
-            # Collection elements (loop: FOR indicates multi-element)
-            element_list.append(
-                f"   - {elem_id}: {elem_desc} (action: {elem_action}, loop: {elem_loop_type})"
-            )
-        else:
-            element_list.append(f"   - {elem_id}: {elem_desc} (action: {elem_action})")
+        element_list.extend(_render_element_lines(idx, elem))
 
     elements_str = "\n".join(element_list)
 

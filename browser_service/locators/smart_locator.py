@@ -4135,10 +4135,12 @@ async def find_unique_locator_at_coordinates(
     # (_locator_has_id), so the field is two-valued across captured metrics —
     # 2,355 of 3,580 rows in nlrf's bench corpus are the locator form. Split on
     # locator_approach (actions_candidate*) before aggregating it; reading the
-    # two together silently answers a third question. Its only reader,
-    # tools/analyze_locator_patterns.py, is stale — it loads the
-    # logs/workflow_metrics.jsonl that the Postgres migration retired — so
-    # neither definition is live today. Whichever survives, decide it there.
+    # two together silently answers a third question. NOTHING reads the field
+    # today — the one reader, nlrf's tools/analyze_locator_patterns.py, was
+    # deleted as unrunnable (retired JSONL input, and a depth→strategy map that
+    # labelled the accessibility bucket "Coordinate Fallback"). It is kept
+    # because 1,840 captured runs carry it. A future reader decides which
+    # definition it wants — in the reader, not here.
     _approach_metrics_base = {
         "element_tag": element_data.get("tagName", "").lower() if element_data else "",
         "has_id": bool(element_data.get("id")) if element_data else False,

@@ -185,11 +185,20 @@ def _locator_has_id(locator: str) -> bool:
     """The ``approach_metrics.has_id`` signal for a candidate-path accept.
 
     Both accept branches report the same locator shapes, so both must answer
-    this the same way — nlrf's tools/analyze_locator_patterns.py counts the
-    field across approaches, and two definitions make that count meaningless.
+    this the same way; two definitions inside one file make the field mean two
+    things depending only on which branch accepted. TestHasIdIsOnePredicate
+    pins that agreement.
 
     Reads the LOCATOR, not element_data: on this path the question is whether
     the address we are about to ship is id-anchored.
+
+    NOTE — nothing reads this field. The reader this once cited, nlrf's
+    tools/analyze_locator_patterns.py, was deleted: its input (a JSONL metrics
+    file) had been retired by the Postgres migration years of runs ago, and its
+    depth→strategy map had drifted far enough to invert a bucket. smart_locator
+    writes the same KEY from the DOM element instead (see the note at
+    _approach_metrics_base), so a future reader must split on locator_approach.
+    The field is kept because 1,840 captured runs carry it.
 
     Checked against the 235 distinct locators in nlrf's captured bench corpus.
     One shape changes verdict versus the substring form: `css=id=searchBox`, the

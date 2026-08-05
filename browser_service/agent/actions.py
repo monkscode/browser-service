@@ -81,7 +81,10 @@ _RESOLVED_READ_TIMEOUT_MS = 2000
 
 
 async def _read_resolved_element(
-    search_root, locator: str, timeout_ms: int = _RESOLVED_READ_TIMEOUT_MS
+    search_root,
+    locator: str,
+    timeout_ms: int = _RESOLVED_READ_TIMEOUT_MS,
+    first_only: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Read the element ``locator`` resolves to — what we are about to accept.
 
@@ -89,11 +92,18 @@ async def _read_resolved_element(
     selector engine, or the bounded wait expiring). Callers must treat None as
     "unknown", never as "mismatch": this read exists to make the accept honest,
     and must never turn a working accept into a found=false.
+
+    ``first_only`` scopes the read to the first match. A many-match locator is
+    a Playwright strict-mode violation for ``Locator.evaluate``, so the
+    collection accept — which is asking about a locator that SHOULD match many
+    — would otherwise get None back and read it as "unknown", i.e. accept
+    unchecked. That would silently disarm the q08 identity guard.
     """
     try:
-        resolved = await search_root.locator(locator).evaluate(
-            _RESOLVED_ELEMENT_JS, timeout=timeout_ms
-        )
+        target = search_root.locator(locator)
+        if first_only:
+            target = target.nth(0)
+        resolved = await target.evaluate(_RESOLVED_ELEMENT_JS, timeout=timeout_ms)
     except Exception as e:
         logger.warning(f"   ⚠️ Could not read resolved element for '{locator}': {e}")
         return None
@@ -701,6 +711,118 @@ async def find_unique_locator_action(
                                     "has_text_content": elem_has_text,
                                     "element_data_available": elem_data_available,
                                     "is_collection": is_collection is True,
+                                    "is_in_iframe": bool(iframe_context),
+                                },
+                            }
+                    elif count > 1 and is_collection:
+                        # A COLLECTION request asked for many, so many matches
+                        # is the answer — not a failure. Rejecting the agent's
+                        # own address here is what forced the traversal to
+                        # return an ANCESTOR of the indexed element (`ol > li`
+                        # for an indexed <a>), leaving the assembler to invent
+                        # an unvalidated child selector to get back down. Both
+                        # captured collection failures start there:
+                        #   31a66a98  Get Attribute <li> title -> AttributeError
+                        #   q06 rep2  tbody tr -> div[role=gridcell] -> timeout
+                        #
+                        # The unique path's identity guard cannot stand in: its
+                        # read raises strict mode on a many-match locator and
+                        # returns None, which means "unknown -> accept". Read
+                        # the FIRST match instead and apply the same provable
+                        # tag/id comparison. First match only, matching that
+                        # guard's strength — a collection may legitimately mix
+                        # element kinds, and over-rejecting costs a good
+                        # locator.
+                        _first = await _read_resolved_element(
+                            search_root, playwright_locator, first_only=True
+                        )
+                        _collection_reason = _identity_mismatch(element_data, _first)
+                        if _collection_reason:
+                            logger.info(
+                                f"   ⛔ COLLECTION CANDIDATE IDENTITY REJECT: "
+                                f"'{playwright_locator}' — {_collection_reason}; continuing "
+                                f"with smart locator finder (signal: "
+                                f"collection-candidate-resolves-to-different-element)"
+                            )
+                        else:
+                            final_locator = playwright_locator
+                            logger.info(
+                                f"   ✅ COLLECTION CANDIDATE ACCEPTED: '{final_locator}' "
+                                f"matches {count} elements and resolves to the indexed "
+                                f"element (signal: collection-candidate-accepted)"
+                            )
+                            _describes = _first or element_data
+                            _info_source = (
+                                "candidate_resolved_element" if _first else "candidate_element_data"
+                            )
+                            elem_tag = ""
+                            elem_has_text = False
+                            if _describes:
+                                elem_tag = (_describes.get("tagName") or "").lower()
+                                _text = _describes.get("textContent", "") or _describes.get(
+                                    "text", ""
+                                )
+                                elem_has_text = bool(_text and _text.strip())
+                            collection_stability = classify_locator(final_locator)
+                            locator_lower = final_locator.lower().lstrip()
+                            return {
+                                # element_type LAST-writes 'collection': nlrf
+                                # routes the assembler's FOR-loop block on it
+                                # (tasks._needs_loop). Without it a
+                                # single-element keyword gets pointed at a
+                                # many-match locator and Browser raises strict
+                                # mode at run time, which --dryrun cannot see.
+                                **_candidate_tier0_stamp(_describes, element_description),
+                                "element_type": "collection",
+                                "element_id": element_id,
+                                "description": element_description,
+                                "found": True,
+                                "best_locator": final_locator,
+                                "stability": collection_stability,
+                                "all_locators": [
+                                    {
+                                        "type": "collection",
+                                        "locator": final_locator,
+                                        "priority": 0,
+                                        "strategy": "Agent-provided collection candidate",
+                                        "count": count,
+                                        "unique": False,
+                                        "valid": True,
+                                        "validated": True,
+                                        "validation_method": "playwright",
+                                        "stability": collection_stability,
+                                    }
+                                ],
+                                "element_info": _candidate_element_info(_describes, _info_source),
+                                "coordinates": {"x": x, "y": y},
+                                "validation_summary": {
+                                    "total_generated": 1,
+                                    "valid": 1,
+                                    "unique": 0,
+                                    "validated": 1,
+                                    "not_found": 0,
+                                    "not_unique": 1,
+                                    "errors": 0,
+                                    "best_type": "collection",
+                                    "best_strategy": "Agent-provided collection candidate",
+                                    "validation_method": "playwright",
+                                },
+                                "validated": True,
+                                "count": count,
+                                "unique": False,
+                                "valid": True,
+                                "validation_method": "playwright",
+                                "approach_metrics": {
+                                    "locator_approach": "actions_candidate_collection",
+                                    "fallback_depth": 0,
+                                    "success": True,
+                                    "element_tag": elem_tag,
+                                    "has_id": (
+                                        locator_lower.startswith("#") or "[id=" in locator_lower
+                                    ),
+                                    "has_text_content": elem_has_text,
+                                    "element_data_available": bool(element_data),
+                                    "is_collection": True,
                                     "is_in_iframe": bool(iframe_context),
                                 },
                             }

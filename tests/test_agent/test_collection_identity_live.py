@@ -184,7 +184,7 @@ class TestIdKeyedCollectionOnARealDom:
         assert await locator.count() == ROW_COUNT
         assert await locator.nth(0).evaluate("el => el.tagName.toLowerCase()") == "tr"
         # The row the agent actually indexed is inside the accepted set.
-        assert await live_page.locator(f'{result["best_locator"]}{INDEXED_ROW}').count() == 1
+        assert await live_page.locator(f"{result['best_locator']}{INDEXED_ROW}").count() == 1
 
     async def test_a_real_tag_mismatch_is_still_rejected(self, live_page):
         """The half of the gate that must survive.
@@ -224,7 +224,11 @@ class TestTheRejectIsExpensiveOneLevelDown:
         assert data["id"] == "cust-4471902"
 
         result = await _find(
-            live_page, data, x, y, LINK_COLLECTION,
+            live_page,
+            data,
+            x,
+            y,
+            LINK_COLLECTION,
             description="the customer name links in the results table",
         )
 
@@ -238,7 +242,11 @@ class TestTheRejectIsExpensiveOneLevelDown:
         x, y, data = await _coords_and_data(live_page, INDEXED_LINK)
 
         result = await _find(
-            live_page, data, x, y, LINK_COLLECTION,
+            live_page,
+            data,
+            x,
+            y,
+            LINK_COLLECTION,
             description="the customer name links in the results table",
         )
 

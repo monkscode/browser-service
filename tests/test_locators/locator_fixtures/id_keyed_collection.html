@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Server-rendered table with id-keyed rows</title>
+  <!--
+    SYNTHETIC. Reconstructed from the SHAPE of a server-rendered billing table,
+    not captured from any customer site. Nothing here is customer-derived; the
+    account numbers are invented.
+
+    Reproduces the element class the collection identity gate mis-rejected:
+
+      * a COLLECTION request — "all rows in the results table"
+      * whose members each carry their OWN id, keyed by record ("row-<acct>"),
+        which is what any server-rendered admin table does
+      * where the agent indexes a row that is NOT the first one
+
+    The gate read .nth(0) and compared ids, so `row-4471902` (indexed) never
+    matched `row-1188304` (first) and the correct locator was rejected into the
+    cascade. Rows 2..N all hit it; only row 1 escaped.
+
+    Deliberately NO id on <tbody> or <table>: the candidate must be able to
+    match the rows and nothing else, so that a rejection here can only come
+    from the identity gate and not from a cardinality miss.
+
+    The last row carries a different tag shape (<th scope="row"> in the first
+    cell) purely as realistic noise — the gate compares the ROW tag, which is
+    <tr> throughout, so it must not disturb the accept.
+
+    TWO COLLECTIONS, on purpose:
+
+      1. the ROWS — `tbody tr[id^="row-"]`. A reject here still leaves the
+         cascade able to return `tbody > tr`, which happens to work. It proves
+         the gate mis-fires, not that the mis-fire costs anything.
+
+      2. the NAME LINKS — `tbody a.customer-link`, each with its own id. Here
+         a reject is expensive: the cascade generalises UP to the row, so the
+         service ships a <tr> address for an element the agent identified as an
+         <a>, and the assembler has to invent a child selector to get back down
+         — the exact chain, and the exact unvalidated guess, that both captured
+         collection failures start from.
+
+    Case 2 is the one that demonstrates consequence rather than symptom.
+  -->
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 2rem; }
+    table { border-collapse: collapse; width: 720px; }
+    th, td { border: 1px solid #d0d5dd; padding: 8px 10px; text-align: left; }
+    thead tr { background: #f2f4f7; }
+    a.customer-link { color: #1570ef; }
+  </style>
+</head>
+<body>
+  <h1>Customers</h1>
+  <table>
+    <thead>
+      <tr><th>Account</th><th>Name</th><th>Balance</th></tr>
+    </thead>
+    <tbody>
+      <tr id="row-1188304"><td>1188304</td><td><a class="customer-link" id="cust-1188304" href="/customers/1188304">Alden Cantrell</a></td><td>120.50</td></tr>
+      <tr id="row-2049117"><td>2049117</td><td><a class="customer-link" id="cust-2049117" href="/customers/2049117">Brielle Williamson</a></td><td>88.00</td></tr>
+      <tr id="row-4471902"><td>4471902</td><td><a class="customer-link" id="cust-4471902" href="/customers/4471902">Cierra Vega</a></td><td>412.75</td></tr>
+      <tr id="row-5530028"><td>5530028</td><td><a class="customer-link" id="cust-5530028" href="/customers/5530028">Doris Wilder</a></td><td>0.00</td></tr>
+      <tr id="row-6612455"><td>6612455</td><td><a class="customer-link" id="cust-6612455" href="/customers/6612455">Eldon Padilla</a></td><td>73.20</td></tr>
+      <tr id="row-7788310"><th scope="row">7788310</th><td><a class="customer-link" id="cust-7788310" href="/customers/7788310">Faith Bower</a></td><td>19.99</td></tr>
+    </tbody>
+  </table>
+</body>
+</html>

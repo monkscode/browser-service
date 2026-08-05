@@ -114,7 +114,10 @@ async def _read_resolved_element(
 
 
 def _identity_mismatch(
-    element_data: Optional[Dict[str, Any]], resolved: Optional[Dict[str, Any]]
+    element_data: Optional[Dict[str, Any]],
+    resolved: Optional[Dict[str, Any]],
+    *,
+    compare_id: bool = True,
 ) -> str:
     """Reason string when ``resolved`` is PROVABLY not the indexed element.
 
@@ -128,6 +131,16 @@ def _identity_mismatch(
     absent element_data, an unreadable element, or an empty id on either side
     yields "" (accept unchanged); an empty id is not evidence of a different
     element, only of a missing attribute.
+
+    ``compare_id=False`` for the COLLECTION accept, where the id signal is not
+    merely weaker but unsound. That caller reads ``.nth(0)`` while the agent
+    indexes whichever member it clicked, and the members of a keyed list carry
+    distinct ids by construction — so a server-rendered table keyed by database
+    id mismatches on every row but the first. The reject then falls through to
+    the cascade, which returns the ANCESTOR and reinstates the unvalidated
+    child selector that accept exists to eliminate. Tag stays compared on both
+    paths: that is the half with evidence behind it (the bench rejected
+    `article.product_pod` as "indexed <a> but resolves to <article>").
     """
     if not element_data or not resolved:
         return ""
@@ -137,12 +150,35 @@ def _identity_mismatch(
     if indexed_tag and resolved_tag and indexed_tag != resolved_tag:
         return f"indexed <{indexed_tag}> but candidate resolves to <{resolved_tag}>"
 
-    indexed_id = (element_data.get("id") or "").strip()
-    resolved_id = (resolved.get("id") or "").strip()
-    if indexed_id and resolved_id and indexed_id != resolved_id:
-        return f"indexed id '{indexed_id}' but candidate resolves to id '{resolved_id}'"
+    if compare_id:
+        indexed_id = (element_data.get("id") or "").strip()
+        resolved_id = (resolved.get("id") or "").strip()
+        if indexed_id and resolved_id and indexed_id != resolved_id:
+            return f"indexed id '{indexed_id}' but candidate resolves to id '{resolved_id}'"
 
     return ""
+
+
+def _locator_has_id(locator: str) -> bool:
+    """The ``approach_metrics.has_id`` signal for a candidate-path accept.
+
+    Both accept branches report the same locator shapes, so both must answer
+    this the same way — nlrf's tools/analyze_locator_patterns.py counts the
+    field across approaches, and two definitions make that count meaningless.
+
+    Reads the LOCATOR, not element_data: on this path the question is whether
+    the address we are about to ship is id-anchored. The data-* exclusions stop
+    `[data-testid="x"]` scoring as an id purely because it contains "id=".
+    """
+    low = (locator or "").lower().lstrip()
+    return (
+        low.startswith("#")
+        or "[id=" in low
+        or (
+            "id=" in low
+            and not any(k in low for k in ("data-testid=", "data-test=", "data-qa="))
+        )
+    )
 
 
 def _candidate_element_info(
@@ -604,8 +640,6 @@ async def find_unique_locator_action(
                             logger.info(f"{'=' * 80}")
                             logger.info("")
 
-                            locator_lower = final_locator.lower().lstrip()
-
                             # Describe the element being RETURNED. The identity
                             # gate above has already rejected anything provably
                             # different, so the resolved read is both safe and
@@ -697,17 +731,7 @@ async def find_unique_locator_action(
                                     "fallback_depth": 0,  # Best case - candidate worked
                                     "success": True,
                                     "element_tag": elem_tag,
-                                    "has_id": (
-                                        locator_lower.startswith("#")
-                                        or "[id=" in locator_lower
-                                        or (
-                                            "id=" in locator_lower
-                                            and not any(
-                                                k in locator_lower
-                                                for k in ("data-testid=", "data-test=", "data-qa=")
-                                            )
-                                        )
-                                    ),
+                                    "has_id": _locator_has_id(final_locator),
                                     "has_text_content": elem_has_text,
                                     "element_data_available": elem_data_available,
                                     "is_collection": is_collection is True,
@@ -733,10 +757,17 @@ async def find_unique_locator_action(
                         # guard's strength — a collection may legitimately mix
                         # element kinds, and over-rejecting costs a good
                         # locator.
+                        #
+                        # TAG ONLY. The id half of the comparison is unsound
+                        # here: the read is pinned to .nth(0) while the agent
+                        # indexes whichever member it clicked, and a keyed
+                        # list's members carry distinct ids by construction.
                         _first = await _read_resolved_element(
                             search_root, playwright_locator, first_only=True
                         )
-                        _collection_reason = _identity_mismatch(element_data, _first)
+                        _collection_reason = _identity_mismatch(
+                            element_data, _first, compare_id=False
+                        )
                         if _collection_reason:
                             logger.info(
                                 f"   ⛔ COLLECTION CANDIDATE IDENTITY REJECT: "
@@ -764,7 +795,6 @@ async def find_unique_locator_action(
                                 )
                                 elem_has_text = bool(_text and _text.strip())
                             collection_stability = classify_locator(final_locator)
-                            locator_lower = final_locator.lower().lstrip()
                             return {
                                 # element_type LAST-writes 'collection': nlrf
                                 # routes the assembler's FOR-loop block on it
@@ -817,9 +847,7 @@ async def find_unique_locator_action(
                                     "fallback_depth": 0,
                                     "success": True,
                                     "element_tag": elem_tag,
-                                    "has_id": (
-                                        locator_lower.startswith("#") or "[id=" in locator_lower
-                                    ),
+                                    "has_id": _locator_has_id(final_locator),
                                     "has_text_content": elem_has_text,
                                     "element_data_available": bool(element_data),
                                     "is_collection": True,

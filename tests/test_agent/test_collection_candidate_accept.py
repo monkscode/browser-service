@@ -218,6 +218,63 @@ class TestIdentityGate:
 
         assert result["best_locator"] == CANDIDATE
 
+    @pytest.mark.asyncio
+    async def test_members_carrying_distinct_ids_are_not_a_mismatch(self):
+        """The id comparison is unsound on THIS path and must not run.
+
+        On the unique path two different non-empty ids prove two different
+        elements. On a collection they prove nothing: the members of a keyed
+        list carry distinct ids BY CONSTRUCTION, and the read is pinned to
+        .nth(0) while the agent indexes whichever member it clicked. Any
+        server-rendered table keyed by database id hits this on every row but
+        the first.
+
+        Left in, it rejects a correct locator into the cascade, which returns
+        the ANCESTOR and hands the assembler back the unvalidated child
+        selector this whole branch exists to eliminate. Tag stays compared —
+        that is the half with evidence behind it (the bench rejected
+        `article.product_pod` as "indexed <a> but resolves to <article>").
+        """
+        indexed_third_row = {
+            "tagName": "tr",
+            "id": "row-3",
+            "className": "",
+            "textContent": "Cierra Vega",
+            "xpath": "html/body/table/tbody/tr[3]",
+        }
+        resolved_first_row = {
+            "tagName": "tr",
+            "id": "row-1",
+            "className": "",
+            "textContent": "Alden Cantrell",
+        }
+        locator = "tr[id^=row]"
+        page = FakePage({locator: FakeLocator(20, resolved_first_row)})
+
+        result = await _call(
+            page,
+            candidate_locator=locator,
+            element_data=indexed_third_row,
+            element_description="all rows in the results table",
+            expected_text="Cierra Vega",
+        )
+
+        assert result["best_locator"] == locator
+        assert result["element_type"] == "collection"
+
+    @pytest.mark.asyncio
+    async def test_a_differing_id_still_rejects_on_the_unique_path(self):
+        """Scope guard: dropping the id comparison is scoped to collections.
+
+        count == 1 keeps both halves — there, two different non-empty ids are
+        exactly the q08 proof that the candidate found a different element.
+        """
+        page = FakePage({CANDIDATE: FakeLocator(1, {"tagName": "a", "id": "other"})})
+
+        result = await _call(page, element_data={"tagName": "a", "id": "indexed"})
+
+        assert result["best_locator"] == "ol > li"  # cascade, not the candidate
+
 
 class TestScope:
     """Everything outside `is_collection and count > 1` keeps today's path."""
@@ -249,3 +306,40 @@ class TestScope:
 
         assert result["best_locator"] == CANDIDATE
         assert result["unique"] is True
+
+
+class TestHasIdIsOnePredicate:
+    """Both accept branches report the same locator shapes, so both must score
+    ``approach_metrics.has_id`` the same way.
+
+    nlrf's tools/analyze_locator_patterns.py counts this field across
+    approaches; two definitions silently make that count mean two things. The
+    collection branch shipped a narrower inline copy (``#``/``[id=`` only),
+    which scored `[id="books"] li` and `id=books >> li` differently depending
+    only on which branch accepted them.
+    """
+
+    @pytest.mark.parametrize(
+        "locator, expected",
+        [
+            ("#books li", True),
+            ('[id="books"] li', True),
+            ("id=books >> li", True),  # the shape the narrow copy missed
+            ('[data-testid="book"] a', False),  # contains "id=" but is not one
+            ('[data-qa="book"] a', False),
+            (".product_pod h3 a", False),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_both_branches_agree(self, locator, expected):
+        collection = await _call(
+            FakePage({locator: FakeLocator(20, RESOLVED_ANCHOR)}), candidate_locator=locator
+        )
+        unique = await _call(
+            FakePage({locator: FakeLocator(1, RESOLVED_ANCHOR)}), candidate_locator=locator
+        )
+
+        assert collection["best_locator"] == locator  # both accepted
+        assert unique["best_locator"] == locator
+        assert collection["approach_metrics"]["has_id"] is expected
+        assert unique["approach_metrics"]["has_id"] is expected

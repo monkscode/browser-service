@@ -160,19 +160,25 @@ def _identity_mismatch(
     return ""
 
 
-# Where an id can legitimately appear in a locator: the CSS shorthand, an
-# attribute selector naming `id` (CSS `[id=`/`[id^=`, or xpath's `[@id=`), and
-# Browser Library's `id=` selector engine at the head of a chain segment.
+# The two places an id can appear in a locator other than the `#` shorthand.
+# Kept as separate patterns rather than one alternation: the engine form is
+# anchorable and the attribute form is not, and mixing the two under a single
+# `|` makes the reach of `^` ambiguous to a reader (and trips Sonar S5850).
 #
-# Anchored rather than substring-matched because `id=` is a suffix of other
-# attribute names. `[aria-invalid="true"]` ends "...inval|id=|", and the
+# Matched structurally rather than by substring because `id=` is a SUFFIX of
+# other attribute names. `[aria-invalid="true"]` ends "...inval|id=|", and the
 # substring form scored it as an id — on an attribute this service emits
 # deliberately (_extract_dom_node_attributes carries ariaInvalid for nlrf's
-# state-verification assembler). Anchoring also retires the old data-* exclusion
+# state-verification assembler). Structure also retires the old data-* exclusion
 # list, two thirds of which was dead: `data-test=` and `data-qa=` do not contain
 # "id=" at all and could never have fired. Only `data-testid=` ever did, and
 # `\[@?id` cannot match it.
-_ID_LOCATOR_RE = re.compile(r"^\#|\[@?id[\^$*~|]?=|(?:^|>>\s*|\s)id=")
+
+# An attribute selector whose attribute NAME is id: [id= [id^= and xpath's [@id=
+_ID_ATTRIBUTE_RE = re.compile(r"\[@?id[\^$*~|]?=")
+
+# Browser Library's `id=` selector engine, at the head of a chain segment.
+_ID_ENGINE_RE = re.compile(r"(?:^|>>\s*|\s)id=")
 
 
 def _locator_has_id(locator: str) -> bool:
@@ -191,7 +197,12 @@ def _locator_has_id(locator: str) -> bool:
     a locator the pipeline emits any more, so it is left unhandled rather than
     given a branch of its own.
     """
-    return bool(_ID_LOCATOR_RE.search((locator or "").lower().lstrip()))
+    low = (locator or "").lower().lstrip()
+    return (
+        low.startswith("#")
+        or _ID_ATTRIBUTE_RE.search(low) is not None
+        or _ID_ENGINE_RE.search(low) is not None
+    )
 
 
 def _candidate_element_info(

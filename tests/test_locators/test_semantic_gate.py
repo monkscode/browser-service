@@ -221,8 +221,11 @@ async def test_sidebar_nav_link_routes_to_text_first(page):
 
     # Preconditions — if these drift the fixture has stopped reproducing the bug.
     assert data["parentClassName"] == "menuclass"
-    assert not data["id"] and not data["name"] and not data["ariaLabel"]
-    assert not data["dataTestId"] and not data["placeholder"]
+    assert not data["id"]
+    assert not data["name"]
+    assert not data["ariaLabel"]
+    assert not data["dataTestId"]
+    assert not data["placeholder"]
     assert await page.locator(".menuclass a").count() == 16
     assert await page.locator('a[role="button"]').count() == 16
 
@@ -283,7 +286,8 @@ async def test_parent_class_css_still_wins_when_unique(page):
     x, y, data = await _coords_and_data(page, ".loginbox input")
 
     assert data["parentClassName"] == "loginbox"
-    assert not data["id"] and not data["name"]
+    assert not data["id"]
+    assert not data["name"]
     assert await page.locator(".loginbox input").count() == 1
 
     result = await find_unique_locator_at_coordinates(

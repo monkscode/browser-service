@@ -406,9 +406,9 @@ Process elements IN THE ORDER THEY ARE LISTED. For each element:
    If "⚠️ Automated ... failed" with "FALLBACK REQUIRED: Call ...":
      An element index is available. Execute the specified browser-use native action BEFORE
      proceeding to the next element:
-     • click_element(index=N)                        — for click/submit fallback
-     • input_text(index=N, text="...")               — for input/type fallback
-     • select_dropdown_option(index=N, text="...")   — for select fallback
+     • click(index=N)                                — for click/submit fallback
+     • input(index=N, text="...")                    — for input/type fallback
+     • select_dropdown(index=N, text="...")          — for select fallback
      After the fallback action completes (success or failure), proceed to the next element.
      Do NOT call find_unique_locator again for this element.
 

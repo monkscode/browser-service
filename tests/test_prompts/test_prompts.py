@@ -25,6 +25,8 @@ Tests cover:
   - loop_type forwarded for loop steps
 """
 
+import re
+
 import pytest
 
 from browser_service.prompts.system import build_system_prompt
@@ -274,3 +276,84 @@ class TestVisionOffContract:
             "PROVIDE THIS whenever the element has visible text"
             in CUSTOM_ACTION_PARAMETERS_EXTENDED
         )
+
+
+class TestFallbackActionNamesAreReal:
+    """The escalation contract must name actions browser-use actually has.
+
+    When all layered interaction strategies fail, the find_unique_locator
+    action returns "FALLBACK REQUIRED: Call <action>(index=N)" and
+    SEQUENTIAL_PROCESSING_RULES tells the agent to execute it. The two sides
+    are written independently, in different files, and nothing checked either
+    against the live registry.
+
+    browser-use renamed these between 0.12.6 and 0.13.7 (click_element →
+    click, input_text → input, select_dropdown_option → select_dropdown; the
+    param-model classes kept the old names, which is why the rename is easy to
+    miss). Both sides went on naming actions that no longer exist. It never
+    surfaced because the path is a genuine last resort — 0 firings against 822
+    prompt emissions in the captured logs — so the contract was broken and
+    silent at the same time.
+
+    These tests are the drift alarm the upgrade did not have.
+    """
+
+    # Every action the escalation contract can name, and the interaction
+    # outcome that names it.
+    FALLBACK_ACTIONS = ("click", "input", "select_dropdown")
+
+    @staticmethod
+    def _registry_actions():
+        from browser_use.tools.service import Tools
+
+        return set(Tools().registry.registry.actions)
+
+    def test_prompt_names_only_registered_actions(self):
+        """Parse the action names out of the rendered fallback block and
+        require each to exist. Fails loudly on the next upstream rename."""
+        from browser_service.prompts.templates import SEQUENTIAL_PROCESSING_RULES
+
+        block = SEQUENTIAL_PROCESSING_RULES.split("FALLBACK REQUIRED")[1]
+        block = block.split('If "⚠️ Automated')[0]
+        named = set(re.findall(r"•\s*([a-z_]+)\(index=N", block))
+
+        assert named, "fallback block names no actions — did its shape change?"
+        assert named <= self._registry_actions(), (
+            f"SEQUENTIAL_PROCESSING_RULES tells the agent to call "
+            f"{sorted(named - self._registry_actions())}, which browser-use "
+            f"does not register. The agent cannot execute the escalation."
+        )
+
+    def test_runtime_note_names_only_registered_actions(self):
+        """The other half of the contract: the names registration.py emits in
+        its FALLBACK REQUIRED note."""
+        import inspect
+
+        from browser_service.agent import registration
+
+        src = inspect.getsource(registration)
+        emitted = set(re.findall(r"FALLBACK REQUIRED: Call ([a-z_]+)\(", src))
+
+        assert emitted, "no FALLBACK REQUIRED note found — did its shape change?"
+        assert emitted <= self._registry_actions(), (
+            f"registration.py emits {sorted(emitted - self._registry_actions())}, "
+            f"which browser-use does not register."
+        )
+
+    def test_both_halves_name_the_same_actions(self):
+        """Prompt and runtime note are written in different files. If they
+        drift apart the agent is told to call one thing and instructed about
+        another."""
+        import inspect
+
+        from browser_service.agent import registration
+        from browser_service.prompts.templates import SEQUENTIAL_PROCESSING_RULES
+
+        block = SEQUENTIAL_PROCESSING_RULES.split("FALLBACK REQUIRED")[1]
+        block = block.split('If "⚠️ Automated')[0]
+        prompt_names = set(re.findall(r"•\s*([a-z_]+)\(index=N", block))
+        emitted = set(
+            re.findall(r"FALLBACK REQUIRED: Call ([a-z_]+)\(", inspect.getsource(registration))
+        )
+
+        assert prompt_names == emitted == set(self.FALLBACK_ACTIONS)

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sidebar nav — parent-context CSS must not gate the xpath path</title>
+  <!--
+    SYNTHETIC. Reconstructed from the DOM *shape* described in the design doc,
+    not captured from any customer site. Nothing here is customer-derived.
+
+    Reproduces the element class that regressed on 2026-07-22 (9e3fe36):
+
+      * a nav link with NO id, name, aria-label, placeholder or test attribute
+      * whose immediate parent carries a class ("menuclass"), so
+        _build_element_data_candidates emits parent-class-css ".menuclass a"
+      * where that candidate is NOT unique — 16 sibling nav links share the
+        shape, so ".menuclass a", 'a[role="button"]' and ".dropdown-toggle"
+        all count 16, exactly as logged on the real failure
+
+    The label is nested in a <span>. That matters: on the real run the agent's
+    own `text=Accounts` candidate was rejected with "indexed <a> but candidate
+    resolves to <span>". A bare <a>Accounts</a> would let the post-fix
+    assertion pass for the wrong reason.
+
+    Depth is chosen so the target's xpath is
+        html/body/aside/div/div/div/div/div[1]/div[2]/div[1]/a
+    which is the shape _shorten_xpath walks.
+  -->
+  <style>
+    body { font-family: sans-serif; margin: 0; }
+    aside { width: 240px; background: #1d2939; color: #fff; min-height: 100vh; }
+    .menuclass { border-bottom: 1px solid #344054; }
+    .nav-link { display: block; padding: 10px 14px; color: #fff; text-decoration: none; }
+    .nav-link-icon { opacity: 0.7; margin-right: 8px; }
+    header { display: flex; gap: 1rem; padding: 8px 12px; background: #eaecf0; }
+  </style>
+</head>
+<body>
+  <!-- Decoy structure so the SHORTEST xpath suffixes are not unique and
+       _shorten_xpath has to walk further up, as it does on a real page. -->
+  <header>
+    <div><div><a href="/help">Help</a></div></div>
+    <div><div><a href="/logout">Sign out</a></div></div>
+  </header>
+
+  <aside>
+    <div>
+      <div>
+        <div>
+          <div>
+            <div class="navbar-vertical-content">
+              <div class="brand"><a href="/">Billing</a></div>
+              <div class="nav-list">
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navAccounts" class="nav-link dropdown-toggle collapsed" aria-controls="navAccounts" data-bs-target="#navAccounts"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Accounts</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navRates" class="nav-link dropdown-toggle collapsed" aria-controls="navRates" data-bs-target="#navRates"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Rates</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navInvoices" class="nav-link dropdown-toggle collapsed" aria-controls="navInvoices" data-bs-target="#navInvoices"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Invoices</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navPayments" class="nav-link dropdown-toggle collapsed" aria-controls="navPayments" data-bs-target="#navPayments"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Payments</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navReports" class="nav-link dropdown-toggle collapsed" aria-controls="navReports" data-bs-target="#navReports"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Reports</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navRouting" class="nav-link dropdown-toggle collapsed" aria-controls="navRouting" data-bs-target="#navRouting"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Routing</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navTrunks" class="nav-link dropdown-toggle collapsed" aria-controls="navTrunks" data-bs-target="#navTrunks"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Trunks</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navDids" class="nav-link dropdown-toggle collapsed" aria-controls="navDids" data-bs-target="#navDids"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">DIDs</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navPackages" class="nav-link dropdown-toggle collapsed" aria-controls="navPackages" data-bs-target="#navPackages"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Packages</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navProviders" class="nav-link dropdown-toggle collapsed" aria-controls="navProviders" data-bs-target="#navProviders"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Providers</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navResellers" class="nav-link dropdown-toggle collapsed" aria-controls="navResellers" data-bs-target="#navResellers"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Resellers</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navBatch" class="nav-link dropdown-toggle collapsed" aria-controls="navBatch" data-bs-target="#navBatch"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Batch Update</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navImport" class="nav-link dropdown-toggle collapsed" aria-controls="navImport" data-bs-target="#navImport"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Import</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navSettings" class="nav-link dropdown-toggle collapsed" aria-controls="navSettings" data-bs-target="#navSettings"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Settings</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navUsers" class="nav-link dropdown-toggle collapsed" aria-controls="navUsers" data-bs-target="#navUsers"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Users</span></a></div>
+                <div class="menuclass"><a role="button" aria-expanded="false" data-bs-toggle="collapse" href="#navLogs" class="nav-link dropdown-toggle collapsed" aria-controls="navLogs" data-bs-target="#navLogs"><span class="nav-link-icon">&#xf0c0;</span><span class="nav-link-text">Logs</span></a></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+</body>
+</html>

@@ -295,58 +295,71 @@ def _candidate_tier0_stamp(
 
 
 def _log_success_result(element_id: str, result: Dict[str, Any]) -> None:
-    """Log successful locator finding result with detailed information."""
+    """Log successful locator finding result as ONE multi-line record.
+
+    One call per line renders a nicer terminal banner and a far worse log
+    store: every separator rule, blank line and indented field became its own
+    record, so one result was ~22 entries in Loki that no filter could
+    recombine. The rules and blank lines are gone with them — they delimited
+    consecutive single-line records, which is not a job that exists once the
+    whole result is one record.
+    """
     best_locator = result.get("best_locator")
     validation_summary = result.get("validation_summary", {})
 
-    logger.info("")
-    logger.info(f"{'=' * 80}")
-    logger.info(f"✅ CUSTOM ACTION SUCCEEDED for {element_id}")
-    logger.info(f"{'=' * 80}")
-    logger.info(f"   Best Locator: {best_locator}")
-    logger.info(f"   Locator Type: {validation_summary.get('best_type', 'unknown')}")
-    logger.info(f"   Strategy: {validation_summary.get('best_strategy', 'unknown')}")
-    logger.info("   Validation Results:")
-    logger.info(f"      - validated: {result.get('validated', False)}")
-    logger.info(f"      - count: {result.get('count', 0)}")
-    logger.info(f"      - unique: {result.get('unique', False)}")
-    logger.info(f"      - valid: {result.get('valid', False)}")
-    logger.info(f"      - validation_method: {result.get('validation_method', 'unknown')}")
-    logger.info("   Validation Summary:")
-    logger.info(f"      - total_strategies: {validation_summary.get('total_generated', 0)}")
-    logger.info(f"      - valid: {validation_summary.get('valid', 0)}")
-    logger.info(f"      - unique: {validation_summary.get('unique', 0)}")
-    logger.info(f"      - not_found: {validation_summary.get('not_found', 0)}")
-    logger.info(f"      - not_unique: {validation_summary.get('not_unique', 0)}")
-    logger.info(f"      - errors: {validation_summary.get('errors', 0)}")
-    logger.info(f"{'=' * 80}")
-    logger.info("")
+    lines = [
+        f"✅ CUSTOM ACTION SUCCEEDED for {element_id}",
+        f"   Best Locator: {best_locator}",
+        f"   Locator Type: {validation_summary.get('best_type', 'unknown')}",
+        f"   Strategy: {validation_summary.get('best_strategy', 'unknown')}",
+        "   Validation Results:",
+        f"      - validated: {result.get('validated', False)}",
+        f"      - count: {result.get('count', 0)}",
+        f"      - unique: {result.get('unique', False)}",
+        f"      - valid: {result.get('valid', False)}",
+        f"      - validation_method: {result.get('validation_method', 'unknown')}",
+        "   Validation Summary:",
+        f"      - total_strategies: {validation_summary.get('total_generated', 0)}",
+        f"      - valid: {validation_summary.get('valid', 0)}",
+        f"      - unique: {validation_summary.get('unique', 0)}",
+        f"      - not_found: {validation_summary.get('not_found', 0)}",
+        f"      - not_unique: {validation_summary.get('not_unique', 0)}",
+        f"      - errors: {validation_summary.get('errors', 0)}",
+    ]
+    logger.info("\n".join(lines))
 
 
 def _log_failure_result(
     element_id: str, element_description: str, x: float, y: float, result: Dict[str, Any]
 ) -> None:
-    """Log failed locator finding result with detailed error information."""
+    """Log failed locator finding result as ONE multi-line record.
+
+    Measured 2026-08-14: one call per line made a single failure 11-16 error
+    records. 24 real failures were 264 of the 445 lines the aggregate error
+    panel showed over five days, and the per-run panel repeated the whole
+    block for one run. See _log_success_result for why the rules and blank
+    lines are not carried over.
+    """
     error = result.get("error", "Unknown error")
     validation_summary = result.get("validation_summary", {})
 
-    logger.error("")
-    logger.error(f"{'=' * 80}")
-    logger.error(f"❌ CUSTOM ACTION FAILED for {element_id}")
-    logger.error(f"{'=' * 80}")
-    logger.error(f"   Error: {error}")
-    logger.error(f"   Element ID: {element_id}")
-    logger.error(f"   Description: {element_description}")
-    logger.error(f"   Coordinates: ({x}, {y})")
+    lines = [
+        f"❌ CUSTOM ACTION FAILED for {element_id}",
+        f"   Error: {error}",
+        f"   Element ID: {element_id}",
+        f"   Description: {element_description}",
+        f"   Coordinates: ({x}, {y})",
+    ]
     if validation_summary:
-        logger.error("   Validation Summary:")
-        logger.error(f"      - total_strategies: {validation_summary.get('total_generated', 0)}")
-        logger.error(f"      - valid: {validation_summary.get('valid', 0)}")
-        logger.error(f"      - not_found: {validation_summary.get('not_found', 0)}")
-        logger.error(f"      - not_unique: {validation_summary.get('not_unique', 0)}")
-        logger.error(f"      - errors: {validation_summary.get('errors', 0)}")
-    logger.error(f"{'=' * 80}")
-    logger.error("")
+        lines += [
+            "   Validation Summary:",
+            f"      - total_strategies: {validation_summary.get('total_generated', 0)}",
+            f"      - valid: {validation_summary.get('valid', 0)}",
+            f"      - not_found: {validation_summary.get('not_found', 0)}",
+            f"      - not_unique: {validation_summary.get('not_unique', 0)}",
+            f"      - errors: {validation_summary.get('errors', 0)}",
+        ]
+    logger.error("\n".join(lines))
 
 
 async def find_unique_locator_action(

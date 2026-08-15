@@ -27,35 +27,46 @@ from browser_service.agent.actions import (
     _log_success_result,
 )
 
-
 FAILURE_ARGS = ("elem_1", "login button on the page (action: click)", 432.0, 248.0)
 
 
 class TestFailureLogging:
-
     def test_emits_exactly_one_record(self, caplog):
         with caplog.at_level(logging.ERROR):
             _log_failure_result(
                 *FAILURE_ARGS,
-                {"error": "Semantic mismatch: Expected 'Login'",
-                 "validation_summary": {"total_generated": 4, "valid": 0,
-                                        "not_found": 0, "not_unique": 0,
-                                        "errors": 0}},
+                {
+                    "error": "Semantic mismatch: Expected 'Login'",
+                    "validation_summary": {
+                        "total_generated": 4,
+                        "valid": 0,
+                        "not_found": 0,
+                        "not_unique": 0,
+                        "errors": 0,
+                    },
+                },
             )
 
         errors = [r for r in caplog.records if r.levelno == logging.ERROR]
         assert len(errors) == 1, (
             f"one failure produced {len(errors)} error records; each one is a "
-            f"separate line in Loki and a separate row in the error panel")
+            f"separate line in Loki and a separate row in the error panel"
+        )
 
     def test_keeps_every_detail_field(self, caplog):
         with caplog.at_level(logging.ERROR):
             _log_failure_result(
                 *FAILURE_ARGS,
-                {"error": "Semantic mismatch: Expected 'Login'",
-                 "validation_summary": {"total_generated": 4, "valid": 0,
-                                        "not_found": 1, "not_unique": 2,
-                                        "errors": 3}},
+                {
+                    "error": "Semantic mismatch: Expected 'Login'",
+                    "validation_summary": {
+                        "total_generated": 4,
+                        "valid": 0,
+                        "not_found": 1,
+                        "not_unique": 2,
+                        "errors": 3,
+                    },
+                },
             )
 
         message = caplog.records[0].getMessage()
@@ -72,7 +83,8 @@ class TestFailureLogging:
         ):
             assert fragment in message, (
                 f"collapsing the banner lost {fragment!r}; the detail has to "
-                f"survive, only the line count changes")
+                f"survive, only the line count changes"
+            )
 
     def test_no_blank_or_rule_lines(self, caplog):
         with caplog.at_level(logging.ERROR):
@@ -80,9 +92,11 @@ class TestFailureLogging:
 
         lines = caplog.records[0].getMessage().split("\n")
         assert all(line.strip() for line in lines), (
-            "the collapsed record still contains a blank line")
+            "the collapsed record still contains a blank line"
+        )
         assert not any(set(line.strip()) == {"="} for line in lines), (
-            "the collapsed record still contains a separator rule")
+            "the collapsed record still contains a separator rule"
+        )
 
     def test_validation_summary_stays_optional(self, caplog):
         with caplog.at_level(logging.ERROR):
@@ -91,7 +105,8 @@ class TestFailureLogging:
         message = caplog.records[0].getMessage()
         assert len(caplog.records) == 1
         assert "Validation Summary" not in message, (
-            "a result with no validation_summary must not render an empty one")
+            "a result with no validation_summary must not render an empty one"
+        )
         assert "boom" in message
 
 
@@ -102,18 +117,28 @@ class TestSuccessLogging:
         with caplog.at_level(logging.INFO):
             _log_success_result(
                 "elem_1",
-                {"best_locator": "css=#login",
-                 "validated": True, "count": 1, "unique": True, "valid": True,
-                 "validation_method": "playwright",
-                 "validation_summary": {"best_type": "css", "best_strategy": "id",
-                                        "total_generated": 4, "valid": 1,
-                                        "unique": 1, "not_found": 0,
-                                        "not_unique": 0, "errors": 0}},
+                {
+                    "best_locator": "css=#login",
+                    "validated": True,
+                    "count": 1,
+                    "unique": True,
+                    "valid": True,
+                    "validation_method": "playwright",
+                    "validation_summary": {
+                        "best_type": "css",
+                        "best_strategy": "id",
+                        "total_generated": 4,
+                        "valid": 1,
+                        "unique": 1,
+                        "not_found": 0,
+                        "not_unique": 0,
+                        "errors": 0,
+                    },
+                },
             )
 
         infos = [r for r in caplog.records if r.levelno == logging.INFO]
-        assert len(infos) == 1, (
-            f"one success produced {len(infos)} info records")
+        assert len(infos) == 1, f"one success produced {len(infos)} info records"
         message = infos[0].getMessage()
         assert "CUSTOM ACTION SUCCEEDED for elem_1" in message
         assert "css=#login" in message

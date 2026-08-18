@@ -18,8 +18,9 @@ Concretely:
 
 - It ships **no runnable entrypoint** — no `__main__`, no console script. You
   mount it into a Flask app yourself.
-- Its public API is deliberately small: a config object and four config classes.
-  Everything else is internal and changes without notice.
+- Its public API is deliberately small: a version string, a config object, four
+  config classes, and four Flask helpers. Everything else is internal and
+  changes without notice.
 - Configuration falls back to NLRF's settings when that package happens to be
   importable (`src.backend.core.config`). Every such import is wrapped in
   `try/except ImportError`, so the service runs standalone — it just defaults to
@@ -73,7 +74,7 @@ Config is nested, not flat. Import the shared instance:
 ```python
 from browser_service.config import config
 
-config.llm.model_provider      # "vertex" (default) | "gemini" | "local"
+config.llm.model_provider      # "vertex" (default) | "gemini"  ("local" is rejected)
 config.headless                # bool
 config.batch                   # BatchConfig
 config.locator                 # LocatorConfig
@@ -83,20 +84,46 @@ config.max_concurrent_tasks
 config.robot_library
 ```
 
-Settings resolve in this order: **environment variable → NLRF settings (if
-importable) → built-in default.** The environment variables read are:
+There is no single resolution rule — it differs per setting. Four read the
+environment first and fall back to NLRF's settings when `src.backend.core.config`
+is importable:
 
-| Variable | Notes |
-|---|---|
-| `MODEL_PROVIDER` | `vertex` (default), `gemini`, or `local` |
-| `GEMINI_API_KEY` | only used when `MODEL_PROVIDER=gemini` |
-| `VERTEXAI_CREDENTIALS` | service-account JSON path, for `vertex` |
-| `VERTEXAI_PROJECT`, `VERTEXAI_LOCATION` | Vertex targeting |
-| `GOOGLE_MODEL` | model name |
-| `BROWSER_HEADLESS` | run without a visible browser |
-| `AGENT_VISION_MODE` | vision behaviour for element finding |
-| `ENABLE_CUSTOM_ACTIONS` | enable the custom action set |
-| `ROBOT_LIBRARY` | locator syntax target |
+| Variable | Resolution | Notes |
+|---|---|---|
+| `MODEL_PROVIDER` | env → NLRF → `vertex` | `gemini` or `vertex`. **`local` is rejected** — this service requires a Google vision model, and `validate()` reports an error for it |
+| `GEMINI_API_KEY` | env → NLRF → unset | required when `MODEL_PROVIDER=gemini` |
+| `VERTEXAI_PROJECT` | env → NLRF → unset | required when `MODEL_PROVIDER=vertex` |
+| `VERTEXAI_LOCATION` | env → NLRF → unset | required when `MODEL_PROVIDER=vertex` |
+
+One resolves the *other* way round — NLRF wins over the environment:
+
+| Variable | Resolution | Notes |
+|---|---|---|
+| `GOOGLE_MODEL` | **NLRF → env** → `gemini-2.5-flash` | when NLRF is importable and sets `ONLINE_MODEL`, `GOOGLE_MODEL` is ignored. Any provider prefix is stripped |
+
+The rest read the environment and fall straight through to a built-in default.
+They never consult NLRF:
+
+| Variable | Default | Notes |
+|---|---|---|
+| `VERTEXAI_CREDENTIALS` | unset | service-account JSON path; not an NLRF settings field |
+| `ROBOT_LIBRARY` | `browser` | any other value raises at construction |
+| `BROWSER_HEADLESS` | `true` | run without a visible browser |
+| `AGENT_VISION_MODE` | `auto` | `auto` or `on`; any other value raises at construction |
+| `ENABLE_CUSTOM_ACTIONS` | `true` | enable the custom action set |
+| `MAX_CONCURRENT_TASKS` | `10` | each task spawns a headless Chrome (~250MB) |
+| `MAX_AGENT_STEPS` | `15` | agent step ceiling per workflow |
+| `MAX_RETRIES_PER_ELEMENT` | `2` | |
+| `ELEMENT_TIMEOUT` | `120` | seconds |
+| `CONTENT_BASED_RETRIES` | `7` | |
+| `COORDINATE_BASED_RETRIES` | `7` | |
+| `ELEMENT_TYPE_RETRIES` | `5` | |
+| `COORDINATE_OFFSET_ATTEMPTS` | `7` | |
+| `CUSTOM_ACTION_TIMEOUT` | `5` | seconds |
+
+These tables are asserted against `config.py` by
+`tests/test_docs_match_code.py` — adding a variable without documenting it
+fails CI.
 
 ## Public API
 
@@ -118,7 +145,9 @@ from browser_service.api import (
 )
 ```
 
-That is the whole supported surface. Anything else you can import is internal.
+That is the whole supported surface — it is exactly the two `__all__` lists,
+asserted by `tests/test_docs_match_code.py`. Anything else you can import is
+internal.
 
 ## Element actions
 
@@ -133,7 +162,27 @@ The action dispatcher in `browser_service/agent/registration.py` handles:
 
 ## Example
 
-See [`examples/basic_usage.py`](examples/basic_usage.py).
+Submit a workflow, then poll for the result. This is the only supported way to
+drive the service — `process_workflow_task` and the rest of `browser_service.tasks`
+are internal, and NLRF itself never imports them.
+
+```bash
+curl -X POST http://localhost:4999/workflow   -H 'Content-Type: application/json'   -d '{
+    "url": "https://example.com/login",
+    "user_query": "Log in with a username",
+    "elements": [
+      {"id": "elem_1", "description": "Username field", "action": "input"},
+      {"id": "elem_2", "description": "Login button",   "action": "click"}
+    ]
+  }'
+# → 202 {"task_id": "...", "status": "processing", "message": "..."}
+
+curl http://localhost:4999/query/<task_id>
+```
+
+`elements` is required and must be a non-empty list; `url`, `user_query`,
+`session_config` and `enable_custom_actions` are optional. Submission returns
+`429` when `MAX_CONCURRENT_TASKS` tasks are already active.
 
 ## Contributing
 

@@ -71,6 +71,14 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+# Runtime logs. 153 MB sat here untracked AND unignored, in a public repo that
+# auto-publishes to PyPI on every push to main, with customer hostnames in the
+# browser-use transcripts. `git add -A` would have committed all of it.
+logs/
+# Local-only attic for superseded working docs (added 2026-08-18). Never
+# committed; docs/ was untracked but NOT ignored, so `git add -A` could have
+# swept design plans into this published repo.
+docs/_archive/
 
 # PyBuilder
 target/
@@ -137,6 +145,7 @@ dmypy.json
 Thumbs.db
 
 tmpclaude-*
+.claude/settings.local.json
 .agents/workflows/development-workflow.md
 tasks/lessons.md
 chroma_db/chroma.sqlite3

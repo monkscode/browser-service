@@ -1,269 +1,197 @@
-# Browser Service 🤖
+# Browser Service
 
-**AI-powered browser automation made simple.** Automatically identify web elements and generate reliable locators for your automation scripts.
+AI-assisted element locator extraction for web pages. Give it a page URL and a
+plain-English description of an element; it drives a real browser, finds the
+element, and returns validated locators.
 
 [![PyPI version](https://badge.fury.io/py/browser-service.svg)](https://pypi.org/project/browser-service/)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-## ✨ What is Browser Service?
+## Scope — read this first
 
-Browser Service is an intelligent browser automation library that uses AI to automatically identify and generate reliable selectors for web elements. No more fragile XPath or CSS selectors that break when websites change!
+This package was extracted from
+[Natural-Language-to-Robot-Framework](https://github.com/monkscode/Natural-Language-to-Robot-Framework)
+(NLRF) and exists to serve it. It is published to PyPI so that project can pin a
+version, not because it is a general-purpose automation library.
 
-**Perfect for:**
-- 🤖 Automated testing
-- 🔄 Web scraping
-- 📊 Data extraction
-- 🎯 UI automation
-- 🚀 Robotic Process Automation (RPA)
+Concretely:
 
-## 🚀 Quick Start
+- It ships **no runnable entrypoint** — no `__main__`, no console script. You
+  mount it into a Flask app yourself.
+- Its public API is deliberately small: a version string, a config object, four
+  config classes, and four Flask helpers. Everything else is internal and
+  changes without notice.
+- Configuration falls back to NLRF's settings when that package happens to be
+  importable (`src.backend.core.config`). Every such import is wrapped in
+  `try/except ImportError`, so the service runs standalone — it just defaults to
+  `MODEL_PROVIDER=vertex` instead of reading NLRF's choice.
 
-### 1. Install
+If you want a browser-automation library, use
+[browser-use](https://github.com/browser-use/browser-use) directly — this is a
+thin, opinionated service around it.
+
+## Install
 
 ```bash
 pip install browser-service
 ```
 
-### 2. Basic Usage
+Requires **Python 3.11 or newer** (`requires-python = ">=3.11,<4.0"`).
+
+## Running it
+
+There is no built-in server. Register the routes onto a Flask app you own and
+supply a task processor:
 
 ```python
-import asyncio
-from browser_service.config import config
-from browser_service.tasks import process_workflow_task
+from flask import Flask
+from browser_service.api import register_routes
 
-async def automate_website():
-    # Configure your API key (get from Google AI Studio)
-    config.GEMINI_API_KEY = "your-gemini-api-key-here"
-
-    # Define what you want to automate
-    workflow = {
-        "url": "https://example.com",
-        "steps": [
-            {"action": "click", "element": "Login button"},
-            {"action": "type", "element": "Email field", "text": "user@example.com"},
-            {"action": "click", "element": "Submit button"}
-        ]
-    }
-
-    # Run the automation
-    result = await process_workflow_task(workflow)
-    print(f"✅ Automation completed: {result}")
-
-# Run it
-asyncio.run(automate_website())
+app = Flask(__name__)
+register_routes(app, task_processor)   # task_processor: your queue/executor
+app.run(host="0.0.0.0", port=4999)
 ```
 
-That's it! The AI automatically finds the right elements on the page.
+NLRF does exactly this in `tools/browser_use_service.py` and talks to the result
+over HTTP. It never imports this package's internals.
 
-## 🎯 Key Features
+## HTTP endpoints
 
-### 🧠 AI-Powered Element Detection
-- **Natural Language**: Describe elements in plain English ("Login button", "Search box")
-- **Smart Locators**: Automatically generates reliable XPath, CSS, and Playwright selectors
-- **Built for Stability**: Candidate locators are stability-scored and validated for uniqueness against the live page, so they keep working across sessions
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/` | Service banner |
+| `GET` | `/health` | Health check |
+| `GET` | `/probe` | Legacy health check |
+| `POST` | `/workflow` | Submit a workflow task — **the primary endpoint** |
+| `POST` | `/batch` | Deprecated alias for `/workflow` |
+| `GET` | `/query/<task_id>` | Task status by id |
+| `GET` | `/tasks` | List tasks with summaries |
 
-### 🔧 Easy Configuration
-```python
-from browser_service.config import config
+## Configuration
 
-# Configure once, use everywhere
-config.GEMINI_API_KEY = "your-api-key"
-config.HEADLESS = True  # Run without browser window
-config.TIMEOUT = 30     # Seconds to wait for elements
-```
-
-### 🌐 Multiple Browser Support
-- Chrome/Chromium
-- Firefox
-- Safari (macOS)
-- Edge
-
-### 📊 Built-in Monitoring
-```python
-from browser_service.utils import record_workflow_metrics
-
-# Track your automation performance
-metrics = record_workflow_metrics(workflow_result)
-print(f"⏱️  Execution time: {metrics['duration']}s")
-print(f"🎯 Success rate: {metrics['success_rate']}%")
-```
-
-## 📚 Usage Examples
-
-### Form Filling Automation
-
-```python
-workflow = {
-    "url": "https://myapp.com/contact",
-    "steps": [
-        {"action": "type", "element": "Name field", "text": "John Doe"},
-        {"action": "type", "element": "Email field", "text": "john@example.com"},
-        {"action": "select", "element": "Country dropdown", "value": "United States"},
-        {"action": "click", "element": "Submit button"}
-    ]
-}
-```
-
-### Data Extraction
-
-```python
-workflow = {
-    "url": "https://news-site.com",
-    "steps": [
-        {"action": "extract", "element": "Article titles", "multiple": True},
-        {"action": "extract", "element": "Publication dates", "multiple": True}
-    ]
-}
-```
-
-### E-commerce Automation
-
-```python
-workflow = {
-    "url": "https://store.com",
-    "steps": [
-        {"action": "type", "element": "Search box", "text": "wireless headphones"},
-        {"action": "click", "element": "Search button"},
-        {"action": "click", "element": "First product"},
-        {"action": "click", "element": "Add to cart button"}
-    ]
-}
-```
-
-## 🔧 Configuration
-
-### Required Setup
+Config is nested, not flat. Import the shared instance:
 
 ```python
 from browser_service.config import config
 
-# Required: Your Google Gemini API key
-config.GEMINI_API_KEY = "your-gemini-api-key-here"
-
-# Optional: Customize behavior
-config.HEADLESS = True          # Run without browser UI
-config.TIMEOUT = 30             # Element wait timeout (seconds)
-config.BROWSER_TYPE = "chrome"  # chrome, firefox, safari, edge
+config.llm.model_provider      # "vertex" (default) | "gemini"  ("local" is rejected)
+config.headless                # bool
+config.batch                   # BatchConfig
+config.locator                 # LocatorConfig
+config.agent_vision_mode
+config.enable_custom_actions
+config.max_concurrent_tasks
+config.robot_library
 ```
 
-### Advanced Configuration
+There is no single resolution rule — it differs per setting. Four read the
+environment first and fall back to NLRF's settings when `src.backend.core.config`
+is importable:
+
+| Variable | Resolution | Notes |
+|---|---|---|
+| `MODEL_PROVIDER` | env → NLRF → `vertex` | `gemini` or `vertex`. **`local` is rejected** — this service requires a Google vision model, and `validate()` reports an error for it |
+| `GEMINI_API_KEY` | env → NLRF → unset | required when `MODEL_PROVIDER=gemini` |
+| `VERTEXAI_PROJECT` | env → NLRF → unset | required when `MODEL_PROVIDER=vertex` |
+| `VERTEXAI_LOCATION` | env → NLRF → unset | required when `MODEL_PROVIDER=vertex` |
+
+One resolves the *other* way round — NLRF wins over the environment:
+
+| Variable | Resolution | Notes |
+|---|---|---|
+| `GOOGLE_MODEL` | **NLRF → env** → `gemini-2.5-flash` | when NLRF is importable and sets `ONLINE_MODEL`, `GOOGLE_MODEL` is ignored. Any provider prefix is stripped |
+
+The rest read the environment and fall straight through to a built-in default.
+They never consult NLRF:
+
+| Variable | Default | Notes |
+|---|---|---|
+| `VERTEXAI_CREDENTIALS` | unset | service-account JSON path; not an NLRF settings field |
+| `ROBOT_LIBRARY` | `browser` | any other value raises at construction |
+| `BROWSER_HEADLESS` | `true` | run without a visible browser |
+| `AGENT_VISION_MODE` | `auto` | `auto` or `on`; any other value raises at construction |
+| `ENABLE_CUSTOM_ACTIONS` | `true` | enable the custom action set |
+| `MAX_CONCURRENT_TASKS` | `10` | each task spawns a headless Chrome (~250MB) |
+| `MAX_AGENT_STEPS` | `15` | agent step ceiling per workflow |
+| `MAX_RETRIES_PER_ELEMENT` | `2` | |
+| `ELEMENT_TIMEOUT` | `120` | seconds |
+| `CONTENT_BASED_RETRIES` | `7` | |
+| `COORDINATE_BASED_RETRIES` | `7` | |
+| `ELEMENT_TYPE_RETRIES` | `5` | |
+| `COORDINATE_OFFSET_ATTEMPTS` | `7` | |
+| `CUSTOM_ACTION_TIMEOUT` | `5` | seconds |
+
+These tables are asserted against `config.py` by
+`tests/test_docs_match_code.py` — adding a variable without documenting it
+fails CI.
+
+## Public API
 
 ```python
-from browser_service.config import BrowserServiceConfig
+from browser_service import (
+    __version__,
+    config,                 # shared BrowserServiceConfig instance
+    BrowserServiceConfig,
+    BatchConfig,
+    LocatorConfig,
+    LLMConfig,
+)
 
-# Create custom config
-custom_config = BrowserServiceConfig(
-    gemini_api_key="your-key",
-    headless=False,
-    timeout=60,
-    browser_type="firefox"
+from browser_service.api import (
+    register_routes,
+    validate_workflow_request,
+    format_task_response,
+    format_error_response,
 )
 ```
 
-## 🎮 Action Types
+That is the whole supported surface — it is exactly the two `__all__` lists,
+asserted by `tests/test_docs_match_code.py`. Anything else you can import is
+internal.
 
-| Action | Description | Example |
-|--------|-------------|---------|
-| `click` | Click an element | `{"action": "click", "element": "Submit button"}` |
-| `type` | Type text into field | `{"action": "type", "element": "Email field", "text": "user@email.com"}` |
-| `select` | Select dropdown option | `{"action": "select", "element": "Country", "value": "USA"}` |
-| `extract` | Get element text | `{"action": "extract", "element": "Price"}` |
-| `wait` | Wait for element | `{"action": "wait", "element": "Loading spinner"}` |
-| `scroll` | Scroll to element | `{"action": "scroll", "element": "Bottom of page"}` |
+## Element actions
 
-## 🏗️ API Reference
+The action dispatcher in `browser_service/agent/registration.py` handles:
 
-### Core Functions
+| Action | Aliases | Effect |
+|---|---|---|
+| `input` | `type` | Type text into a field |
+| `click` | `submit` | Click an element |
+| `select` | — | Choose a dropdown option |
+| `check` | `uncheck` | Toggle a checkbox |
 
-```python
-from browser_service.tasks import process_workflow_task
-from browser_service.browser import BrowserSessionManager
+## Example
 
-# Process a complete workflow
-result = await process_workflow_task(workflow)
-
-# Manage browser sessions
-browser = BrowserSessionManager()
-await browser.start_session()
-# ... use browser ...
-await browser.cleanup()
-```
-
-### Configuration Classes
-
-```python
-from browser_service.config import (
-    config,                    # Global config instance
-    BrowserServiceConfig,      # Main config class
-    BatchConfig,              # Batch processing config
-    LocatorConfig,            # Locator generation config
-    LLMConfig                 # AI model config
-)
-```
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-**❌ "Element not found" errors**
-```python
-# Solution: Make element descriptions more specific
-{"action": "click", "element": "Blue Login button on the right"}  # Better
-{"action": "click", "element": "Login button"}                   # Worse
-```
-
-**❌ "API key invalid" error**
-```python
-# Make sure you set your Gemini API key
-config.GEMINI_API_KEY = "your-actual-api-key-from-google-ai-studio"
-```
-
-**❌ "Timeout" errors**
-```python
-# Increase timeout for slow pages
-config.TIMEOUT = 60  # 60 seconds instead of default 30
-```
-
-### Debug Mode
-
-```python
-import logging
-from browser_service.utils import setup_logging
-
-# Enable detailed logging
-setup_logging(level=logging.DEBUG)
-
-# Now you'll see detailed logs about element detection
-```
-
-## 📋 Requirements
-
-- **Python**: 3.8 or higher
-- **API Key**: Google Gemini API key (free tier available)
-- **Browser**: Chrome/Chromium recommended (others supported)
-
-## 🤝 Contributing
-
-Found a bug or want to improve Browser Service?
-
-1. **🐛 Report Issues**: [GitHub Issues](https://github.com/monkscode/browser-service/issues)
-2. **💡 Feature Requests**: Open an issue with "Feature Request" label
-3. **🔧 Code Contributions**: Fork → Branch → PR
-
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## 🙋‍♂️ Support
-
-- **📖 Documentation**: More examples in `/examples` folder
-- **💬 Questions**: [GitHub Discussions](https://github.com/monkscode/browser-service/discussions)
-- **🐛 Bug Reports**: [GitHub Issues](https://github.com/monkscode/browser-service/issues)
-
----
-
-**Ready to automate?** 🚀 Install now and start building intelligent browser automation!
+Submit a workflow, then poll for the result. This is the only supported way to
+drive the service — `process_workflow_task` and the rest of `browser_service.tasks`
+are internal, and NLRF itself never imports them.
 
 ```bash
-pip install browser-service
+curl -X POST http://localhost:4999/workflow   -H 'Content-Type: application/json'   -d '{
+    "url": "https://example.com/login",
+    "user_query": "Log in with a username",
+    "elements": [
+      {"id": "elem_1", "description": "Username field", "action": "input"},
+      {"id": "elem_2", "description": "Login button",   "action": "click"}
+    ]
+  }'
+# → 202 {"task_id": "...", "status": "processing", "message": "..."}
+
+curl http://localhost:4999/query/<task_id>
 ```
+
+`elements` is required and must be a non-empty list; `url`, `user_query`,
+`session_config` and `enable_custom_actions` are optional. Submission returns
+`429` when `MAX_CONCURRENT_TASKS` tasks are already active.
+
+## Contributing
+
+Issues and pull requests: [GitHub](https://github.com/monkscode/browser-service/issues).
+
+Releases are automated — merging to `main` triggers `.github/workflows/publish.yml`,
+which derives the next version from PyPI and publishes. Do not hand-edit the
+version in `pyproject.toml`; CI overwrites it at build time.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

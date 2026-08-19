@@ -146,6 +146,7 @@ Thumbs.db
 
 tmpclaude-*
 .claude/settings.local.json
+CLAUDE.md
 .agents/workflows/development-workflow.md
 tasks/lessons.md
 chroma_db/chroma.sqlite3

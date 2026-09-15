@@ -34,6 +34,7 @@ from typing import Any, Dict, Optional
 
 from browser_service.locators.action_fit import check_action_fit
 from browser_service.locators.classifier import classify_element_type
+from browser_service.locators.read_target import apply_read_target_policy
 from browser_service.locators.stability import (
     STABLE,
     VOLATILE,
@@ -889,7 +890,13 @@ async def find_unique_locator_action(
                                 else ""
                             )
                             if not _demote_reason:
-                                return candidate_result
+                                return await apply_read_target_policy(
+                                    search_root,
+                                    candidate_result,
+                                    action,
+                                    expected_text,
+                                    iframe_context,
+                                )
                             logger.info(
                                 f"   ↪ CANDIDATE DEMOTED: '{final_locator}' — {_demote_reason}; "
                                 f"running the cascade first, candidate kept as last resort "
@@ -1135,6 +1142,9 @@ async def find_unique_locator_action(
                 result = {"found": False, "error": f"fit-mode cascade raised {type(e).__name__}"}
             if action:
                 result = await _settle_action_fit(result, _fallback_result, _run_cascade, action)
+                result = await apply_read_target_policy(
+                    search_context, result, action, expected_text, iframe_context
+                )
 
             duration_ms = (time.monotonic() - _locator_timer_start) * 1000.0
             logger.info(

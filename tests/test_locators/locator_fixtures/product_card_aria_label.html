@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  .s-main-slot { width: 900px; }
+  .s-result-item { height: 120px; border-bottom: 1px solid #eee; }
+  h2 { font-size: 16px; margin: 8px 0; }
+  .a-price { color: #b12704; }
+</style>
+</head>
+<body>
+  <!-- amazon u01 (2026-09-15 probe): the result title's aria-label IS the product
+       name. The probe shipped [aria-label="<name>"] for "the first product name";
+       the next search returned other products and the wait timed out. -->
+  <h1 class="s-title">Results for wireless mouse in Computers and Accessories</h1>
+  <div class="s-main-slot">
+    <div data-component-type="s-search-result" class="s-result-item s-asin" data-asin="B0C1">
+      <div class="a-section">
+        <a class="a-link-normal" href="/p/1"
+           title="Portronics Toad 23 Wireless Optical Mouse with 2.4GHz USB Nano Dongle">
+          <h2 aria-label="Portronics Toad 23 Wireless Optical Mouse with 2.4GHz USB Nano Dongle"><span class="a-text-normal">Portronics Toad 23 Wireless Optical Mouse with 2.4GHz USB Nano Dongle</span></h2>
+        </a>
+      </div>
+      <div class="a-section"><span class="a-price">₹399</span></div>
+    </div>
+    <div data-component-type="s-search-result" class="s-result-item s-asin" data-asin="B0C2">
+      <div class="a-section">
+        <a class="a-link-normal" href="/p/2"
+           title="Logitech B170 Wireless Mouse, 2.4 GHz with USB Nano Receiver">
+          <h2 aria-label="Logitech B170 Wireless Mouse, 2.4 GHz with USB Nano Receiver"><span class="a-text-normal">Logitech B170 Wireless Mouse, 2.4 GHz with USB Nano Receiver</span></h2>
+        </a>
+      </div>
+      <div class="a-section"><span class="a-price">₹649</span></div>
+    </div>
+    <div data-component-type="s-search-result" class="s-result-item s-asin" data-asin="B0C3">
+      <div class="a-section">
+        <a class="a-link-normal" href="/p/3"
+           title="Zebronics Zeb-Transformer-M Wireless Gaming Mouse with RGB Lights">
+          <h2 aria-label="Zebronics Zeb-Transformer-M Wireless Gaming Mouse with RGB Lights"><span class="a-text-normal">Zebronics Zeb-Transformer-M Wireless Gaming Mouse with RGB Lights</span></h2>
+        </a>
+      </div>
+      <div class="a-section"><span class="a-price">₹499</span></div>
+    </div>
+  </div>
+</body>
+</html>

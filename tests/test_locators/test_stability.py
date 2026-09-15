@@ -18,9 +18,13 @@ Evidence anchors (2026-07-06 log/bench audit):
 - tomselect-N (35 log hits, the original production incident) -> volatile.
 """
 
+from unittest.mock import patch
+
 import pytest
 
+from browser_service.config import config
 from browser_service.locators.stability import (
+    LONG_TEXT_CHARS,
     POSITIONAL,
     STABLE,
     VOLATILE,
@@ -241,3 +245,65 @@ class TestStabilityRank:
 
     def test_unknown_tier_sorts_last(self):
         assert stability_rank("garbage") > stability_rank(POSITIONAL)
+
+
+@pytest.fixture
+def action_fit_on():
+    with patch.object(config.locator, "enable_action_fit", True):
+        yield
+
+
+E2C_COUNTER_IDS = [
+    "react-select-3-option-1",  # u11: resolved to an aria-disabled option at runtime
+    "react-select-3-input",
+    "mui-42",
+    "headlessui-menu-button-1",
+    "downshift-0-item-3",
+]
+
+
+class TestExtendedFrameworkIds:
+    @pytest.mark.parametrize("value", E2C_COUNTER_IDS)
+    def test_stable_with_flag_off(self, value):
+        assert score_stability("id", value) == STABLE
+
+    @pytest.mark.parametrize("value", E2C_COUNTER_IDS)
+    def test_volatile_with_flag_on(self, value, action_fit_on):
+        assert score_stability("id", value) == VOLATILE
+
+    @pytest.mark.parametrize(
+        "value", ["react-select-color-option-1", "mui-component-select-age", "downshift-menu"]
+    )
+    def test_hand_authored_neighbours_stay_stable(self, value, action_fit_on):
+        assert score_stability("id", value) == STABLE
+
+    def test_probe_locator_is_volatile(self, action_fit_on):
+        assert classify_locator("id=react-select-3-option-1") == VOLATILE
+
+
+class TestLongText:
+    LONG = "Portronics Toad 23 Wireless Optical Mouse with 2.4GHz"  # 53 chars, u01
+
+    def test_static_with_flag_off(self):
+        assert is_dynamic_text(self.LONG) is False
+
+    def test_dynamic_with_flag_on(self, action_fit_on):
+        assert is_dynamic_text(self.LONG) is True
+
+    def test_boundary_is_strictly_longer_than_40(self, action_fit_on):
+        assert is_dynamic_text("x" * LONG_TEXT_CHARS) is False
+        assert is_dynamic_text("x" * (LONG_TEXT_CHARS + 1)) is True
+
+    def test_aria_label_locator(self, action_fit_on):
+        assert classify_locator(f'[aria-label="{self.LONG}"]') == VOLATILE
+
+    def test_title_contains_locator(self, action_fit_on):
+        # u02 r2 shipped this locator for a read step
+        loc = "a[title*='Sports Sneaker Running And Outdoor Walking Shoes']"
+        assert classify_locator(loc) == VOLATILE
+
+    def test_aria_label_not_scanned_with_flag_off(self):
+        assert classify_locator('[aria-label="Cart (3 items)"]') == STABLE
+
+    def test_short_label_stays_stable(self, action_fit_on):
+        assert classify_locator('[aria-label="Search"]') == STABLE

@@ -587,3 +587,24 @@ class TestCustomActionTimeoutConfig:
         cfg = self._make_config(monkeypatch, "0")
         errors = cfg.validate()
         assert any("CUSTOM_ACTION_TIMEOUT" in e for e in errors)
+
+
+class TestActionFitFlag:
+    """E2 (2026-09-15 evaluation) ships behind ENABLE_ACTION_FIT, default off."""
+
+    def test_default_off(self):
+        from unittest.mock import patch
+
+        from browser_service.config import BrowserServiceConfig
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ENABLE_ACTION_FIT", None)
+            assert BrowserServiceConfig().locator.enable_action_fit is False
+
+    def test_env_true_turns_it_on(self):
+        from unittest.mock import patch
+
+        from browser_service.config import BrowserServiceConfig
+
+        with patch.dict(os.environ, {"ENABLE_ACTION_FIT": "true"}):
+            assert BrowserServiceConfig().locator.enable_action_fit is True

@@ -1670,6 +1670,16 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             logger.warning(f"   ⚠️ Element lookup failed: {e}")
                             logger.debug("   Full error:", exc_info=True)
 
+                from browser_service.config import config as _bs_config
+
+                # E2: the step's action reaches the cascade only when the flag
+                # is on; None keeps today's path (no fitness reads).
+                _step_action = (
+                    _element_specs.get(params.element_id, {}).get("action")
+                    if _bs_config.locator.enable_action_fit
+                    else None
+                )
+
                 result = await find_unique_locator_action(
                     x=final_x,  # Use confirmed or scaled coordinates
                     y=final_y,  # Use confirmed or scaled coordinates
@@ -1685,6 +1695,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     vision_type_hint=params.element_type,  # LLM's visual type classification (1 of 2 sources)
                     vision_framework_hint=params.framework_hint,  # LLM's framework guess (any specialized type)
                     row_anchor_text=params.row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
+                    action=_step_action,  # E2 fitness + read-target rules (flag on only)
                 )
 
                 # Convert result to ActionResult format
@@ -1705,8 +1716,12 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     # ran at the step-order-correct page state, the re-query
                     # did not. The blocked ActionResult carries NO metadata,
                     # so workflow.py's extraction never sees the weak result.
+                    # A last-resort answer flagged by the fitness rule (E2) is
+                    # weak: it must never overwrite a validated, fitting result.
                     _new_strong = (
-                        bool(result.get("validated")) and result.get("semantic_match") is not False
+                        bool(result.get("validated"))
+                        and result.get("semantic_match") is not False
+                        and result.get("action_fit") != "misfit"
                     )
                     _prev_locator = _completed_elements.get(params.element_id)
                     # Second short-circuit reason (2026-07-23 Stage 2): an

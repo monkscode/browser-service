@@ -702,6 +702,10 @@ def process_workflow_task(
                 logger.info("🔧 Custom actions ENABLED - Smart locator strategy")
             else:
                 logger.info("🔧 Custom actions DISABLED - Legacy JavaScript validation")
+            logger.info(
+                f"🧪 ENABLE_ACTION_FIT={'on' if config.locator.enable_action_fit else 'off'} "
+                f"(E2 action-fit + read-target rules)"
+            )
 
             # Build workflow prompt based on feature flag
             unified_objective = build_workflow_prompt(

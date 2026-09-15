@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  header.top { padding: 12px; }
+  .search-wrap { width: 480px; }
+  .search-wrap input { width: 460px; height: 36px; font-size: 16px; }
+  .mobile-header { display: none; }
+</style>
+</head>
+<body>
+  <!-- flipkart u02 (2026-09-15 probe): the wrapper carries the search text as
+       aria-label, a hidden mobile header repeats it, only the input can be filled.
+       The probe shipped `[aria-label="…"] >> visible=true` and Fill Text failed with
+       "Element is not an <input>". The agent's candidate input[title*='Search']
+       matched 2 elements on the live page, so the hidden header holds a second
+       titled input. Verified 2026-09-15 on today's code: resolves to the <div>;
+       `[title="…"]` disambiguates to the visible input. -->
+  <div class="mobile-header" aria-label="Search for Products, Brands and More">
+    <input class="Pke_EE" type="text" name="q" title="Search for Products, Brands and More"
+           placeholder="Search for Products, Brands and More">
+  </div>
+  <header class="top">
+    <form action="/search" class="header-form-search">
+      <div class="search-wrap" aria-label="Search for Products, Brands and More">
+        <input class="Pke_EE" type="text" name="q" autocomplete="off"
+               title="Search for Products, Brands and More"
+               placeholder="Search for Products, Brands and More">
+      </div>
+    </form>
+  </header>
+</body>
+</html>

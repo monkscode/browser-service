@@ -1121,6 +1121,18 @@ async def find_unique_locator_action(
                     "(signal: action-fit-timeout)"
                 )
                 result = {"found": False, "error": "fit-mode cascade timed out"}
+            except Exception as e:
+                # E2: a parked candidate must survive a cascade that raises — today
+                # it would have been returned before any cascade ran. Without one,
+                # re-raise into today's handlers below.
+                if _fallback_result is None:
+                    raise
+                logger.warning(
+                    f"   ⚠️ Fit-mode cascade raised {type(e).__name__}: {e} — keeping the "
+                    f"agent's candidate (signal: action-fit-error)",
+                    exc_info=True,
+                )
+                result = {"found": False, "error": f"fit-mode cascade raised {type(e).__name__}"}
             if action:
                 result = await _settle_action_fit(result, _fallback_result, _run_cascade, action)
 

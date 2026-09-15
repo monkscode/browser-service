@@ -183,3 +183,33 @@ class TestCandidatePath:
         assert out["best_locator"] == CANDIDATE
         assert out["action_fit"] == "misfit"
         assert cascade.await_count == 1  # the candidate IS today's answer — no legacy rerun
+
+    async def test_parked_candidate_survives_a_cascade_error(self):
+        cascade = AsyncMock(side_effect=RuntimeError("Execution context was destroyed"))
+        with patch(
+            "browser_service.agent.actions.check_action_fit",
+            new=AsyncMock(return_value="<div> cannot be filled"),
+        ):
+            out = await _call("input", cascade)
+        assert out["best_locator"] == CANDIDATE
+        assert out["action_fit"] == "misfit"
+        assert cascade.await_count == 1  # the candidate is today's answer — no second cascade
+
+    async def test_cascade_error_without_a_parked_candidate_is_todays_error(self):
+        cascade = AsyncMock(side_effect=RuntimeError("Execution context was destroyed"))
+        with patch("browser_service.locators.find_unique_locator_at_coordinates", new=cascade):
+            out = await find_unique_locator_action(
+                x=100,
+                y=100,
+                element_id="elem_1",
+                element_description="the search input box",
+                expected_text=SEARCH_TEXT,
+                candidate_locator=None,
+                element_data=None,
+                page=FakePage({}),
+                is_collection=False,
+                action="input",
+            )
+        assert out["found"] is False
+        assert out["error_type"] == "RuntimeError"
+        assert cascade.await_count == 1  # re-raised into today's handler; no retry

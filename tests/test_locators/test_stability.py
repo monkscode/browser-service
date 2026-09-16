@@ -253,6 +253,12 @@ def action_fit_on():
         yield
 
 
+@pytest.fixture
+def action_fit_off():
+    with patch.object(config.locator, "enable_action_fit", False):
+        yield
+
+
 E2C_COUNTER_IDS = [
     "react-select-3-option-1",  # u11: resolved to an aria-disabled option at runtime
     "react-select-3-input",
@@ -264,7 +270,7 @@ E2C_COUNTER_IDS = [
 
 class TestExtendedFrameworkIds:
     @pytest.mark.parametrize("value", E2C_COUNTER_IDS)
-    def test_stable_with_flag_off(self, value):
+    def test_stable_with_flag_off(self, value, action_fit_off):
         assert score_stability("id", value) == STABLE
 
     @pytest.mark.parametrize("value", E2C_COUNTER_IDS)
@@ -284,7 +290,7 @@ class TestExtendedFrameworkIds:
 class TestLongText:
     LONG = "Portronics Toad 23 Wireless Optical Mouse with 2.4GHz"  # 53 chars, u01
 
-    def test_static_with_flag_off(self):
+    def test_static_with_flag_off(self, action_fit_off):
         assert is_dynamic_text(self.LONG) is False
 
     def test_dynamic_with_flag_on(self, action_fit_on):
@@ -302,7 +308,7 @@ class TestLongText:
         loc = "a[title*='Sports Sneaker Running And Outdoor Walking Shoes']"
         assert classify_locator(loc) == VOLATILE
 
-    def test_aria_label_not_scanned_with_flag_off(self):
+    def test_aria_label_not_scanned_with_flag_off(self, action_fit_off):
         assert classify_locator('[aria-label="Cart (3 items)"]') == STABLE
 
     def test_short_label_stays_stable(self, action_fit_on):

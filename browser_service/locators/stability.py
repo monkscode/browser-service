@@ -40,6 +40,7 @@ Depends on:
 """
 
 import re
+from typing import Tuple
 
 STABLE = "stable"
 VOLATILE = "volatile"
@@ -239,7 +240,7 @@ def classify_locator(locator: str) -> str:
         if match and score_stability("id", match.group(1)) == VOLATILE:
             return VOLATILE
 
-    text_value_res = _LOCATOR_TEXT_VALUE_RES
+    text_value_res: Tuple[re.Pattern[str], ...] = _LOCATOR_TEXT_VALUE_RES
     if _extended_rules():
         text_value_res = text_value_res + _EXTENDED_LOCATOR_TEXT_VALUE_RES
     for pattern in text_value_res:

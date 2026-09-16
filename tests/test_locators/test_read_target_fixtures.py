@@ -92,10 +92,25 @@ async def test_element_data_path_rewrites_to_the_card(page, action_fit_on):
 
 
 async def test_candidate_path_rewrites_to_the_card(page, action_fit_on):
+    """A DEMOTED candidate: the 46-char title literal is over stability's
+    LONG_TEXT_CHARS, so with the flag on the candidate is scored volatile and
+    demoted, and the rewrite arrives from the cascade exit — the u02 r2 shape."""
     candidate = "a[title*='Logitech B170 Wireless Mouse, 2.4 GHz with USB']"  # u02 r2 shape
     out = await _read(page, f"{CARD} >> nth=1 >> a", NAMES[1], "get_text", candidate=candidate)
     assert out["best_locator"].startswith(f"{CARD} >> nth=1 >> ")
     assert NAMES[1] in await page.locator(out["best_locator"]).inner_text()
+
+
+async def test_candidate_path_uses_the_candidate_hook(page, action_fit_on):
+    """The candidate-path hook (actions.py, the `if not _demote_reason` exit).
+    A 28-char literal is over read_target's 25-char rewrite floor and under
+    stability's 40-char LONG_TEXT_CHARS, so the candidate is accepted, not
+    demoted, and the rewrite must come from that exit."""
+    candidate = "h2[aria-label*='Logitech B170 Wireless Mouse']"
+    out = await _read(page, f"{CARD} >> nth=1 >> h2", NAMES[1], "get_text", candidate=candidate)
+    assert out["best_locator"] == f"{CARD} >> nth=1 >> h2"
+    assert len(out["all_locators"]) == 1  # nothing left for PHASE-2 to re-promote
+    assert (await page.locator(out["best_locator"]).inner_text()).strip() == NAMES[1]
 
 
 async def test_text_first_path_rewrites_to_the_card(page, action_fit_on):

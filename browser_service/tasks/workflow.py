@@ -42,6 +42,19 @@ def rerank_sort_key(loc: dict) -> tuple:
     )
 
 
+def find_forceable_id_locator(all_locators: list[dict]) -> tuple:
+    """The first id-shaped entry the priority forcer may promote, as
+    (index, entry), or (None, None). An entry the action-fitness check
+    rejected (action_misfit) is never forceable — forcing it back would
+    undo the rejection. With ENABLE_ACTION_FIT off no entry carries that
+    key, so this is today's behaviour."""
+    for idx, loc in enumerate(all_locators):
+        loc_str = loc.get("locator", "")
+        if (loc_str.startswith("id=") or loc_str.startswith("#")) and not loc.get("action_misfit"):
+            return idx, loc
+    return None, None
+
+
 def commit_reranked_winner(result: dict, scored_locators: list[dict]) -> None:
     """Point the top-level result fields at the reranked winner.
 
@@ -2076,14 +2089,7 @@ def process_workflow_task(
                         validation_violations += 1
 
                         # Search for ID locator in all_locators list
-                        id_locator = None
-                        id_locator_index = None
-                        for idx, loc in enumerate(all_locators):
-                            loc_str = loc.get("locator", "")
-                            if loc_str.startswith("id=") or loc_str.startswith("#"):
-                                id_locator = loc
-                                id_locator_index = idx
-                                break
+                        id_locator_index, id_locator = find_forceable_id_locator(all_locators)
 
                         if id_locator:
                             # Automatically correct by forcing ID locator to be best_locator

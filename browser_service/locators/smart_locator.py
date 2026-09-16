@@ -2881,7 +2881,7 @@ async def _generate_locators_from_element_data(
     vision_framework_hint: Optional[str] = None,  # LLM's framework guess
     page=None,  # Page-level reference for DOM probe (vs. search_context which can be frame_locator)
     row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
-    action: Optional[str] = None,  # Step action (E2a); None = no fitness rule (flag off)
+    action: Optional[str] = None,  # Step action (E2a); None = no fitness rule
 ) -> Optional[dict]:
     """
     Generate and validate locators from element_data extracted from browser-use DOM.
@@ -4019,7 +4019,7 @@ async def find_unique_locator_at_coordinates(
     vision_type_hint: Optional[str] = None,  # LLM's visual classification (1 of 2 sources of truth)
     vision_framework_hint: Optional[str] = None,  # LLM's framework guess
     row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
-    action: Optional[str] = None,  # Step action (E2a); None = no fitness rule (flag off)
+    action: Optional[str] = None,  # Step action (E2a); None = no fitness rule
 ) -> dict:
     """
     Find a unique locator for an element using a semantic-first approach.

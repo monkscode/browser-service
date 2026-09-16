@@ -3,7 +3,7 @@ E2b read-target policy, no browser: which locators count as embedding the
 value being read, and what the policy does with the builder's answer.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 
@@ -105,14 +105,14 @@ class TestPolicy:
         assert out["best_locator"] == "id=result-title"
         assert [e["locator"] for e in out["all_locators"]] == ["id=result-title"]
         assert out["read_target_rewritten_from"] == BASE["best_locator"]
-        id_validator.assert_awaited_once()
+        id_validator.assert_awaited_once_with(ANY, BASE["best_locator"], "id=result-title")
         builder.assert_not_awaited()
 
     async def test_falls_through_to_container_when_the_id_does_not_validate(self):
         result = {**BASE, "element_info": {"id": "result-title"}}
         out, builder, id_validator = await _apply_id(False, result)
         assert out["best_locator"] == REWRITTEN
-        id_validator.assert_awaited_once()
+        id_validator.assert_awaited_once_with(ANY, BASE["best_locator"], "id=result-title")
         builder.assert_awaited_once()
 
     async def test_volatile_id_skips_id_validation(self):

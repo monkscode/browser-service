@@ -8,16 +8,17 @@ because the name IS the data. Corpus read locators (1,921 runs): a literal
 of >=40 chars passed 0 of 4; literals under 10 chars passed 40 of 42
 (text="John" >> nth=0 on a static table).
 
-Applied after the cascade has chosen, and only when all hold:
+Applied after the cascade has chosen, and only when both hold:
 - the step is a read (get_text / get_attribute) with an expected_text;
 - the locator embeds a literal of >= DATA_LITERAL_MIN_CHARS that equals,
-  contains or is contained in expected_text;
-- the target sits in a REPEATED container (a list item, a table row, a
-  result card) — the structural evidence that the text is per-item data,
-  not a label. A long static heading is left alone.
-The locator is then rewritten to  <container> >> nth=<i> >> <descendant>
-and validated live to resolve to the SAME element. When no container
-validates, the original stands (demote, never delete).
+  contains or is contained in expected_text.
+The locator is then rewritten to id=<id> when the element carries a stable
+id, or otherwise to <container> >> nth=<i> >> <descendant> when the target
+sits in a REPEATED container (a list item, a table row, a result card — the
+structural evidence that the text is per-item data, not a label; a long
+static heading has no such ancestor). Either rewrite is validated live to
+resolve to the SAME element. When neither validates, the original stands
+(demote, never delete).
 
 Not applied to collections (the collection handler owns them), row-anchored
 results (anchored on the QA's row datum on purpose), or iframe results. An

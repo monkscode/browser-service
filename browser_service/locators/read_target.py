@@ -20,8 +20,11 @@ and validated live to resolve to the SAME element. When no container
 validates, the original stands (demote, never delete).
 
 Not applied to collections (the collection handler owns them), row-anchored
-results (anchored on the QA's row datum on purpose), iframe results, or an
-element with a stable id (workflow.py's priority check would force the id).
+results (anchored on the QA's row datum on purpose), or iframe results. An
+element with a stable id is rewritten straight to that id (validated live,
+same-element check) instead of the container-ordinal rewrite below — the
+agent-candidate path's element_info can carry an id that never lands in
+all_locators, so workflow.py's priority check has nothing there to force.
 
 Referenced by: agent/actions.py
 Depends on: locators/action_fit.py, locators/stability.py
@@ -53,6 +56,9 @@ CONTAINER_WALK_MAX_ANCESTORS = 16
 
 # Same band as the nth-child strategy — structural and positional.
 READ_TARGET_PRIORITY = 9
+
+# Mirrors smart_locator.py's PRIORITY_ID (native id attribute is priority 1).
+READ_TARGET_ID_PRIORITY = 1
 
 # Literal-bearing locator shapes. Each quote style has its own pattern so an
 # apostrophe inside a double-quoted value ("Men's ...") is still captured.
@@ -167,6 +173,24 @@ def data_bound_literal(locator: str, expected_text: Optional[str]) -> str:
     return ""
 
 
+async def _resolves_to_same_element(search_context, locator: str, candidate: str) -> bool:
+    """True when ``candidate`` resolves to exactly one element, the SAME
+    element ``locator`` resolves to. Every failure — a non-unique count, a
+    raised exception, a timeout — is False; never turn an uncertain read
+    into an accept."""
+    try:
+        target = search_context.locator(locator)
+        rewritten = search_context.locator(candidate)
+        if await rewritten.count() != 1:
+            return False
+        handle = await target.element_handle(timeout=FIT_READ_TIMEOUT_MS)
+        same = await rewritten.evaluate("(el, t) => el === t", handle, timeout=FIT_READ_TIMEOUT_MS)
+    except Exception as e:
+        logger.info(f"   ⚠️ Read-target validation failed for '{candidate}': {e}")
+        return False
+    return same is True
+
+
 async def build_container_ordinal(search_context, locator: str) -> Optional[str]:
     """A container-ordinal locator that resolves to exactly the element
     ``locator`` resolves to, or None. Every failure is None."""
@@ -184,16 +208,9 @@ async def build_container_ordinal(search_context, locator: str) -> Optional[str]
     candidate = f"{info['container']} >> nth={int(info['index'])}"
     if info.get("descendant"):
         candidate += f" >> {info['descendant']}"
-    try:
-        rewritten = search_context.locator(candidate)
-        if await rewritten.count() != 1:
-            return None
-        handle = await target.element_handle(timeout=FIT_READ_TIMEOUT_MS)
-        same = await rewritten.evaluate("(el, t) => el === t", handle, timeout=FIT_READ_TIMEOUT_MS)
-    except Exception as e:
-        logger.info(f"   ⚠️ Read-target validation failed for '{candidate}': {e}")
-        return None
-    return candidate if same is True else None
+    return (
+        candidate if await _resolves_to_same_element(search_context, locator, candidate) else None
+    )
 
 
 async def apply_read_target_policy(
@@ -214,7 +231,35 @@ async def apply_read_target_policy(
         return result
     info_id = ((result.get("element_info") or {}).get("id") or "").strip()
     if info_id and score_stability("id", info_id) == STABLE:
-        return result
+        id_locator = f"id={info_id}"
+        if await _resolves_to_same_element(search_context, locator, id_locator):
+            id_stability = classify_locator(id_locator)
+            logger.info(
+                f"   📎 READ TARGET REWRITE: '{locator}' embeds the value being read — using "
+                f"'{id_locator}' (signal: read-target-id)"
+            )
+            return {
+                **result,
+                "best_locator": id_locator,
+                "stability": id_stability,
+                # The only entry: workflow.py's PHASE-2 re-ranker scores every
+                # unique+valid entry and would otherwise re-promote the original.
+                "all_locators": [
+                    {
+                        "type": "id",
+                        "locator": id_locator,
+                        "priority": READ_TARGET_ID_PRIORITY,
+                        "strategy": "ID selector from element_data",
+                        "count": 1,
+                        "unique": True,
+                        "valid": True,
+                        "validated": True,
+                        "validation_method": "playwright",
+                        "stability": id_stability,
+                    }
+                ],
+                "read_target_rewritten_from": locator,
+            }
     rewritten = await build_container_ordinal(search_context, locator)
     if not rewritten:
         logger.info(

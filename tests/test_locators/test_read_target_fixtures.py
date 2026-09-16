@@ -157,3 +157,73 @@ async def test_deep_container_walk_rewrites_to_the_card(deep_page, action_fit_on
     assert await deep_page.locator(out["best_locator"]).count() == 1
     assert (await deep_page.locator(out["best_locator"]).inner_text()).strip() == DEEP_NAMES[1]
     assert "read_target_rewritten_from" in out
+
+
+# E2b task 12 (2026-09-16): the agent-CANDIDATE path's element_info carries an
+# id that never lands in all_locators (only the candidate entry does), so
+# workflow.py's PHASE-2 priority forcer has no id entry to promote. A product
+# detail page has no repeated container either, so the old code shipped the
+# value-bound text= literal outright. The fix rewrites straight to the id
+# when it is stable and validates.
+PRODUCT_TITLE = "Logitech M650 Signature Wireless Mouse"
+
+
+@pytest.fixture
+async def detail_page():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        ctx = await browser.new_context(viewport={"width": 1280, "height": 900})
+        page_obj = await ctx.new_page()
+        await page_obj.goto(
+            (FIXTURES_DIR / "product_detail_stable_id.html").resolve().as_uri(),
+            wait_until="domcontentloaded",
+        )
+        try:
+            yield page_obj
+        finally:
+            await browser.close()
+
+
+@pytest.fixture
+async def dup_id_page():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        ctx = await browser.new_context(viewport={"width": 1280, "height": 900})
+        page_obj = await ctx.new_page()
+        await page_obj.goto(
+            (FIXTURES_DIR / "product_detail_duplicate_id.html").resolve().as_uri(),
+            wait_until="domcontentloaded",
+        )
+        try:
+            yield page_obj
+        finally:
+            await browser.close()
+
+
+async def test_stable_id_path_rewrites_to_the_id(detail_page, action_fit_on):
+    out = await _read(
+        detail_page,
+        "#productTitle",
+        PRODUCT_TITLE,
+        "get_text",
+        candidate=f'text="{PRODUCT_TITLE}"',
+    )
+    assert out["best_locator"] == "id=productTitle"
+    assert len(out["all_locators"]) == 1
+    assert "read_target_rewritten_from" in out
+    assert (await detail_page.locator(out["best_locator"]).inner_text()).strip() == PRODUCT_TITLE
+
+
+async def test_duplicate_id_path_keeps_the_original_locator(dup_id_page, action_fit_on):
+    """The id resolves to count 2 on this page, so it must not be used —
+    and a detail page has no repeated container for the fallback to rewrite
+    into either, so the original value-bound locator stands."""
+    out = await _read(
+        dup_id_page,
+        "#productTitle",
+        PRODUCT_TITLE,
+        "get_text",
+        candidate=f'text="{PRODUCT_TITLE}"',
+    )
+    assert out["best_locator"] == f'text="{PRODUCT_TITLE}"'
+    assert "read_target_rewritten_from" not in out

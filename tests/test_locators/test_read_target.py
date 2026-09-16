@@ -58,6 +58,17 @@ async def _apply(result=None, action="get_text", expected=AMAZON, iframe=None, b
     return out, builder
 
 
+async def _apply_id(id_validates, result, expected=AMAZON, built=REWRITTEN):
+    builder = AsyncMock(return_value=built)
+    id_validator = AsyncMock(return_value=id_validates)
+    with (
+        patch("browser_service.locators.read_target.build_container_ordinal", new=builder),
+        patch("browser_service.locators.read_target._resolves_to_same_element", new=id_validator),
+    ):
+        out = await apply_read_target_policy(object(), dict(result), "get_text", expected, None)
+    return out, builder, id_validator
+
+
 class TestPolicy:
     async def test_rewrites_a_data_bound_read(self):
         out, _ = await _apply()
@@ -88,9 +99,28 @@ class TestPolicy:
         out, builder = await _apply(result={**BASE, **extra})
         builder.assert_not_awaited()
 
-    async def test_skips_when_the_element_has_a_stable_id(self):
-        out, builder = await _apply(result={**BASE, "element_info": {"id": "result-title"}})
+    async def test_uses_the_stable_id_when_it_validates(self):
+        result = {**BASE, "element_info": {"id": "result-title"}}
+        out, builder, id_validator = await _apply_id(True, result)
+        assert out["best_locator"] == "id=result-title"
+        assert [e["locator"] for e in out["all_locators"]] == ["id=result-title"]
+        assert out["read_target_rewritten_from"] == BASE["best_locator"]
+        id_validator.assert_awaited_once()
         builder.assert_not_awaited()
+
+    async def test_falls_through_to_container_when_the_id_does_not_validate(self):
+        result = {**BASE, "element_info": {"id": "result-title"}}
+        out, builder, id_validator = await _apply_id(False, result)
+        assert out["best_locator"] == REWRITTEN
+        id_validator.assert_awaited_once()
+        builder.assert_awaited_once()
+
+    async def test_volatile_id_skips_id_validation(self):
+        result = {**BASE, "element_info": {"id": "ember472"}}
+        out, builder, id_validator = await _apply_id(True, result)
+        assert out["best_locator"] == REWRITTEN
+        id_validator.assert_not_awaited()
+        builder.assert_awaited_once()
 
     async def test_short_literal_is_left_alone(self):
         result = {**BASE, "best_locator": 'text="John" >> nth=0'}

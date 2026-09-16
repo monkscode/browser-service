@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  .product-detail { width: 900px; padding: 20px; }
+  h1.a-size-large { font-size: 24px; margin: 8px 0; }
+  .a-price { color: #b12704; font-size: 20px; }
+</style>
+</head>
+<body>
+  <!-- E2b task 12 (2026-09-16): a product detail page — no repeated
+       container, unlike the search-result cards. The title carries a
+       stable, non-repeated id, so the read-target rewrite should land on
+       id=productTitle instead of the value-bound text= literal. -->
+  <div class="product-detail">
+    <h1 class="a-size-large"><span id="productTitle">Logitech M650 Signature Wireless Mouse</span></h1>
+    <div class="a-price">₹2,495</div>
+  </div>
+</body>
+</html>

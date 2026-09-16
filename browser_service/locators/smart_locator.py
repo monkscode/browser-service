@@ -11,6 +11,7 @@ import math
 import re
 from typing import Any, Optional
 
+from browser_service.locators.action_fit import check_action_fit
 from browser_service.locators.stability import (
     POSITIONAL,
     STABLE,
@@ -1229,6 +1230,7 @@ async def _find_element_by_expected_text(
     probe_page=None,
     iframe_context: Optional[str] = None,
     row_anchor_text: Optional[str] = None,
+    action: Optional[str] = None,  # Step action (E2a); None = no fitness rule
 ) -> Optional[dict]:
     """
     Try to find element directly by the expected visible text.
@@ -1424,6 +1426,13 @@ async def _find_element_by_expected_text(
                             f"not the element at ({x}, {y}), trying next selector"
                         )
                         continue
+                _misfit = await check_action_fit(page, selector, action, expected_text)
+                if _misfit:
+                    logger.info(
+                        f"   ⛔ '{selector}' is unique but {_misfit} — trying next selector "
+                        f"(signal: action-misfit-rejected)"
+                    )
+                    continue
                 logger.info(f"   ✅ TEXT-FIRST SUCCESS: Found unique element with '{selector}'")
                 # Return as dict for consistency, but no special element_type
                 return {"locator": selector}
@@ -1435,6 +1444,15 @@ async def _find_element_by_expected_text(
                 if row_anchor_text:
                     row = await _upgrade_to_row_anchor(page, selector, row_anchor_text, x=x, y=y)
                     if row and row.get("locator"):
+                        _misfit = await check_action_fit(
+                            page, row["locator"], action, expected_text
+                        )
+                        if _misfit:
+                            logger.info(
+                                f"   ⛔ row-anchored '{row['locator']}' — {_misfit}; trying next "
+                                f"selector (signal: action-misfit-rejected)"
+                            )
+                            continue
                         logger.info(f"   ✅ TEXT-FIRST SUCCESS (row-anchored): {row['locator']}")
                         # row_anchor_base: the pre-anchor selector, so the
                         # payload site classifies the BASE — the collapse
@@ -1450,6 +1468,15 @@ async def _find_element_by_expected_text(
                 if x is not None and y is not None:
                     result = await _disambiguate_by_coordinates(page, selector, x, y)
                     if result:
+                        _misfit = await check_action_fit(
+                            page, result["locator"], action, expected_text
+                        )
+                        if _misfit:
+                            logger.info(
+                                f"   ⛔ disambiguated '{result['locator']}' — {_misfit}; trying "
+                                f"next selector (signal: action-misfit-rejected)"
+                            )
+                            continue
                         if row_ambiguous:
                             # Option 1 (owner, 2026-07-08): ambiguous anchor
                             # falls through to today's behavior, flagged so
@@ -1463,6 +1490,12 @@ async def _find_element_by_expected_text(
                     # G2: no coordinates to disambiguate with, but hidden
                     # duplicates must not kill a visible-unique text match.
                     upgraded = await _upgrade_to_visible_only(page, selector)
+                    if upgraded and await check_action_fit(page, upgraded, action, expected_text):
+                        logger.info(
+                            f"   ⛔ visible-only '{upgraded}' cannot perform '{action}'; trying "
+                            f"next selector (signal: action-misfit-rejected)"
+                        )
+                        continue
                     if upgraded:
                         logger.info(f"   ✅ TEXT-FIRST SUCCESS (visible-only): {upgraded}")
                         return {"locator": upgraded}
@@ -2848,6 +2881,7 @@ async def _generate_locators_from_element_data(
     vision_framework_hint: Optional[str] = None,  # LLM's framework guess
     page=None,  # Page-level reference for DOM probe (vs. search_context which can be frame_locator)
     row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
+    action: Optional[str] = None,  # Step action (E2a); None = no fitness rule
 ) -> Optional[dict]:
     """
     Generate and validate locators from element_data extracted from browser-use DOM.
@@ -3347,6 +3381,18 @@ async def _generate_locators_from_element_data(
                                 f"      Expected: '{expected_text}', Actual: '{actual_text}'"
                             )
                             continue  # Try next locator
+
+                # E2a: unique and text-checked is not enough — the element must
+                # be able to perform the step. todomvc u10: the A2 carve-out
+                # above accepted an EMPTY input for a read of "buy milk".
+                # action=None (flag off) reads nothing.
+                _misfit = await check_action_fit(search_context, locator, action, expected_text)
+                if _misfit:
+                    logger.info(
+                        f"   ⛔ {candidate['type']}: '{locator}' — {_misfit}; trying next "
+                        f"(signal: action-misfit-rejected)"
+                    )
+                    continue
 
                 logger.info(f"   ✅ ELEMENT-DATA locator found: {locator}")
                 logger.info(f"      Strategy: {candidate['strategy']}")
@@ -3973,6 +4019,7 @@ async def find_unique_locator_at_coordinates(
     vision_type_hint: Optional[str] = None,  # LLM's visual classification (1 of 2 sources of truth)
     vision_framework_hint: Optional[str] = None,  # LLM's framework guess
     row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
+    action: Optional[str] = None,  # Step action (E2a); None = no fitness rule
 ) -> dict:
     """
     Find a unique locator for an element using a semantic-first approach.
@@ -4172,6 +4219,7 @@ async def find_unique_locator_at_coordinates(
             vision_framework_hint=vision_framework_hint,
             page=page,  # Page-level for DOM probe (search_context may be frame_locator)
             row_anchor_text=row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
+            action=action,  # E2a fitness rule; None when the flag is off
         )
         if result:
             # Add approach metrics for pattern analysis
@@ -4316,6 +4364,7 @@ async def find_unique_locator_at_coordinates(
             probe_page=page,  # Page-level for the DOM probe (search_context may be a frame_locator)
             iframe_context=iframe_context,
             row_anchor_text=row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
+            action=action,  # E2a fitness rule; None when the flag is off
         )
 
         if text_result:
@@ -4470,6 +4519,17 @@ async def find_unique_locator_at_coordinates(
                     "   ⚠️ No expected_text — accepting description-derived locator UNVERIFIED (A6)"
                 )
 
+            if accept and action:
+                _misfit = await check_action_fit(
+                    search_context, semantic_result["locator"], action, expected_text
+                )
+                if _misfit:
+                    logger.info(
+                        f"   ⛔ Semantic locator '{semantic_locator}' — {_misfit}; "
+                        f"continuing (signal: action-misfit-rejected)"
+                    )
+                    accept = False
+
             if accept:
                 logger.info(f"✅ Semantic locator found: {semantic_locator}")
                 semantic_stability = _classify_result_stability(
@@ -4576,6 +4636,26 @@ async def find_unique_locator_at_coordinates(
                 f"'{expected_text}' — rejecting the mismatched result "
                 f"(signal: accessibility-mismatch-rejected); falling back "
                 f"to coordinate-based approach"
+            )
+            accessibility_result = None
+
+    # E2a. Skipped for collections (a many-match evaluate is strict-mode) and
+    # inside iframes (the locator is Browser-Library composite, `>>>`, which
+    # Playwright cannot evaluate) — both fail open, i.e. today's behaviour.
+    if (
+        action
+        and not iframe_context
+        and accessibility_result
+        and accessibility_result.get("locator")
+        and accessibility_result.get("element_type") != "collection"
+    ):
+        _misfit = await check_action_fit(
+            search_context, accessibility_result["locator"], action, expected_text
+        )
+        if _misfit:
+            logger.info(
+                f"   ⛔ Accessibility fallback '{accessibility_result['locator']}' — {_misfit}; "
+                f"falling back to coordinate-based approach (signal: action-misfit-rejected)"
             )
             accessibility_result = None
 
@@ -4910,6 +4990,47 @@ async def find_unique_locator_at_coordinates(
             unique_locators,
             key=lambda x: (stability_rank(x.get("stability", STABLE)), x["priority"]),
         )
+
+        # E2a. Rejected entries are marked valid=False: workflow.py's PHASE-2
+        # re-ranker scores every unique+valid entry of all_locators and would
+        # otherwise re-promote a locator this step cannot use.
+        if action:
+            _fitting = []
+            for loc in sorted_locators:
+                _misfit = await check_action_fit(
+                    search_context, loc["locator"], action, expected_text
+                )
+                if _misfit:
+                    loc["valid"] = False
+                    loc["action_misfit"] = _misfit
+                    logger.info(
+                        f"   ⛔ {loc['type']}: '{loc['locator']}' — {_misfit} "
+                        f"(signal: action-misfit-rejected)"
+                    )
+                else:
+                    _fitting.append(loc)
+            if not _fitting:
+                logger.error(
+                    f"   ❌ ACTION MISFIT: none of the {len(sorted_locators)} unique "
+                    f"locators can perform '{action}'"
+                )
+                return {
+                    "element_id": element_id,
+                    "description": element_description,
+                    "found": False,
+                    "error": (
+                        f"Action misfit: none of the {len(sorted_locators)} unique "
+                        f"locators can perform '{action}'"
+                    ),
+                    "candidate_locators": [loc["locator"] for loc in sorted_locators[:3]],
+                    "approach_metrics": {
+                        **_approach_metrics_base,
+                        "locator_approach": "coordinate_fallback",
+                        "fallback_depth": 7,
+                        "success": False,
+                    },
+                }
+            sorted_locators = _fitting
 
         # If expected_text is provided, find a locator that ALSO matches semantically
         if expected_text:

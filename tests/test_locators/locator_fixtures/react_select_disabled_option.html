@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  .menu { width: 300px; margin: 40px; border: 1px solid #ccc; }
+  .opt { padding: 8px 12px; height: 20px; }
+  .opt[aria-disabled="true"] { color: #aaa; }
+</style>
+</head>
+<body>
+  <!-- Shape from react-select u11 (2026-09-15 probe): option-1 "Blue" carries
+       aria-disabled="true" — on the live site Blue is disabled by the demo data
+       (isDisabled: true), so u11 itself is unpassable. The enabled option-4 "Blue"
+       does NOT exist live; it is here so the test can prove E2a rejects a disabled
+       click target and takes an enabled one when one exists. Counter ids
+       (react-select-3-...) exercise E2c's volatile-candidate demotion. -->
+  <div class="select__control">
+    <input id="react-select-3-input" role="combobox" aria-expanded="true" value="">
+  </div>
+  <div id="react-select-3-listbox" class="menu" role="listbox">
+    <div id="react-select-3-option-0" class="opt" role="option">Ocean</div>
+    <div id="react-select-3-option-1" class="opt" role="option" aria-disabled="true">Blue (sold out)</div>
+    <div id="react-select-3-option-2" class="opt" role="option">Purple</div>
+    <div id="react-select-3-option-3" class="opt" role="option">Red</div>
+    <div id="react-select-3-option-4" class="opt" role="option">Blue</div>
+  </div>
+</body>
+</html>

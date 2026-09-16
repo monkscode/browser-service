@@ -32,8 +32,15 @@ import re
 import time
 from typing import Any, Dict, Optional
 
+from browser_service.locators.action_fit import check_action_fit
 from browser_service.locators.classifier import classify_element_type
-from browser_service.locators.stability import classify_locator
+from browser_service.locators.read_target import apply_read_target_policy
+from browser_service.locators.stability import (
+    STABLE,
+    VOLATILE,
+    classify_locator,
+    stability_rank,
+)
 
 # Get logger
 logger = logging.getLogger(__name__)
@@ -294,6 +301,68 @@ def _candidate_tier0_stamp(
     return stamp
 
 
+async def _indexed_element_misfit(
+    search_root,
+    element_data: Optional[Dict[str, Any]],
+    action: Optional[str],
+    expected_text: Optional[str],
+) -> str:
+    """Live fitness of the element the agent INDEXED, read through its
+    browser-use xpath (E2a, todomvc u10).
+
+    "" when it fits, has no xpath or cannot be read — only a provable misfit
+    may overrule the identity guard. Read live, not from element_data:
+    element_data["value"] is the HTML attribute, which stays "" after
+    typing, so a filled input would read as empty.
+    """
+    xpath = (element_data or {}).get("xpath") or ""
+    if not xpath:
+        return ""
+    return await check_action_fit(search_root, f"xpath={xpath}", action, expected_text)
+
+
+async def _settle_action_fit(
+    result: Dict[str, Any],
+    fallback_result: Optional[Dict[str, Any]],
+    run_cascade,
+    action: str,
+) -> Dict[str, Any]:
+    """Pick the answer once fit mode has run — never worse than today (E2).
+
+    1. A demoted agent candidate stands unless fit mode found something
+       better: any found result beats a misfit candidate; against a
+       volatile candidate only a strictly more stable result wins (a tie
+       keeps the agent's).
+    2. With no demoted candidate, a found fit-mode result stands.
+    3. Fit mode found nothing: today's cascade (action=None) runs and its
+       answer is returned flagged action_fit="misfit", so the found rate
+       cannot fall below today's (the recorded "found=false must not rise"
+       decision, smart_locator._generate_locators_from_element_data sort).
+    """
+    if fallback_result is not None:
+        if result.get("found") and (
+            fallback_result.get("action_fit") == "misfit"
+            or stability_rank(result.get("stability") or STABLE)
+            < stability_rank(fallback_result.get("stability") or STABLE)
+        ):
+            return result
+        return fallback_result
+    if result.get("found"):
+        return result
+    legacy = await run_cascade(None)
+    if legacy.get("found"):
+        legacy["action_fit"] = "misfit"
+        legacy["action_fit_reason"] = (
+            result.get("error") or f"no locator that can perform '{action}' was found"
+        )
+        logger.info(
+            f"   ↪ No fitting locator — returning today's answer "
+            f"'{legacy.get('best_locator')}' flagged misfit "
+            f"(signal: action-fit-legacy-fallback)"
+        )
+    return legacy
+
+
 def _log_success_result(element_id: str, result: Dict[str, Any]) -> None:
     """Log successful locator finding result as ONE multi-line record.
 
@@ -379,6 +448,7 @@ async def find_unique_locator_action(
     ] = None,  # LLM's visual type classification (any specialized type)
     vision_framework_hint: Optional[str] = None,  # LLM's framework guess (any specialized type)
     row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
+    action: Optional[str] = None,  # Step action (E2); None = today's behaviour (flag off)
 ) -> Dict[str, Any]:
     """
     Custom action that agent can call to find and validate unique locator.
@@ -526,6 +596,10 @@ async def find_unique_locator_action(
                 f"(signal: row-anchor-corrects-expected-text)"
             )
 
+        # E2: a candidate that cannot perform the step, or whose id is a
+        # session counter, is parked here while the cascade runs first.
+        _fallback_result: Optional[Dict[str, Any]] = None
+
         # ========================================
         # STEP 1: Validate Candidate Locator (if provided)
         # ========================================
@@ -628,6 +702,23 @@ async def find_unique_locator_action(
                                 search_root, playwright_locator
                             )
                             _identity_reason = _identity_mismatch(element_data, _resolved_element)
+                            # E2a (todomvc u10): the index is the guard's evidence. When the
+                            # INDEXED element provably cannot perform the step and the
+                            # candidate's element can, the index is the wrong evidence.
+                            if _identity_reason and action and not iframe_context:
+                                _indexed_misfit = await _indexed_element_misfit(
+                                    search_root, element_data, action, expected_text
+                                )
+                                if _indexed_misfit and not await check_action_fit(
+                                    search_root, playwright_locator, action, expected_text
+                                ):
+                                    logger.info(
+                                        f"   ↪ IDENTITY GUARD YIELDS: {_identity_reason}, but the "
+                                        f"indexed element {_indexed_misfit} and "
+                                        f"'{playwright_locator}' can perform '{action}' "
+                                        f"(signal: identity-guard-yields-to-fit)"
+                                    )
+                                    _identity_reason = ""
                             if _identity_reason:
                                 logger.info(
                                     f"   ⛔ CANDIDATE IDENTITY REJECT: '{playwright_locator}' "
@@ -663,6 +754,12 @@ async def find_unique_locator_action(
                                     f"(expected={expected_text!r}, observed={_observed!r}); "
                                     f"falling through to smart locator finder."
                                 )
+
+                        _candidate_misfit = ""
+                        if _semantic_ok and action:
+                            _candidate_misfit = await check_action_fit(
+                                search_root, playwright_locator, action, expected_text
+                            )
 
                         if _semantic_ok:
                             # Candidate is valid, unique, and semantically correct.
@@ -728,7 +825,7 @@ async def find_unique_locator_action(
                             if candidate_stamp:
                                 logger.info(f"   🏷️ Candidate Tier-0 stamp: {candidate_stamp}")
 
-                            return {
+                            candidate_result = {
                                 **candidate_stamp,
                                 "element_id": element_id,
                                 "description": element_description,
@@ -784,6 +881,31 @@ async def find_unique_locator_action(
                                     "is_in_iframe": bool(iframe_context),
                                 },
                             }
+                            # E2a/E2c (flag on only): a candidate that cannot perform
+                            # the step, or whose id is a session counter, is kept only
+                            # as the last resort — the cascade runs first.
+                            _demote_reason = _candidate_misfit or (
+                                f"candidate is {candidate_stability}"
+                                if action and candidate_stability == VOLATILE
+                                else ""
+                            )
+                            if not _demote_reason:
+                                return await apply_read_target_policy(
+                                    search_root,
+                                    candidate_result,
+                                    action,
+                                    expected_text,
+                                    iframe_context,
+                                )
+                            logger.info(
+                                f"   ↪ CANDIDATE DEMOTED: '{final_locator}' — {_demote_reason}; "
+                                f"running the cascade first, candidate kept as last resort "
+                                f"(signal: candidate-demoted)"
+                            )
+                            if _candidate_misfit:
+                                candidate_result["action_fit"] = "misfit"
+                                candidate_result["action_fit_reason"] = _candidate_misfit
+                            _fallback_result = candidate_result
                     elif count > 1 and is_collection:
                         # A COLLECTION request asked for many, so many matches
                         # is the answer — not a failure. Rejecting the agent's
@@ -973,25 +1095,56 @@ async def find_unique_locator_action(
             # Per-element latency telemetry (bench harness). The timer line is
             # emitted on the timeout path too, so every element yields a sample.
             _locator_timer_start = time.monotonic()
-            result = await asyncio.wait_for(
-                find_unique_locator_at_coordinates(
-                    page=page,
-                    search_context=search_context,  # Either page or frame_locator
-                    iframe_context=iframe_context,  # For composite locator generation
-                    x=x,
-                    y=y,
-                    element_id=element_id,
-                    element_description=element_description,
-                    expected_text=expected_text,  # Pass expected_text for semantic validation
-                    element_data=element_data,  # Pass element attributes from browser-use DOM
-                    is_collection=is_collection,  # Pass collection flag for multi-element detection
-                    browser_session=browser_session,  # For resolved_node lookup (DELTA 1)
-                    vision_type_hint=vision_type_hint,  # LLM's visual classification (1 of 2 sources)
-                    vision_framework_hint=vision_framework_hint,  # LLM's framework guess
-                    row_anchor_text=row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
-                ),
-                timeout=custom_action_timeout,
-            )
+
+            async def _run_cascade(cascade_action: Optional[str]) -> Dict[str, Any]:
+                return await asyncio.wait_for(
+                    find_unique_locator_at_coordinates(
+                        page=page,
+                        search_context=search_context,  # Either page or frame_locator
+                        iframe_context=iframe_context,  # For composite locator generation
+                        x=x,
+                        y=y,
+                        element_id=element_id,
+                        element_description=element_description,
+                        expected_text=expected_text,  # Pass expected_text for semantic validation
+                        element_data=element_data,  # Pass element attributes from browser-use DOM
+                        is_collection=is_collection,  # Collection flag for multi-element detection
+                        browser_session=browser_session,  # For resolved_node lookup (DELTA 1)
+                        vision_type_hint=vision_type_hint,  # LLM's visual classification (1 of 2)
+                        vision_framework_hint=vision_framework_hint,  # LLM's framework guess
+                        row_anchor_text=row_anchor_text,  # Row-scoped rescue (G1)
+                        action=cascade_action,  # E2 fitness rule; None = today's cascade
+                    ),
+                    timeout=custom_action_timeout,
+                )
+
+            try:
+                result = await _run_cascade(action)
+            except asyncio.TimeoutError:
+                if not action:
+                    raise
+                logger.warning(
+                    "   ⏱️ Fit-mode cascade timed out — trying today's cascade "
+                    "(signal: action-fit-timeout)"
+                )
+                result = {"found": False, "error": "fit-mode cascade timed out"}
+            except Exception as e:
+                # E2: a parked candidate must survive a cascade that raises — today
+                # it would have been returned before any cascade ran. Without one,
+                # re-raise into today's handlers below.
+                if _fallback_result is None:
+                    raise
+                logger.warning(
+                    f"   ⚠️ Fit-mode cascade raised {type(e).__name__}: {e} — keeping the "
+                    f"agent's candidate (signal: action-fit-error)",
+                    exc_info=True,
+                )
+                result = {"found": False, "error": f"fit-mode cascade raised {type(e).__name__}"}
+            if action:
+                result = await _settle_action_fit(result, _fallback_result, _run_cascade, action)
+                result = await apply_read_target_policy(
+                    search_context, result, action, expected_text, iframe_context
+                )
 
             duration_ms = (time.monotonic() - _locator_timer_start) * 1000.0
             logger.info(

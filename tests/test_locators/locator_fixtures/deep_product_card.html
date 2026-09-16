@@ -1,0 +1,110 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  .s-main-slot { width: 900px; }
+  [data-component-type="s-search-result"] { display: block; padding: 12px 0; border-bottom: 1px solid #eee; }
+  h2 { font-size: 16px; margin: 8px 0; }
+</style>
+</head>
+<body>
+  <!-- E2b depth fix (2026-09-16 read-target evaluation). Models amazon.in's
+       real search-results DOM: the repeated s-search-result card sits 14
+       ancestors above the h2 product title, behind a chain of single-child
+       intra-card wrappers (puisg-col-inner, puisg-row, puis-card-container,
+       s-widget-container, a-declarative, s-impression-counter). The old
+       CONTAINER_ORDINAL_JS depth<8 walk gives up inside one card on this
+       shape and never finds the container; depth<16 does. -->
+  <h1 class="s-title">Results for wireless mouse in Computers and Accessories</h1>
+  <div class="s-main-slot">
+    <div data-component-type="s-search-result" class="s-result-item s-asin" data-asin="B0D1">
+      <div class="s-widget-container">
+        <div class="a-section">
+          <div class="puis-card-container">
+            <div class="a-section">
+              <div class="s-widget-container">
+                <div class="puisg-row">
+                  <div class="puisg-col-inner">
+                    <div class="a-section">
+                      <a class="a-link-normal" href="/p/1">
+                        <div class="a-declarative">
+                          <div class="s-impression-counter">
+                            <div class="a-section">
+                              <div class="a-row">
+                                <h2 class="a-size-medium" aria-label="Portronics Toad 23 Wireless Optical Mouse with 2.4GHz USB Nano Dongle">Portronics Toad 23 Wireless Optical Mouse with 2.4GHz USB Nano Dongle</h2>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div data-component-type="s-search-result" class="s-result-item s-asin" data-asin="B0D2">
+      <div class="s-widget-container">
+        <div class="a-section">
+          <div class="puis-card-container">
+            <div class="a-section">
+              <div class="s-widget-container">
+                <div class="puisg-row">
+                  <div class="puisg-col-inner">
+                    <div class="a-section">
+                      <a class="a-link-normal" href="/p/2">
+                        <div class="a-declarative">
+                          <div class="s-impression-counter">
+                            <div class="a-section">
+                              <div class="a-row">
+                                <h2 class="a-size-medium" aria-label="Logitech B170 Wireless Mouse, 2.4 GHz with USB Nano Receiver">Logitech B170 Wireless Mouse, 2.4 GHz with USB Nano Receiver</h2>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div data-component-type="s-search-result" class="s-result-item s-asin" data-asin="B0D3">
+      <div class="s-widget-container">
+        <div class="a-section">
+          <div class="puis-card-container">
+            <div class="a-section">
+              <div class="s-widget-container">
+                <div class="puisg-row">
+                  <div class="puisg-col-inner">
+                    <div class="a-section">
+                      <a class="a-link-normal" href="/p/3">
+                        <div class="a-declarative">
+                          <div class="s-impression-counter">
+                            <div class="a-section">
+                              <div class="a-row">
+                                <h2 class="a-size-medium" aria-label="Zebronics Zeb-Transformer-M Wireless Gaming Mouse with RGB Lights">Zebronics Zeb-Transformer-M Wireless Gaming Mouse with RGB Lights</h2>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

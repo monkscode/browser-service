@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  .product-detail { width: 900px; padding: 20px; }
+  h1.a-size-large { font-size: 24px; margin: 8px 0; }
+  .a-price { color: #b12704; font-size: 20px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body>
+  <!-- E2b task 12 (2026-09-16): the id is duplicated (a hidden a11y-only
+       copy elsewhere on the page shares id="productTitle"), so the id
+       locator would resolve to count 2 — must not be used. The visible
+       title text is still unique, so the candidate itself resolves fine;
+       there is no repeated container on a detail page, so the fallback
+       must keep the original locator rather than rewrite it. -->
+  <div class="product-detail">
+    <h1 class="a-size-large"><span id="productTitle">Logitech M650 Signature Wireless Mouse</span></h1>
+    <div class="a-price">₹2,495</div>
+  </div>
+  <span id="productTitle" class="sr-only">Logitech M650 Signature Wireless Mouse (duplicate id)</span>
+</body>
+</html>

@@ -111,6 +111,7 @@ They never consult NLRF:
 | `BROWSER_HEADLESS` | `true` | run without a visible browser |
 | `AGENT_VISION_MODE` | `auto` | `auto` or `on`; any other value raises at construction |
 | `ENABLE_CUSTOM_ACTIONS` | `true` | enable the custom action set |
+| `ENABLE_ACTION_FIT` | `true` | E2 action-fit, read-target and extended stability rules |
 | `MAX_CONCURRENT_TASKS` | `10` | each task spawns a headless Chrome (~250MB) |
 | `MAX_AGENT_STEPS` | `15` | agent step ceiling per workflow |
 | `MAX_RETRIES_PER_ELEMENT` | `2` | |

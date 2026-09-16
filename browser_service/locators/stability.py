@@ -36,10 +36,11 @@ result assembly, and the ``stability`` result-payload field read by
 nlrf (warnings, healing).
 
 Depends on:
-    - (none — stdlib only)
+    - browser_service.config (read lazily, only for the ENABLE_ACTION_FIT gate)
 """
 
 import re
+from typing import Tuple
 
 STABLE = "stable"
 VOLATILE = "volatile"
@@ -68,6 +69,22 @@ _FRAMEWORK_ID_PATTERNS = (
     re.compile(r"radix-"),  # Radix UI generated id
     re.compile(r":r[0-9a-z]+:"),  # React useId
 )
+
+# E2c (ENABLE_ACTION_FIT): instance counters the base list misses. Same
+# anchoring rule as above; headlessui- is prefix-only for the radix reason.
+# react-select-3-option-1 (unseen-site probe u11) was scored stable and at
+# runtime resolved to a different, aria-disabled option.
+_EXTENDED_FRAMEWORK_ID_PATTERNS = (
+    re.compile(r"react-select-\d+"),  # react-select instance counter
+    re.compile(r"mui-\d+"),  # MUI useId fallback
+    re.compile(r"headlessui-"),  # Headless UI generated id
+    re.compile(r"downshift-\d+"),  # Downshift instance counter
+)
+
+# E2c: visible text longer than this is content, not a label (a product
+# name, a headline). Corpus read locators embedding a >=40-char literal
+# passed 0 of 4 (2026-09-15 evaluation).
+LONG_TEXT_CHARS = 40
 
 _UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
@@ -107,6 +124,23 @@ _LOCATOR_TEXT_VALUE_RES = (
     re.compile(r"contains\(text\(\),\s*'([^']*)'"),  # xpath contains(text(),..)
 )
 
+# E2c: aria-label / title values carry visible content too.
+_EXTENDED_LOCATOR_TEXT_VALUE_RES = (
+    re.compile(r"\[(?:aria-label|title)[*^$~|]?=\"([^\"]*)\"\]"),
+    re.compile(r"\[(?:aria-label|title)[*^$~|]?='([^']*)'\]"),
+    re.compile(r"@(?:aria-label|title)\s*=\s*'([^']*)'"),
+)
+
+
+def _extended_rules() -> bool:
+    """E2c rides the ENABLE_ACTION_FIT flag. Imported lazily: config imports
+    nothing from locators, so there is no cycle, and a module-level import
+    would make this stdlib-only scorer load configuration at import time."""
+    from browser_service.config import config
+
+    return config.locator.enable_action_fit
+
+
 _RANK = {STABLE: 0, VOLATILE: 1, POSITIONAL: 2}
 
 
@@ -125,6 +159,11 @@ def score_stability(attr_name: str, value: str) -> str:
     for pattern in _FRAMEWORK_ID_PATTERNS:
         if pattern.match(value):
             return VOLATILE
+
+    if _extended_rules():
+        for pattern in _EXTENDED_FRAMEWORK_ID_PATTERNS:
+            if pattern.match(value):
+                return VOLATILE
 
     if _UUID_RE.fullmatch(value) or _HEX_HASH_RE.fullmatch(value):
         return VOLATILE
@@ -168,6 +207,8 @@ def is_dynamic_text(text: str) -> bool:
     if not text:
         return False
     stripped = text.strip()
+    if len(stripped) > LONG_TEXT_CHARS and _extended_rules():
+        return True
     if _TRAILING_COUNT_RE.search(stripped):
         return True
     if _ISO_DATE_RE.search(stripped) or _SLASH_DATE_RE.search(stripped):
@@ -199,7 +240,10 @@ def classify_locator(locator: str) -> str:
         if match and score_stability("id", match.group(1)) == VOLATILE:
             return VOLATILE
 
-    for pattern in _LOCATOR_TEXT_VALUE_RES:
+    text_value_res: Tuple[re.Pattern[str], ...] = _LOCATOR_TEXT_VALUE_RES
+    if _extended_rules():
+        text_value_res = text_value_res + _EXTENDED_LOCATOR_TEXT_VALUE_RES
+    for pattern in text_value_res:
         match = pattern.search(locator)
         if match and is_dynamic_text(match.group(1)):
             return VOLATILE

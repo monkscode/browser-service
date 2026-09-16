@@ -67,6 +67,12 @@ class LocatorConfig:
     # found=False result instead of hanging the agent step.
     custom_action_timeout: int = 5
 
+    # E2 (2026-09-15 locator evaluation): action-fit + read-target rules in
+    # the locator cascade and the extended stability rules. On by default
+    # since it was benched (2026-09-16) — ENABLE_ACTION_FIT env var.
+    # Set ENABLE_ACTION_FIT=false to restore the legacy cascade.
+    enable_action_fit: bool = True
+
     # Coordinate offsets to try (pixels)
     coordinate_offsets: List[Dict[str, Any]] = field(
         default_factory=lambda: [
@@ -126,6 +132,7 @@ class BrowserServiceConfig:
             element_type_retries=self._int_env("ELEMENT_TYPE_RETRIES", 5),
             coordinate_offset_attempts=self._int_env("COORDINATE_OFFSET_ATTEMPTS", 7),
             custom_action_timeout=self._int_env("CUSTOM_ACTION_TIMEOUT", 5),
+            enable_action_fit=os.getenv("ENABLE_ACTION_FIT", "true").lower() == "true",
         )
 
         # LLM configuration

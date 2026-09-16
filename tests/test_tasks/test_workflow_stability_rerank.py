@@ -9,7 +9,11 @@ verdict both sides read.
 """
 
 from browser_service.locators.stability import STABLE
-from browser_service.tasks.workflow import commit_reranked_winner, rerank_sort_key
+from browser_service.tasks.workflow import (
+    commit_reranked_winner,
+    find_forceable_id_locator,
+    rerank_sort_key,
+)
 
 
 def test_stable_name_beats_volatile_id_despite_lower_score():
@@ -100,3 +104,67 @@ def test_commit_syncs_stability_for_forced_id_correction():
     commit_reranked_winner(result, reordered)
     assert result["best_locator"] == "id=login"
     assert result["stability"] == "stable"
+
+
+# ---------------------------------------------------------------------------
+# find_forceable_id_locator — the id-priority forcer must not re-promote an
+# entry the action-fitness check (E2a) rejected. E2a marks a rejected entry
+# with BOTH valid=False and action_misfit=<reason>; the forcer must key off
+# action_misfit specifically, not valid, because valid=False also has
+# pre-existing writers unrelated to action-fitness (a raised validation
+# error, "no validation data") that must stay forceable with the flag off.
+# ---------------------------------------------------------------------------
+
+
+def test_first_id_shaped_entry_returned_when_nothing_marked():
+    locators = [
+        {"locator": 'text="Home"'},
+        {"locator": "id=save_button"},
+        {"locator": "#other_id"},
+    ]
+    index, entry = find_forceable_id_locator(locators)
+    assert index == 1
+    assert entry is locators[1]
+
+
+def test_action_misfit_entry_skipped_for_later_clean_id():
+    locators = [
+        {"locator": "id=readonly_field", "valid": False, "action_misfit": "<input> is read-only"},
+        {"locator": "#save_button"},
+    ]
+    index, entry = find_forceable_id_locator(locators)
+    assert index == 1
+    assert entry is locators[1]
+
+
+def test_all_id_shaped_entries_rejected_returns_none():
+    locators = [
+        {"locator": "id=readonly_field", "valid": False, "action_misfit": "<input> is read-only"},
+        {"locator": "#disabled_field", "valid": False, "action_misfit": "<input> is disabled"},
+        {"locator": 'text="Home"'},
+    ]
+    index, entry = find_forceable_id_locator(locators)
+    assert index is None
+    assert entry is None
+
+
+def test_valid_false_without_action_misfit_still_forceable():
+    # Pins the flag-off invariant: valid=False alone (no action_misfit key)
+    # must NOT block the forcer. This is the test that fails if the guard
+    # is simplified to a `valid` check instead of `action_misfit`.
+    locators = [
+        {"locator": "id=save_button", "valid": False},
+    ]
+    index, entry = find_forceable_id_locator(locators)
+    assert index == 0
+    assert entry is locators[0]
+
+
+def test_no_id_shaped_entry_returns_none():
+    locators = [
+        {"locator": 'text="Home"'},
+        {"locator": '[name="save"]'},
+    ]
+    index, entry = find_forceable_id_locator(locators)
+    assert index is None
+    assert entry is None

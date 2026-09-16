@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from browser_service.locators import read_target
 from browser_service.locators.read_target import apply_read_target_policy, data_bound_literal
 
 AMAZON = "Portronics Toad 23 Wireless Optical Mouse with 2.4GHz USB Nano Dongle"
@@ -96,3 +97,11 @@ class TestPolicy:
         out, builder = await _apply(result=result, expected="John")
         assert out["best_locator"] == 'text="John" >> nth=0'
         builder.assert_not_awaited()
+
+
+def test_container_walk_max_ancestors_is_16():
+    """E2b depth fix (2026-09-16): live amazon.in nests the product title
+    14 ancestors below the repeated card; the walk must reach past that."""
+    assert read_target.CONTAINER_WALK_MAX_ANCESTORS == 16
+    assert "depth < 16" in read_target.CONTAINER_ORDINAL_JS
+    assert "depth < 8" not in read_target.CONTAINER_ORDINAL_JS

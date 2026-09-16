@@ -123,3 +123,37 @@ async def test_long_static_heading_is_left_alone(page, action_fit_on):
     out = await _read(page, "h1.s-title", HEADING, "get_text")
     assert out["best_locator"] == f'text="{HEADING}"'
     assert "read_target_rewritten_from" not in out
+
+
+# E2b depth fix (2026-09-16): amazon.in's real card sits 14 ancestors above
+# the h2 title, behind single-child intra-card wrappers. This fixture mirrors
+# that shape; CONTAINER_WALK_MAX_ANCESTORS must reach past it.
+DEEP_NAMES = [
+    "Portronics Toad 23 Wireless Optical Mouse with 2.4GHz USB Nano Dongle",
+    "Logitech B170 Wireless Mouse, 2.4 GHz with USB Nano Receiver",
+    "Zebronics Zeb-Transformer-M Wireless Gaming Mouse with RGB Lights",
+]
+
+
+@pytest.fixture
+async def deep_page():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        ctx = await browser.new_context(viewport={"width": 1280, "height": 900})
+        page_obj = await ctx.new_page()
+        await page_obj.goto(
+            (FIXTURES_DIR / "deep_product_card.html").resolve().as_uri(),
+            wait_until="domcontentloaded",
+        )
+        try:
+            yield page_obj
+        finally:
+            await browser.close()
+
+
+async def test_deep_container_walk_rewrites_to_the_card(deep_page, action_fit_on):
+    out = await _read(deep_page, f"{CARD} >> nth=1 >> h2", DEEP_NAMES[1], "get_text")
+    assert out["best_locator"].startswith(f"{CARD} >> nth=1 >> ")
+    assert await deep_page.locator(out["best_locator"]).count() == 1
+    assert (await deep_page.locator(out["best_locator"]).inner_text()).strip() == DEEP_NAMES[1]
+    assert "read_target_rewritten_from" in out

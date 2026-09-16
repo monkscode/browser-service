@@ -40,6 +40,17 @@ logger = logging.getLogger(__name__)
 # text failed 3 of 3 in the corpus; short literals are overwhelmingly labels.
 DATA_LITERAL_MIN_CHARS = 25
 
+# How far up the ancestor chain the container search looks. Measured on
+# live amazon.in (2026-09-16): the repeated s-search-result card sits 14
+# ancestors above the product title, behind intra-card wrappers that each
+# have a single same-tag sibling, so a shallower walk gives up inside one
+# card and the data-bound locator stands. The walk returns at the FIRST
+# qualifying ancestor, so a larger bound can only turn "no rewrite" into a
+# rewrite — it can never substitute a different container for one already
+# found, and every other guard (>=2 same-shape peers, shared non-per-item
+# evidence, STABLE tokens, count==1, same-element validation) is unchanged.
+CONTAINER_WALK_MAX_ANCESTORS = 16
+
 # Same band as the nth-child strategy — structural and positional.
 READ_TARGET_PRIORITY = 9
 
@@ -70,7 +81,7 @@ CONTAINER_ORDINAL_JS = """el => {
     const tag = el.tagName.toLowerCase();
     const cls = el.classList.length ? el.classList[0] : '';
     let node = el;
-    for (let depth = 0; depth < 8 && node.parentElement; depth++) {
+    for (let depth = 0; depth < __MAX_DEPTH__ && node.parentElement; depth++) {
         const tokens = [];
         let descendant = '';
         if (node !== el) {
@@ -128,7 +139,7 @@ CONTAINER_ORDINAL_JS = """el => {
         node = parent;
     }
     return null;
-}"""
+}""".replace("__MAX_DEPTH__", str(CONTAINER_WALK_MAX_ANCESTORS))
 
 
 def normalize_literal(text: Any) -> str:

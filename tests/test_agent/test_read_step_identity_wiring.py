@@ -145,6 +145,9 @@ async def test_read_step_accept_keeps_the_candidate(caplog):
     assert "(1072, 30)" in caplog.text  # vision point before replacement
     assert "(250, 420)" in caplog.text  # the point bs actually used
     assert "1070.0" in caplog.text  # the candidate's centre
+    accept_line = [ln for ln in caplog.text.splitlines() if "read-step-identity-accept" in ln][0]
+    assert "element_id=elem_4" in accept_line
+    assert "k_ms=" in accept_line
 
 
 async def test_read_step_reject_verdict_keeps_the_reject(caplog):
@@ -153,6 +156,11 @@ async def test_read_step_reject_verdict_keeps_the_reject(caplog):
     assert result["best_locator"] == SIDEBAR_CASCADE_RESULT["best_locator"]
     assert "read-step-identity-keeps-reject" in caplog.text
     assert "candidate-resolves-to-different-element" in caplog.text
+    reject_line = [
+        ln for ln in caplog.text.splitlines() if "read-step-identity-keeps-reject" in ln
+    ][0]
+    assert "element_id=elem_4" in reject_line
+    assert "k_ms=" in reject_line
 
 
 async def test_failed_read_keeps_the_reject():

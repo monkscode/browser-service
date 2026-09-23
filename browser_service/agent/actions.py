@@ -732,23 +732,28 @@ async def find_unique_locator_action(
                                 and not iframe_context
                                 and browser_session is not None
                             ):
+                                _k_start = time.monotonic()
                                 _k_facts = await read_identity_facts(
                                     search_root, browser_session, element_data, playwright_locator
                                 )
+                                _k_ms = (time.monotonic() - _k_start) * 1000.0
                                 _k_accept, _k_why = read_step_verdict(_k_facts)
                                 if _k_accept:
                                     logger.info(
-                                        f"   ↪ READ-STEP IDENTITY ACCEPT: {_identity_reason}, but "
+                                        f"   ↪ READ-STEP IDENTITY ACCEPT: element_id={element_id} "
+                                        f"{_identity_reason}, but "
                                         f"'{playwright_locator}' is no indexed node and is unrelated "
                                         f"to the indexed one ({_k_why}); vision point "
                                         f"{vision_point}, used point ({x}, {y}), candidate centre "
-                                        f"{_k_facts.candidate_centre if _k_facts else None} "
+                                        f"{_k_facts.candidate_centre if _k_facts else None}, "
+                                        f"k_ms={_k_ms:.1f} "
                                         f"(signal: read-step-identity-accept)"
                                     )
                                     _identity_reason = ""
                                 else:
                                     logger.info(
-                                        f"   ⛔ READ-STEP IDENTITY KEEPS REJECT: {_k_why} "
+                                        f"   ⛔ READ-STEP IDENTITY KEEPS REJECT: element_id={element_id} "
+                                        f"{_k_why}, k_ms={_k_ms:.1f} "
                                         f"(signal: read-step-identity-keeps-reject)"
                                     )
                             if _identity_reason:

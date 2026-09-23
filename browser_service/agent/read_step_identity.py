@@ -8,16 +8,21 @@ candidate named the page's <h6> heading; the reject sent the cascade back to
 the link, and the test passed while verifying the wrong element.
 
 The call site may accept such a candidate only when one live read proves all
-five clauses (evaluation spec §13.2, amended after the S1 spike, 2026-09-23):
+five clauses (evaluation spec §13.2, amended after the S1 spike, 2026-09-23;
+clauses 1 and 3 amended again in fix round 1 after review findings I1/I2):
 
-1. the candidate's node is not the node of any selector-map entry — compared by
-   backend_node_id over the map's VALUES, never by key or xpath;
+1. the candidate's node is not, and is not inside, the node of any selector-map
+   entry other than the indexed one — compared by backend_node_id over the
+   map's VALUES, never by key or xpath;
 2. it is not inside the indexed node;
-3. it does not contain the indexed node;
+3. it does not contain the indexed node — a shadow-including containment test
+   (walking parentNode/host), never a plain DOM Node.contains, because
+   Node.contains stops at a shadow boundary and browser-use indexes nodes
+   inside open shadow roots;
 4. it is not a <label> whose control is the indexed node;
 5. the indexed node, resolved by its backend id, is connected and keeps its tag.
 
-Two guards keep clause 1 honest, because "not in the map" has causes other
+Three guards keep clause 1 honest, because "not in the map" has causes other
 than "browser-use judged it not interactive":
 - freshness: a selector-map node of the candidate's tag that is no longer
   connected means the page re-rendered after the map was built — a clone of an
@@ -27,7 +32,11 @@ than "browser-use judged it not interactive":
   (browser_use/dom/service.py:339-344) and is not painted over by another
   element (browser_use/dom/serializer/paint_order.py) — so a hidden, off-screen
   or covered candidate proves nothing. Known hole: a hit-test ignores
-  pointer-events:none overlays, which browser-use's paint-order filter does not.
+  pointer-events:none overlays, which browser-use's paint-order filter does not;
+- folded children: browser-use folds a child that fills an <a>/<button> into
+  its parent (browser_use/dom/serializer/serializer.py:785-793, 822-877), so
+  such a child is absent from the map by design — it can still be inside a
+  DIFFERENT indexed node, which clause 1's ancestor walk must catch.
 
 Everything uncertain reads UNKNOWN and keeps the reject — the opposite of
 _identity_mismatch's own unknown-means-accept rule, on purpose.
@@ -42,7 +51,7 @@ import contextlib
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +63,7 @@ class ReadIdentityFacts:
     unknown: Tuple[str, ...] = ()
     indexed_ok: bool = False
     is_indexed: bool = False
+    inside_other_indexed: bool = False
     inside: bool = False
     contains: bool = False
     labels_index: bool = False
@@ -71,6 +81,8 @@ def read_step_verdict(facts: Optional[ReadIdentityFacts]) -> Tuple[bool, str]:
         return False, "clause 5: the indexed node is gone or changed tag"
     if facts.is_indexed:
         return False, "clause 1: the candidate is itself an indexed node"
+    if facts.inside_other_indexed:
+        return False, "clause 1: the candidate is inside another indexed node"
     if facts.inside:
         return False, "clause 2: the candidate is inside the indexed node"
     if facts.contains:
@@ -136,7 +148,17 @@ function(indexed, indexedTag, threshold) {
     && indexed.tagName.toLowerCase() === indexedTag);
   if (out.indexed_ok) {
     out.inside = indexed !== cand && indexed.contains(cand);
-    out.contains = indexed !== cand && cand.contains(indexed);
+    // Shadow-including containment: Node.contains stops at a shadow boundary, but
+    // browser-use indexes nodes inside open shadow roots, so a shadow HOST whose
+    // shadow root holds the indexed node must still read "contains".
+    out.contains = false;
+    if (indexed !== cand) {
+      let n = indexed.parentNode || indexed.host;
+      while (n) {
+        if (n === cand) { out.contains = true; break; }
+        n = n.parentNode || n.host;
+      }
+    }
     out.labels_index = cand.tagName === 'LABEL' && cand.control === indexed;
   }
   return out;
@@ -144,6 +166,54 @@ function(indexed, indexedTag, threshold) {
 """
 
 _IS_CONNECTED_FN = "function() { return this.isConnected; }"
+
+# browser-use folds a child that fills an <a>/<button> into its parent
+# (browser_use/dom/serializer/serializer.py:785-793, 822-877), so such a child is
+# absent from the map by design. Clause 1 must also reject when the candidate is
+# inside a DIFFERENT indexed node, not just when it IS one.
+_ANCESTORS_FN = (
+    "function() { const arr = []; let n = this.parentElement; "
+    "while (n) { arr.push(n); n = n.parentElement; } return arr; }"
+)
+
+
+async def _inside_other_indexed(
+    cdp_session, candidate_object: str, other_indexed_ids: Set[int], group: str
+) -> bool:
+    """True when an ancestor of the candidate is a same-target selector-map node
+    other than the indexed one. Any failure here must propagate (fail closed) —
+    never swallowed, unlike the freshness guard's per-node resolve."""
+    if not other_indexed_ids:
+        return False
+    ancestors = await _cdp(
+        cdp_session,
+        "Runtime.callFunctionOn",
+        {"functionDeclaration": _ANCESTORS_FN, "objectId": candidate_object, "objectGroup": group},
+    )
+    array_object_id = (ancestors.get("result") or {}).get("objectId")
+    if not array_object_id:
+        raise RuntimeError("ancestor walk returned no array object")
+    props = await _cdp(
+        cdp_session, "Runtime.getProperties", {"objectId": array_object_id, "ownProperties": True}
+    )
+    ancestor_object_ids = [
+        (p.get("value") or {}).get("objectId")
+        for p in props.get("result") or []
+        if (p.get("value") or {}).get("objectId")
+    ]
+    if not ancestor_object_ids:
+        return False
+    described = await asyncio.gather(
+        *(_cdp(cdp_session, "DOM.describeNode", {"objectId": oid}) for oid in ancestor_object_ids)
+    )
+    ancestor_ids: Set[int] = set()
+    for d in described:
+        node = d.get("node") or {}
+        backend_id = _backend_id(node.get("backendNodeId"))
+        if backend_id is None:
+            raise RuntimeError("an ancestor node has no backend id")
+        ancestor_ids.add(backend_id)
+    return bool(ancestor_ids & other_indexed_ids)
 
 
 def _backend_id(value: Any) -> Optional[int]:
@@ -258,6 +328,14 @@ async def _read(page, browser_session, element_data, candidate_locator) -> ReadI
         is_indexed = any(
             _backend_id(getattr(n, "backend_node_id", None)) == candidate_id for n in same_target
         )
+        other_indexed_ids: Set[int] = {
+            b
+            for b in (_backend_id(getattr(n, "backend_node_id", None)) for n in same_target)
+            if b is not None and b != indexed_id
+        }
+        inside_other_indexed = await _inside_other_indexed(
+            cdp_session, candidate_object, other_indexed_ids, group
+        )
 
         indexed_arg: Dict[str, Any] = {"value": None}
         with contextlib.suppress(Exception):
@@ -303,6 +381,7 @@ async def _read(page, browser_session, element_data, candidate_locator) -> ReadI
             unknown=tuple(unknown),
             indexed_ok=bool(clauses.get("indexed_ok")),
             is_indexed=is_indexed,
+            inside_other_indexed=inside_other_indexed,
             inside=bool(clauses.get("inside")),
             contains=bool(clauses.get("contains")),
             labels_index=bool(clauses.get("labels_index")),

@@ -25,7 +25,7 @@
   <!-- mirror: right index, same-text non-indexed wrong candidate -->
   <button id="export">Export</button> <span class="export-note">Export all rows</span>
   <!-- reverse: the candidate is itself indexed -->
-  <button id="save">Save</button> <a id="save-link" href="#save">Save</a>
+  <button id="save">Save</button> <a id="save-link" href="#save"><span class="lbl">Save</span></a>
   <!-- label-for -->
   <label for="city">City</label> <input id="city">
   <!-- ancestor (u12): the candidate contains the index -->
@@ -44,11 +44,14 @@
     <span class="covered-twin" style="position:absolute; left:0; top:0">Covered twin</span>
     <div style="position:absolute; left:0; top:0; width:300px; height:40px; background:#fff">overlay</div>
   </div>
+  <x-alert id="alert2" style="display:block"></x-alert>
   <div id="shadow-host"></div>
 </main>
 <script>
   const root = document.getElementById('shadow-host').attachShadow({mode: 'open'});
   root.innerHTML = '<span class="in-shadow">Shadow twin</span>';
+  const alertRoot = document.getElementById('alert2').attachShadow({mode: 'open'});
+  alertRoot.innerHTML = '<span>Saved</span> <button class="close">Close</button>';
 </script>
 </body>
 </html>

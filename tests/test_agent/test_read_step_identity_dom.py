@@ -47,6 +47,7 @@ INDEXED = (
     "#flash button.close",
     "#dropdown",
     "#badge",
+    "#alert2 button.close",
 )
 
 
@@ -185,6 +186,30 @@ async def test_candidate_containing_index_rejects_clause_3():
         )
     assert accept is False
     assert "clause 3" in why
+
+
+async def test_candidate_inside_another_indexed_node_rejects_clause_1():
+    """browser-use folds a child that fills an <a>/<button> into its parent
+    (serializer.py:785-793), so the inner span is absent from the map by design —
+    a candidate reading "not in the map" can still be inside a DIFFERENT indexed node."""
+    async with _page() as (page, cdp):
+        _, (accept, why) = await _verdict(
+            page, cdp, indexed="#save", candidate="#save-link span.lbl"
+        )
+    assert accept is False
+    assert "inside another indexed node" in why
+
+
+async def test_shadow_host_containing_index_rejects_clause_3():
+    """A shadow HOST whose open shadow root holds the indexed button: Node.contains
+    stops at the shadow boundary, so clause 3 must walk parentNode/host to catch it."""
+    async with _page() as (page, cdp):
+        facts, (accept, why) = await _verdict(
+            page, cdp, indexed="#alert2 button.close", candidate="#alert2"
+        )
+    assert accept is False
+    assert "clause 3" in why
+    assert facts.contains is True
 
 
 async def test_label_for_indexed_input_rejects_clause_4():

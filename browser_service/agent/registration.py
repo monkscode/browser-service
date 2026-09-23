@@ -73,6 +73,20 @@ def _select_best_page(browser):
     return None
 
 
+def _backend_node_id(dom_node) -> Optional[int]:
+    """The node's CDP backend id, or None when there is no real one.
+
+    K v1 (read-step identity) compares nodes by backend id, never by xpath:
+    browser-use's <svg> xpaths never resolve in an HTML document, and a
+    re-render shifts positions (S1 spike, 2026-09-23). A MagicMock attribute
+    or a bool is not an id and must never reach a CDP call.
+    """
+    value = getattr(dom_node, "backend_node_id", None)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 def _extract_dom_node_attributes(dom_node) -> dict:
     """
     Extract standard attributes from a browser-use DOM node.
@@ -117,6 +131,7 @@ def _extract_dom_node_attributes(dom_node) -> dict:
         "type": attrs.get("type", ""),  # For input elements
         "value": attrs.get("value", ""),  # Current value of input
         "xpath": dom_node.xpath if hasattr(dom_node, "xpath") else "",
+        "backendNodeId": _backend_node_id(dom_node),
     }
 
 

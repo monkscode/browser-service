@@ -1711,6 +1711,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     vision_framework_hint=params.framework_hint,  # LLM's framework guess (any specialized type)
                     row_anchor_text=params.row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
                     action=_step_action,  # E2 fitness + read-target rules (flag on only)
+                    vision_point=(scaled_x, scaled_y),  # K v1: logged on every K accept
                 )
 
                 # Convert result to ActionResult format

@@ -30,9 +30,10 @@ import asyncio
 import logging
 import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
-from browser_service.locators.action_fit import check_action_fit
+from browser_service.agent.read_step_identity import read_identity_facts, read_step_verdict
+from browser_service.locators.action_fit import READ_ACTIONS, check_action_fit
 from browser_service.locators.classifier import classify_element_type
 from browser_service.locators.read_target import apply_read_target_policy
 from browser_service.locators.stability import (
@@ -449,6 +450,7 @@ async def find_unique_locator_action(
     vision_framework_hint: Optional[str] = None,  # LLM's framework guess (any specialized type)
     row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
     action: Optional[str] = None,  # Step action (E2); None = today's behaviour (flag off)
+    vision_point: Optional[Tuple[int, int]] = None,  # Vision point before replacement (K v1 log)
 ) -> Dict[str, Any]:
     """
     Custom action that agent can call to find and validate unique locator.
@@ -719,6 +721,36 @@ async def find_unique_locator_action(
                                         f"(signal: identity-guard-yields-to-fit)"
                                     )
                                     _identity_reason = ""
+                            # K v1 (u07): on a READ step the index, not the
+                            # candidate, can be the wrong evidence. Accept only
+                            # when one live read proves the candidate is not an
+                            # indexed node and is unrelated to the indexed one;
+                            # anything uncertain keeps the reject.
+                            if (
+                                _identity_reason
+                                and action in READ_ACTIONS
+                                and not iframe_context
+                                and browser_session is not None
+                            ):
+                                _k_facts = await read_identity_facts(
+                                    search_root, browser_session, element_data, playwright_locator
+                                )
+                                _k_accept, _k_why = read_step_verdict(_k_facts)
+                                if _k_accept:
+                                    logger.info(
+                                        f"   ↪ READ-STEP IDENTITY ACCEPT: {_identity_reason}, but "
+                                        f"'{playwright_locator}' is no indexed node and is unrelated "
+                                        f"to the indexed one ({_k_why}); vision point "
+                                        f"{vision_point}, used point ({x}, {y}), candidate centre "
+                                        f"{_k_facts.candidate_centre if _k_facts else None} "
+                                        f"(signal: read-step-identity-accept)"
+                                    )
+                                    _identity_reason = ""
+                                else:
+                                    logger.info(
+                                        f"   ⛔ READ-STEP IDENTITY KEEPS REJECT: {_k_why} "
+                                        f"(signal: read-step-identity-keeps-reject)"
+                                    )
                             if _identity_reason:
                                 logger.info(
                                     f"   ⛔ CANDIDATE IDENTITY REJECT: '{playwright_locator}' "

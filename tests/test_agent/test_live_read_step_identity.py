@@ -9,6 +9,7 @@ Run: pytest tests/test_agent/test_live_read_step_identity.py -m live -v
 """
 
 import asyncio
+import contextlib
 import functools
 import http.server
 import threading
@@ -55,9 +56,10 @@ async def test_browser_use_session_u07_accept_and_reverse_reject(fixture_url):
     session = BrowserSession(
         headless=True, viewport={"width": 1920, "height": 1080}, no_viewport=False
     )
-    await session.start()
-    pw = await async_playwright().start()
+    pw = None
     try:
+        await session.start()
+        pw = await async_playwright().start()
         await session.navigate_to(fixture_url)
         await asyncio.sleep(1.0)
         await session.get_browser_state_summary()
@@ -81,5 +83,7 @@ async def test_browser_use_session_u07_accept_and_reverse_reject(fixture_url):
         assert accept is False
         assert "clause 1" in why
     finally:
-        await pw.stop()
+        if pw is not None:
+            with contextlib.suppress(Exception):
+                await pw.stop()
         await session.kill()

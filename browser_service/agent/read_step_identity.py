@@ -22,7 +22,7 @@ clauses 1 and 3 amended again in fix round 1 after review findings I1/I2):
 4. it is not a <label> whose control is the indexed node;
 5. the indexed node, resolved by its backend id, is connected and keeps its tag.
 
-Three guards keep clause 1 honest, because "not in the map" has causes other
+Four guards keep clause 1 honest, because "not in the map" has causes other
 than "browser-use judged it not interactive":
 - freshness: a selector-map node of the candidate's tag that is no longer
   connected means the page re-rendered after the map was built — a clone of an
@@ -36,7 +36,24 @@ than "browser-use judged it not interactive":
 - folded children: browser-use folds a child that fills an <a>/<button> into
   its parent (browser_use/dom/serializer/serializer.py:785-793, 822-877), so
   such a child is absent from the map by design — it can still be inside a
-  DIFFERENT indexed node, which clause 1's ancestor walk must catch.
+  DIFFERENT indexed node, which clause 1's ancestor walk must catch;
+- web-component shapes: browser-use indexes the node INSIDE a shadow root, not
+  its host, and a light-DOM node slotted into a shadow control is not a DOM
+  descendant of it. A shadow HOST that holds another indexed node passes as
+  "not in the map" unless its shadowRoots subtree is inspected directly; a
+  light-DOM child slotted into a shadow control is only found via the FLAT
+  (composed) tree, walking assignedSlot ahead of parentElement — and that walk
+  cannot see slotting into a CLOSED root at all (assignedSlot is null there),
+  so a candidate sitting in the light DOM of a closed shadow host reads UNKNOWN
+  rather than risk a false accept. A user-agent shadow root (<input>, <select>,
+  <textarea>, <video>, <details> all have one) is the browser's own chrome, never
+  a place another indexed node could live, and is ignored by both checks.
+
+The ancestor check this buys also fires for a candidate that sits inside any
+OTHER always-indexed container — a scrollable grid, a listbox, a menu, any
+clickable container browser-use's own serializer role list treats as
+interactive — which K then declines exactly like a web-component host; that is
+by design, not a hole specific to shadow DOM.
 
 Everything uncertain reads UNKNOWN and keeps the reject — the opposite of
 _identity_mismatch's own unknown-means-accept rule, on purpose.
@@ -64,6 +81,7 @@ class ReadIdentityFacts:
     indexed_ok: bool = False
     is_indexed: bool = False
     inside_other_indexed: bool = False
+    hosts_other_indexed: bool = False
     inside: bool = False
     contains: bool = False
     labels_index: bool = False
@@ -83,6 +101,8 @@ def read_step_verdict(facts: Optional[ReadIdentityFacts]) -> Tuple[bool, str]:
         return False, "clause 1: the candidate is itself an indexed node"
     if facts.inside_other_indexed:
         return False, "clause 1: the candidate is inside another indexed node"
+    if facts.hosts_other_indexed:
+        return False, "clause 1: the candidate hosts another indexed node"
     if facts.inside:
         return False, "clause 2: the candidate is inside the indexed node"
     if facts.contains:
@@ -107,10 +127,17 @@ _GLOBAL_PREFIX = "__bs_read_identity_"
 _CLEANUP_TIMEOUT_S = 0.5
 
 # Runs with `this` = the candidate. Clauses 2-5 plus the frame, shadow-root and
-# visibility unknowns, in one call. The visibility test is at least as strict as
-# browser-use's own, so an error here can only add a reject.
+# visibility unknowns, in one call. The visibility test hit-tests the candidate's
+# own centre point and checks browser-use's exact viewport window, but it does not
+# reproduce browser-use's paint-order filter node-for-node — a candidate covered by
+# its own opaque child (e.g. an icon-only button) passes this hit-test even though
+# browser-use's filter might drop the underlying node, so this can only ADD a
+# reject relative to browser-use's own judgement, never remove one it would make.
 _CLAUSES_FN = r"""
 function(indexed, indexedTag, threshold) {
+  function nextFlat(n) {
+    return n.assignedSlot || n.parentElement || (n.parentNode && n.parentNode.host) || null;
+  }
   const cand = this;
   const out = {unknown: [], indexed_ok: false, inside: false, contains: false,
                labels_index: false, centre: null};
@@ -147,7 +174,17 @@ function(indexed, indexedTag, threshold) {
   out.indexed_ok = !!(indexed && indexed.isConnected && typeof indexed.tagName === 'string'
     && indexed.tagName.toLowerCase() === indexedTag);
   if (out.indexed_ok) {
-    out.inside = indexed !== cand && indexed.contains(cand);
+    // Flat-tree ancestor walk (composed tree): a slotted light-DOM child's real
+    // parentElement is its light-DOM host, not the shadow node it renders inside,
+    // so plain Node.contains cannot see clause 2 for a web-component candidate.
+    out.inside = false;
+    if (indexed !== cand) {
+      let n = nextFlat(cand);
+      while (n) {
+        if (n === indexed) { out.inside = true; break; }
+        n = nextFlat(n);
+      }
+    }
     // Shadow-including containment: Node.contains stops at a shadow boundary, but
     // browser-use indexes nodes inside open shadow roots, so a shadow HOST whose
     // shadow root holds the indexed node must still read "contains".
@@ -167,24 +204,45 @@ function(indexed, indexedTag, threshold) {
 
 _IS_CONNECTED_FN = "function() { return this.isConnected; }"
 
+# Measured: CDP's Runtime.callFunctionOn rejects a call whose ARGUMENT objectId
+# belongs to a different JS world than the `this` objectId ("Argument should
+# belong to the same JavaScript world as target object") — a protocol-level
+# error, so the indexed node's frame must be checked in its OWN world, before
+# ever being offered as an argument to a function bound to the candidate's world.
+_MAIN_FRAME_FN = "function() { return window.top === window; }"
+
 # browser-use folds a child that fills an <a>/<button> into its parent
 # (browser_use/dom/serializer/serializer.py:785-793, 822-877), so such a child is
 # absent from the map by design. Clause 1 must also reject when the candidate is
-# inside a DIFFERENT indexed node, not just when it IS one.
+# inside a DIFFERENT indexed node, not just when it IS one. The walk is the FLAT
+# (composed) tree, so a light-DOM node slotted into a shadow button's <slot> is
+# still found as inside that button; assignedSlot is null for a slot inside a
+# CLOSED shadow root, so a closed host is caught separately (see below), never by
+# this walk pretending to see through it.
 _ANCESTORS_FN = (
-    "function() { const arr = []; let n = this.parentElement; "
-    "while (n) { arr.push(n); n = n.parentElement; } return arr; }"
+    "function() { "
+    "const next = (n) => n.assignedSlot || n.parentElement || (n.parentNode && n.parentNode.host) || null; "
+    "const arr = []; let n = next(this); "
+    "while (n) { arr.push(n); n = next(n); } return arr; }"
 )
 
 
 async def _inside_other_indexed(
-    cdp_session, candidate_object: str, other_indexed_ids: Set[int], group: str
-) -> bool:
-    """True when an ancestor of the candidate is a same-target selector-map node
-    other than the indexed one. Any failure here must propagate (fail closed) —
-    never swallowed, unlike the freshness guard's per-node resolve."""
+    cdp_session, candidate_object: str, other_indexed_ids: Set[int], group: str, candidate_tag: str
+) -> Tuple[bool, Optional[str]]:
+    """(inside_other_indexed, unknown_reason). True when a flat-tree ancestor of the
+    candidate is a same-target selector-map node other than the indexed one. Any
+    failure here must propagate (fail closed) — never swallowed, unlike the
+    freshness guard's per-node resolve. An empty ancestor list is only legitimate
+    for <html> (which has none); for anything else it means the walk broke, not
+    that the candidate has no ancestors.
+
+    assignedSlot is null for a slot inside a CLOSED shadow root, so the walk cannot
+    see slotting into closed content; if a CLOSED author shadow host sits on the
+    chain it actually walked, the walk cannot be trusted here and this reads
+    unknown rather than risk a false negative."""
     if not other_indexed_ids:
-        return False
+        return False, None
     ancestors = await _cdp(
         cdp_session,
         "Runtime.callFunctionOn",
@@ -202,18 +260,77 @@ async def _inside_other_indexed(
         if (p.get("value") or {}).get("objectId")
     ]
     if not ancestor_object_ids:
-        return False
+        if candidate_tag == "html":
+            return False, None
+        raise RuntimeError("ancestor walk found no ancestors for a non-<html> candidate")
     described = await asyncio.gather(
         *(_cdp(cdp_session, "DOM.describeNode", {"objectId": oid}) for oid in ancestor_object_ids)
     )
     ancestor_ids: Set[int] = set()
+    closed_shadow_host = False
     for d in described:
         node = d.get("node") or {}
         backend_id = _backend_id(node.get("backendNodeId"))
         if backend_id is None:
             raise RuntimeError("an ancestor node has no backend id")
         ancestor_ids.add(backend_id)
-    return bool(ancestor_ids & other_indexed_ids)
+        if any(sr.get("shadowRootType") == "closed" for sr in node.get("shadowRoots") or []):
+            closed_shadow_host = True
+    if closed_shadow_host:
+        return False, "the candidate sits in the light DOM of a closed shadow host"
+    return bool(ancestor_ids & other_indexed_ids), None
+
+
+# Only author roots (open/closed) can hide another indexed node inside the
+# candidate; a user-agent root (<input>, <select>, <textarea>, <video>, <details>)
+# is browser's own chrome, never a place another indexed node could live.
+_AUTHOR_SHADOW_ROOT_TYPES = {"open", "closed"}
+
+
+def _shadow_backend_ids(node: Dict[str, Any]) -> Set[int]:
+    """Every backend id found inside NODE's shadowRoots subtrees (recursively,
+    including nested shadow roots) — never the host's own light-DOM children,
+    which live under NODE's own "children", not under "shadowRoots"."""
+    ids: Set[int] = set()
+
+    def walk(n: Dict[str, Any]) -> None:
+        backend_id = _backend_id(n.get("backendNodeId"))
+        if backend_id is not None:
+            ids.add(backend_id)
+        for child in n.get("children") or []:
+            walk(child)
+        for shadow_root in n.get("shadowRoots") or []:
+            walk(shadow_root)
+
+    for shadow_root in node.get("shadowRoots") or []:
+        walk(shadow_root)
+    return ids
+
+
+async def _hosts_other_indexed(
+    cdp_session,
+    candidate_object: str,
+    candidate_node: Dict[str, Any],
+    other_indexed_ids: Set[int],
+) -> bool:
+    """True when the candidate is a shadow host and some OTHER indexed node lives
+    anywhere inside its shadow tree(s). browser-use indexes the interactive node
+    INSIDE a shadow root, not its host, so a host is otherwise invisible to clause
+    1's "not in the map" test even though it visually wraps a different indexed
+    control (e.g. two custom-element twins, or an alert box whose shadow content
+    holds its own indexed Close button)."""
+    if not other_indexed_ids:
+        return False
+    if not any(
+        sr.get("shadowRootType") in _AUTHOR_SHADOW_ROOT_TYPES
+        for sr in candidate_node.get("shadowRoots") or []
+    ):
+        return False
+    deep = await _cdp(
+        cdp_session, "DOM.describeNode", {"objectId": candidate_object, "depth": -1, "pierce": True}
+    )
+    hosted_ids = _shadow_backend_ids(deep.get("node") or {})
+    return bool(hosted_ids & other_indexed_ids)
 
 
 def _backend_id(value: Any) -> Optional[int]:
@@ -223,8 +340,13 @@ def _backend_id(value: Any) -> Optional[int]:
 
 
 def _watchdog_selector_map(browser_session) -> Optional[Dict[Any, Any]]:
-    """The map the agent's index came from. Never get_selector_map(): its fallback
-    can differ from the snapshot the index was drawn from (Review Focus 1)."""
+    """The map the agent's index came from. Never get_selector_map(): in browser-use
+    0.13.7 it returns the cached map first (session.py:2716-2721), so most of the
+    time it IS this same map — the real divergence is a scroll clearing the
+    watchdog's map (default_action_watchdog.py:522-524), which get_selector_map()
+    would silently rebuild/renumber. Reading the watchdog directly means K reads
+    that as "no selector map" and fails closed, instead of comparing the candidate
+    against a map the index may not have come from (Review Focus 1)."""
     watchdog = getattr(browser_session, "_dom_watchdog", None)
     selector_map = getattr(watchdog, "selector_map", None)
     if isinstance(selector_map, dict) and selector_map:
@@ -233,9 +355,17 @@ def _watchdog_selector_map(browser_session) -> Optional[Dict[Any, Any]]:
 
 
 async def _cdp(cdp_session, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Fail closed on a page-JS error: a CDP response that carries ``exceptionDetails``
+    (e.g. a throwing evaluated function) is NOT a successful result — Runtime domain
+    calls return HTTP-success with the thrown Error object standing in for the return
+    value, which a caller reading it as an array/object would silently misread as
+    empty/false rather than as a broken read."""
     domain, name = method.split(".", 1)
     call = getattr(getattr(cdp_session.cdp_client.send, domain), name)
-    return await call(params=params, session_id=cdp_session.session_id)
+    result = await call(params=params, session_id=cdp_session.session_id)
+    if isinstance(result, dict) and result.get("exceptionDetails"):
+        raise RuntimeError(f"{method} raised: {result['exceptionDetails']!r}")
+    return result
 
 
 async def _any_disconnected(cdp_session, backend_ids: Iterable[int], group: str) -> bool:
@@ -333,16 +463,33 @@ async def _read(page, browser_session, element_data, candidate_locator) -> ReadI
             for b in (_backend_id(getattr(n, "backend_node_id", None)) for n in same_target)
             if b is not None and b != indexed_id
         }
-        inside_other_indexed = await _inside_other_indexed(
-            cdp_session, candidate_object, other_indexed_ids, group
+        hosts_other_indexed = await _hosts_other_indexed(
+            cdp_session, candidate_object, node, other_indexed_ids
+        )
+        inside_other_indexed, closed_shadow_unknown = await _inside_other_indexed(
+            cdp_session, candidate_object, other_indexed_ids, group, candidate_tag
         )
 
         indexed_arg: Dict[str, Any] = {"value": None}
+        indexed_not_main_frame = False
         with contextlib.suppress(Exception):
             resolved = await _cdp(
                 cdp_session, "DOM.resolveNode", {"backendNodeId": indexed_id, "objectGroup": group}
             )
-            indexed_arg = {"objectId": resolved["object"]["objectId"]}
+            resolved_object_id = resolved["object"]["objectId"]
+            frame_check = await _cdp(
+                cdp_session,
+                "Runtime.callFunctionOn",
+                {
+                    "functionDeclaration": _MAIN_FRAME_FN,
+                    "objectId": resolved_object_id,
+                    "returnByValue": True,
+                },
+            )
+            if (frame_check.get("result") or {}).get("value") is True:
+                indexed_arg = {"objectId": resolved_object_id}
+            else:
+                indexed_not_main_frame = True
         indexed_tag = ((element_data or {}).get("tagName") or "").lower()
         answer = await _cdp(
             cdp_session,
@@ -360,6 +507,10 @@ async def _read(page, browser_session, element_data, candidate_locator) -> ReadI
         )
         clauses = (answer.get("result") or {}).get("value") or {}
         unknown = list(clauses.get("unknown") or [])
+        if closed_shadow_unknown:
+            unknown.append(closed_shadow_unknown)
+        if indexed_not_main_frame:
+            unknown.append("the indexed node is not in the main frame")
 
         same_tag_ids = [
             b
@@ -382,6 +533,7 @@ async def _read(page, browser_session, element_data, candidate_locator) -> ReadI
             indexed_ok=bool(clauses.get("indexed_ok")),
             is_indexed=is_indexed,
             inside_other_indexed=inside_other_indexed,
+            hosts_other_indexed=hosts_other_indexed,
             inside=bool(clauses.get("inside")),
             contains=bool(clauses.get("contains")),
             labels_index=bool(clauses.get("labels_index")),

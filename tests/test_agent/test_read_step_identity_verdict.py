@@ -46,6 +46,7 @@ def test_any_unknown_keeps_reject(reason):
     [
         ("is_indexed", "clause 1"),
         ("inside_other_indexed", "clause 1"),
+        ("hosts_other_indexed", "clause 1"),
         ("inside", "clause 2"),
         ("contains", "clause 3"),
         ("labels_index", "clause 4"),

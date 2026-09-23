@@ -45,6 +45,11 @@
     <div style="position:absolute; left:0; top:0; width:300px; height:40px; background:#fff">overlay</div>
   </div>
   <x-alert id="alert2" style="display:block"></x-alert>
+  <!-- web-component shapes (F1): open-shadow button with slotted label; closed-shadow
+       button with slotted label; a UA-shadow host (<details>) for the accept guard -->
+  <x-btn id="xbtn"><span class="xb-lbl">Send</span></x-btn>
+  <x-closed id="xclosed"><span class="xc-lbl">Archive</span></x-closed>
+  <details open><summary>More</summary><p class="det-text">Details body text</p></details>
   <div id="shadow-host"></div>
 </main>
 <script>
@@ -52,6 +57,10 @@
   root.innerHTML = '<span class="in-shadow">Shadow twin</span>';
   const alertRoot = document.getElementById('alert2').attachShadow({mode: 'open'});
   alertRoot.innerHTML = '<span>Saved</span> <button class="close">Close</button>';
+  const xbtnRoot = document.getElementById('xbtn').attachShadow({mode: 'open'});
+  xbtnRoot.innerHTML = '<button class="inner"><slot></slot></button>';
+  const xclosedRoot = document.getElementById('xclosed').attachShadow({mode: 'closed'});
+  xclosedRoot.innerHTML = '<button><slot></slot></button>';
 </script>
 </body>
 </html>

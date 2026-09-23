@@ -35,6 +35,12 @@ FIXTURE = (
 )
 
 # Every interactive element on the fixture page — what browser-use would index.
+# Re-measured 2026-09-23 on a real browser-use 0.13.7 session after the F1 web
+# component elements were added (throwaway probe, session scratchpad, never in
+# the worktree). browser-use also indexes the <button> inside #xclosed's CLOSED
+# shadow root, but Playwright cannot select into closed shadow content (0 matches
+# for "#xclosed button"), so that one node is deliberately left out here — this
+# tuple is "every node the fixture-lane tests can address", not the full map.
 INDEXED = (
     "#nav-admin",
     "a.menu-item",
@@ -48,6 +54,11 @@ INDEXED = (
     "#dropdown",
     "#badge",
     "#alert2 button.close",
+    "#xbtn button.inner",
+    "#xbtn span.xb-lbl",
+    "#xclosed span.xc-lbl",
+    "details",
+    "summary",
 )
 
 
@@ -106,13 +117,29 @@ async def _node(page, cdp, selector):
     return described["node"]["backendNodeId"], described["node"]["nodeName"]
 
 
+async def _node_in_frame(cdp, frame_selector, selector):
+    """Resolve a node inside a same-origin child frame by backend id, through the
+    DOM domain only (no Runtime/window parking, which would need the iframe's own
+    execution context) — the same shape _node() returns for the main frame."""
+    doc = await cdp.send("DOM.getDocument", {})
+    root_id = doc["root"]["nodeId"]
+    iframe = await cdp.send("DOM.querySelector", {"nodeId": root_id, "selector": frame_selector})
+    described = await cdp.send("DOM.describeNode", {"nodeId": iframe["nodeId"], "pierce": True})
+    content_doc_id = described["node"]["contentDocument"]["nodeId"]
+    inner = await cdp.send("DOM.querySelector", {"nodeId": content_doc_id, "selector": selector})
+    inner_described = await cdp.send("DOM.describeNode", {"nodeId": inner["nodeId"]})
+    return inner_described["node"]["backendNodeId"], inner_described["node"]["nodeName"]
+
+
 async def _setup(page, cdp, indexed, map_selectors=INDEXED):
     """A selector map of real backend ids, and element_data for the indexed node."""
     target_id = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
     selector_map = {}
-    for selector in map_selectors:
+    # Keyed by index (enumerate), like browser-use's own map — never by backend id,
+    # so a regression that compares map KEYS instead of values would fail here.
+    for i, selector in enumerate(map_selectors, start=1):
         backend_id, node_name = await _node(page, cdp, selector)
-        selector_map[backend_id] = SimpleNamespace(
+        selector_map[i] = SimpleNamespace(
             backend_node_id=backend_id, node_name=node_name, target_id=target_id
         )
     backend_id, node_name = await _node(page, cdp, indexed)
@@ -120,8 +147,8 @@ async def _setup(page, cdp, indexed, map_selectors=INDEXED):
     return _FakeBrowserSession(cdp, target_id, selector_map), element_data, target_id
 
 
-async def _verdict(page, cdp, *, indexed, candidate):
-    session, element_data, _ = await _setup(page, cdp, indexed)
+async def _verdict(page, cdp, *, indexed, candidate, map_selectors=INDEXED):
+    session, element_data, _ = await _setup(page, cdp, indexed, map_selectors=map_selectors)
     facts = await read_identity_facts(page, session, element_data, candidate)
     return facts, read_step_verdict(facts)
 
@@ -210,6 +237,138 @@ async def test_shadow_host_containing_index_rejects_clause_3():
     assert accept is False
     assert "clause 3" in why
     assert facts.contains is True
+
+
+async def test_host_of_another_indexed_node_rejects_clause_1():
+    """F1(a): the candidate is a shadow HOST whose shadow root holds a DIFFERENT
+    indexed node (#alert2's shadow Close button, indexed separately from #flash's).
+    browser-use indexes the button inside the shadow root, never its host, so
+    "not in the map" has this fourth cause too."""
+    async with _page() as (page, cdp):
+        _, (accept, why) = await _verdict(
+            page, cdp, indexed="#flash button.close", candidate="#alert2"
+        )
+    assert accept is False
+    assert "hosts another indexed node" in why
+
+
+# Measured 2026-09-23: real browser-use 0.13.7 indexes BOTH #xbtn's shadow button
+# AND its slotted span (see the re-measured INDEXED tuple above) — the light-DOM
+# fold-into-parent heuristic the reviewer's evidence relied on for a plain
+# <a>/<button> does not apply across this shadow boundary on this fixture. That
+# makes span.xb-lbl itself an indexed node here, which trips clause 1's
+# is_indexed check before the ancestor walk is ever exercised. The clause 1/2
+# ancestor-walk logic this covers is real regardless (the module docstring's own
+# "folded children" note says the omission can happen for OTHER shapes), so these
+# two tests use a reduced map that omits the span — modelling the shape where it
+# is not separately indexed, same as the reviewer's own ad hoc probe fixture.
+_MAP_WITHOUT_SLOTTED_SPAN = tuple(s for s in INDEXED if s != "#xbtn span.xb-lbl")
+
+
+async def test_slotted_into_another_indexed_node_rejects_clause_1():
+    """F1(b): a span slotted into #xbtn's shadow button, while #save is indexed —
+    the flat-tree ancestor walk must find the (different) indexed button via
+    assignedSlot, not the host via parentElement."""
+    async with _page() as (page, cdp):
+        _, (accept, why) = await _verdict(
+            page,
+            cdp,
+            indexed="#save",
+            candidate="#xbtn span.xb-lbl",
+            map_selectors=_MAP_WITHOUT_SLOTTED_SPAN,
+        )
+    assert accept is False
+    assert "inside another indexed node" in why
+
+
+async def test_slotted_into_the_indexed_node_rejects_clause_2():
+    """F1(b): the same slotted span, but this time the shadow button ITSELF is the
+    indexed node — clause 2, not clause 1."""
+    async with _page() as (page, cdp):
+        _, (accept, why) = await _verdict(
+            page,
+            cdp,
+            indexed="#xbtn button.inner",
+            candidate="#xbtn span.xb-lbl",
+            map_selectors=_MAP_WITHOUT_SLOTTED_SPAN,
+        )
+    assert accept is False
+    assert "clause 2" in why
+
+
+async def test_slotted_into_a_closed_host_reads_unknown():
+    """F1(c): assignedSlot is null for a slot inside a CLOSED root, so the flat-tree
+    walk cannot see past #xclosed's boundary — it must read unknown, not accept."""
+    async with _page() as (page, cdp):
+        _, (accept, why) = await _verdict(
+            page, cdp, indexed="#save", candidate="#xclosed span.xc-lbl"
+        )
+    assert accept is False
+    assert "closed shadow host" in why
+
+
+async def test_user_agent_shadow_host_does_not_block_accept():
+    """<details> reports a shadowRoots entry (measured: shadowRootType "user-agent",
+    Chromium's own internal implementation of the disclosure triangle) — the F1(a)
+    host check must ignore it, never treat <details> as hosting another indexed
+    node just because it has *a* shadow root. Candidate is <details> itself (the
+    host); DETAILS/SUMMARY are dropped from the map so is_indexed/ancestor checks
+    do not also fire — real browser-use indexes both (measured), which is a
+    separate, correct rejection unrelated to this UA-root guard."""
+    async with _page() as (page, cdp):
+        _, (accept, why) = await _verdict(
+            page,
+            cdp,
+            indexed="a.menu-item",
+            candidate="details",
+            map_selectors=tuple(s for s in INDEXED if s not in ("details", "summary")),
+        )
+    assert accept is True, why
+
+
+async def test_page_js_error_in_ancestor_walk_fails_closed():
+    """F2: a page script that throws inside the ancestor walk must fail the read
+    closed (None), not silently read "not inside" and accept."""
+    async with _page() as (page, cdp):
+        session, element_data, _ = await _setup(page, cdp, "#save")
+        await page.evaluate(
+            "() => { const d = Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement');"
+            " Object.defineProperty(Element.prototype, 'parentElement', {configurable: true,"
+            " get() { if (this.classList && this.classList.contains('lbl'))"
+            " throw new Error('page broke it'); return d.get.call(this); }}); }"
+        )
+        facts = await read_identity_facts(page, session, element_data, "#save-link span.lbl")
+    assert facts is None
+    assert read_step_verdict(facts)[0] is False
+
+
+async def test_indexed_node_in_a_child_frame_reads_unknown():
+    """F3: the indexed node resolves fine by backend id, but it lives in a
+    same-origin child frame — the candidate (main frame) must read unknown, never
+    a false clause-1/2/3 pass or accept."""
+    async with _page() as (page, cdp):
+        await page.set_content(
+            "<html><body><h6 class='crumb'>Dashboard</h6>"
+            "<iframe id='frm' srcdoc=\"<button id='inner'>Click</button>\"></iframe>"
+            "</body></html>"
+        )
+        await page.wait_for_selector("iframe#frm")
+        backend_id, node_name = await _node_in_frame(cdp, "#frm", "#inner")
+        element_data = {"tagName": node_name.lower(), "backendNodeId": backend_id}
+        target_id = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
+        session = _FakeBrowserSession(
+            cdp,
+            target_id,
+            {
+                1: SimpleNamespace(
+                    backend_node_id=backend_id, node_name=node_name, target_id=target_id
+                )
+            },
+        )
+        facts = await read_identity_facts(page, session, element_data, "h6.crumb")
+    accept, why = read_step_verdict(facts)
+    assert accept is False
+    assert "not in the main frame" in why
 
 
 async def test_label_for_indexed_input_rejects_clause_4():

@@ -37,9 +37,12 @@ Depends on: browser-use BrowserSession (_dom_watchdog.selector_map,
 get_or_create_cdp_session), a Playwright Page
 """
 
+import asyncio
+import contextlib
 import logging
+import uuid
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -75,3 +78,244 @@ def read_step_verdict(facts: Optional[ReadIdentityFacts]) -> Tuple[bool, str]:
     if facts.labels_index:
         return False, "clause 4: the candidate is the label of the indexed node"
     return True, "all five clauses hold"
+
+
+# browser_use.dom.service.DomService's default viewport_threshold (0.13.7,
+# service.py:64): nodes up to this many px outside the viewport count as visible.
+BROWSER_USE_VIEWPORT_THRESHOLD_PX = 1000
+
+# Measured in the S1 spike: the read is ~5 ms; the freshness guard adds ~10 ms
+# at 201 map nodes and ~27 ms at 583. The bound only engages on a hung target —
+# timing out is a failed read, which keeps the reject.
+READ_IDENTITY_TIMEOUT_S = 2.0
+_PARK_TIMEOUT_MS = 1000
+_GLOBAL_PREFIX = "__bs_read_identity_"
+# The cleanup runs after a timeout too, when the renderer may still be hung, and
+# page.evaluate has no timeout of its own — unbounded, it would outlive the read.
+_CLEANUP_TIMEOUT_S = 0.5
+
+# Runs with `this` = the candidate. Clauses 2-5 plus the frame, shadow-root and
+# visibility unknowns, in one call. The visibility test is at least as strict as
+# browser-use's own, so an error here can only add a reject.
+_CLAUSES_FN = r"""
+function(indexed, indexedTag, threshold) {
+  const cand = this;
+  const out = {unknown: [], indexed_ok: false, inside: false, contains: false,
+               labels_index: false, centre: null};
+  let mainFrame = false;
+  try { mainFrame = window.top === window && cand.ownerDocument === document; }
+  catch (e) { mainFrame = false; }
+  if (!mainFrame) out.unknown.push('the candidate is not in the main frame');
+  const root = cand.getRootNode();
+  if (!root || root.nodeType === 11) out.unknown.push('the candidate is in a shadow root');
+  const rect = cand.getBoundingClientRect();
+  out.centre = [rect.left + rect.width / 2, rect.top + rect.height / 2];
+  const style = window.getComputedStyle(cand);
+  const shown = rect.width > 0 && rect.height > 0
+    && style.display !== 'none' && style.visibility !== 'hidden'
+    && style.visibility !== 'collapse' && parseFloat(style.opacity || '1') > 0
+    && (typeof cand.checkVisibility !== 'function'
+        || cand.checkVisibility({opacityProperty: true, visibilityProperty: true}));
+  if (!shown) out.unknown.push('the candidate is not visible');
+  // browser-use's own window (dom/service.py:339-344): the threshold widens it
+  // vertically only; horizontally the node must intersect the viewport itself.
+  const vw = document.documentElement.clientWidth;
+  const vh = document.documentElement.clientHeight;
+  const inWindow = rect.bottom > -threshold && rect.top < vh + threshold
+    && rect.right > 0 && rect.left < vw;
+  if (!inWindow) out.unknown.push("the candidate is outside browser-use's indexing window");
+  // browser-use drops a node another element paints over (paint-order filter), so
+  // "not in the map" says nothing about a covered candidate. Hit-test its centre;
+  // a centre outside the viewport cannot be hit-tested and reads unknown too.
+  const [cx, cy] = out.centre;
+  const hit = (cx >= 0 && cy >= 0 && cx < vw && cy < vh) ? document.elementFromPoint(cx, cy) : null;
+  if (!hit || !(hit === cand || cand.contains(hit))) {
+    out.unknown.push('the candidate is covered or outside the viewport');
+  }
+  out.indexed_ok = !!(indexed && indexed.isConnected && typeof indexed.tagName === 'string'
+    && indexed.tagName.toLowerCase() === indexedTag);
+  if (out.indexed_ok) {
+    out.inside = indexed !== cand && indexed.contains(cand);
+    out.contains = indexed !== cand && cand.contains(indexed);
+    out.labels_index = cand.tagName === 'LABEL' && cand.control === indexed;
+  }
+  return out;
+}
+"""
+
+_IS_CONNECTED_FN = "function() { return this.isConnected; }"
+
+
+def _backend_id(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _watchdog_selector_map(browser_session) -> Optional[Dict[Any, Any]]:
+    """The map the agent's index came from. Never get_selector_map(): its fallback
+    can differ from the snapshot the index was drawn from (Review Focus 1)."""
+    watchdog = getattr(browser_session, "_dom_watchdog", None)
+    selector_map = getattr(watchdog, "selector_map", None)
+    if isinstance(selector_map, dict) and selector_map:
+        return selector_map
+    return None
+
+
+async def _cdp(cdp_session, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    domain, name = method.split(".", 1)
+    call = getattr(getattr(cdp_session.cdp_client.send, domain), name)
+    return await call(params=params, session_id=cdp_session.session_id)
+
+
+async def _any_disconnected(cdp_session, backend_ids: Iterable[int], group: str) -> bool:
+    """True when any of these nodes is gone or detached. A failed resolve counts as gone."""
+
+    async def connected(backend_id: int) -> bool:
+        try:
+            resolved = await _cdp(
+                cdp_session, "DOM.resolveNode", {"backendNodeId": backend_id, "objectGroup": group}
+            )
+            answer = await _cdp(
+                cdp_session,
+                "Runtime.callFunctionOn",
+                {
+                    "functionDeclaration": _IS_CONNECTED_FN,
+                    "objectId": resolved["object"]["objectId"],
+                    "returnByValue": True,
+                },
+            )
+            return (answer.get("result") or {}).get("value") is True
+        except Exception:
+            return False
+
+    results = await asyncio.gather(*(connected(b) for b in backend_ids))
+    return not all(results)
+
+
+async def read_identity_facts(
+    page,
+    browser_session,
+    element_data: Optional[Dict[str, Any]],
+    candidate_locator: str,
+) -> Optional[ReadIdentityFacts]:
+    """One live read of the facts K v1 decides on. None = the read failed or timed out."""
+    try:
+        return await asyncio.wait_for(
+            _read(page, browser_session, element_data, candidate_locator),
+            timeout=READ_IDENTITY_TIMEOUT_S,
+        )
+    except Exception as e:
+        logger.warning(
+            f"   ⚠️ Read-step identity read failed for '{candidate_locator}': "
+            f"{type(e).__name__}: {e}"
+        )
+        return None
+
+
+async def _read(page, browser_session, element_data, candidate_locator) -> ReadIdentityFacts:
+    indexed_id = _backend_id((element_data or {}).get("backendNodeId"))
+    if indexed_id is None:
+        return ReadIdentityFacts(unknown=("no backend id for the indexed node",))
+    selector_map = _watchdog_selector_map(browser_session)
+    if selector_map is None:
+        return ReadIdentityFacts(unknown=("no selector map",))
+    indexed_entries = [
+        n
+        for n in selector_map.values()
+        if _backend_id(getattr(n, "backend_node_id", None)) == indexed_id
+    ]
+    if not indexed_entries:
+        return ReadIdentityFacts(unknown=("the indexed node is not in the selector map",))
+    target_id = getattr(indexed_entries[0], "target_id", None)
+    same_target = [
+        n for n in selector_map.values() if str(getattr(n, "target_id", None)) == str(target_id)
+    ]
+
+    cdp_session = await browser_session.get_or_create_cdp_session(target_id=target_id, focus=False)
+    name = _GLOBAL_PREFIX + uuid.uuid4().hex
+    group = "bs-read-identity-" + uuid.uuid4().hex[:8]
+    try:
+        await page.locator(candidate_locator).evaluate(
+            "(el, n) => { window[n] = el; }", name, timeout=_PARK_TIMEOUT_MS
+        )
+        parked = await _cdp(
+            cdp_session,
+            "Runtime.evaluate",
+            {"expression": f"window[{name!r}]", "objectGroup": group},
+        )
+        candidate_object = (parked.get("result") or {}).get("objectId")
+        if not candidate_object:
+            return ReadIdentityFacts(
+                unknown=("the candidate is not reachable on the indexed node's target",)
+            )
+        described = await _cdp(cdp_session, "DOM.describeNode", {"objectId": candidate_object})
+        node = described.get("node") or {}
+        candidate_id = _backend_id(node.get("backendNodeId"))
+        candidate_tag = (node.get("nodeName") or "").lower()
+        if candidate_id is None or not candidate_tag:
+            return ReadIdentityFacts(unknown=("the candidate node could not be described",))
+        is_indexed = any(
+            _backend_id(getattr(n, "backend_node_id", None)) == candidate_id for n in same_target
+        )
+
+        indexed_arg: Dict[str, Any] = {"value": None}
+        with contextlib.suppress(Exception):
+            resolved = await _cdp(
+                cdp_session, "DOM.resolveNode", {"backendNodeId": indexed_id, "objectGroup": group}
+            )
+            indexed_arg = {"objectId": resolved["object"]["objectId"]}
+        indexed_tag = ((element_data or {}).get("tagName") or "").lower()
+        answer = await _cdp(
+            cdp_session,
+            "Runtime.callFunctionOn",
+            {
+                "functionDeclaration": _CLAUSES_FN,
+                "objectId": candidate_object,
+                "arguments": [
+                    indexed_arg,
+                    {"value": indexed_tag},
+                    {"value": BROWSER_USE_VIEWPORT_THRESHOLD_PX},
+                ],
+                "returnByValue": True,
+            },
+        )
+        clauses = (answer.get("result") or {}).get("value") or {}
+        unknown = list(clauses.get("unknown") or [])
+
+        same_tag_ids = [
+            b
+            for b in (
+                _backend_id(getattr(n, "backend_node_id", None))
+                for n in same_target
+                if (getattr(n, "node_name", "") or "").lower() == candidate_tag
+            )
+            if b is not None
+        ]
+        if same_tag_ids and await _any_disconnected(cdp_session, same_tag_ids, group):
+            unknown.append(
+                f"a selector-map <{candidate_tag}> is no longer on the page "
+                f"(re-rendered after the map was built)"
+            )
+
+        centre = clauses.get("centre")
+        return ReadIdentityFacts(
+            unknown=tuple(unknown),
+            indexed_ok=bool(clauses.get("indexed_ok")),
+            is_indexed=is_indexed,
+            inside=bool(clauses.get("inside")),
+            contains=bool(clauses.get("contains")),
+            labels_index=bool(clauses.get("labels_index")),
+            candidate_tag=candidate_tag,
+            candidate_centre=(float(centre[0]), float(centre[1])) if centre else None,
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(
+                page.evaluate("(n) => { delete window[n]; }", name), timeout=_CLEANUP_TIMEOUT_S
+            )
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(
+                _cdp(cdp_session, "Runtime.releaseObjectGroup", {"objectGroup": group}),
+                timeout=_CLEANUP_TIMEOUT_S,
+            )

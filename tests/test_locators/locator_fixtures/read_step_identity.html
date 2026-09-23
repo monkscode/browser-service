@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>read-step identity (K v1)</title>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  aside { position: fixed; left: 0; top: 0; width: 200px; }
+  header, main { margin-left: 220px; }
+</style>
+</head>
+<body>
+<!-- u07 shape: the index is the sidebar link, the candidate is the heading -->
+<aside><nav><ul>
+  <li><a id="nav-admin" href="#admin">Admin</a></li>
+  <li><a class="menu-item" href="#dashboard">Dashboard</a></li>
+</ul></nav></aside>
+<header>
+  <h6 class="crumb">Dashboard</h6>
+  <!-- q07 cart shape: indexed cart div, candidate is the page title -->
+  <div id="shopping_cart_container" style="cursor: pointer"><a class="shopping_cart_link" href="#cart">cart</a></div>
+</header>
+<main>
+  <span class="title">Products</span>
+  <!-- mirror: right index, same-text non-indexed wrong candidate -->
+  <button id="export">Export</button> <span class="export-note">Export all rows</span>
+  <!-- reverse: the candidate is itself indexed -->
+  <button id="save">Save</button> <a id="save-link" href="#save">Save</a>
+  <!-- label-for -->
+  <label for="city">City</label> <input id="city">
+  <!-- ancestor (u12): the candidate contains the index -->
+  <div id="flash" role="alert">You logged in <button class="close">Close</button></div>
+  <!-- q08: option inside the indexed select -->
+  <select id="dropdown"><option>Option 1</option><option selected="selected">Option 2</option></select>
+  <!-- freshness guard: an indexed span that the test re-renders -->
+  <span id="badge" class="badge" style="cursor: pointer">Dashboard badge</span>
+  <!-- visibility -->
+  <span class="hidden-dup" style="visibility:hidden">Hidden twin</span>
+  <span class="far-away" style="position:absolute; top:5000px">Far twin</span>
+  <!-- horizontal window: off the right edge, inside +-1000 px -->
+  <span class="off-right" style="position:absolute; left:2400px; top:300px">Right twin</span>
+  <!-- paint order: a node another element covers -->
+  <div style="position:relative; width:300px; height:40px">
+    <span class="covered-twin" style="position:absolute; left:0; top:0">Covered twin</span>
+    <div style="position:absolute; left:0; top:0; width:300px; height:40px; background:#fff">overlay</div>
+  </div>
+  <div id="shadow-host"></div>
+</main>
+<script>
+  const root = document.getElementById('shadow-host').attachShadow({mode: 'open'});
+  root.innerHTML = '<span class="in-shadow">Shadow twin</span>';
+</script>
+</body>
+</html>

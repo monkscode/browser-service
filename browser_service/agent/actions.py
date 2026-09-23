@@ -928,13 +928,17 @@ async def find_unique_locator_action(
                                 else ""
                             )
                             if not _demote_reason:
-                                return await apply_read_target_policy(
+                                _accepted = await apply_read_target_policy(
                                     search_root,
                                     candidate_result,
                                     action,
                                     expected_text,
                                     iframe_context,
                                 )
+                                await _stamp_resolved_tag(
+                                    _accepted, search_root, element_data, iframe_context
+                                )
+                                return _accepted
                             logger.info(
                                 f"   ↪ CANDIDATE DEMOTED: '{final_locator}' — {_demote_reason}; "
                                 f"running the cascade first, candidate kept as last resort "
@@ -1001,7 +1005,7 @@ async def find_unique_locator_action(
                                 )
                                 elem_has_text = bool(_text and _text.strip())
                             collection_stability = classify_locator(final_locator)
-                            return {
+                            _collection_result = {
                                 # element_type LAST-writes 'collection': nlrf
                                 # routes the assembler's FOR-loop block on it
                                 # (tasks._needs_loop). Without it a
@@ -1060,6 +1064,10 @@ async def find_unique_locator_action(
                                     "is_in_iframe": bool(iframe_context),
                                 },
                             }
+                            await _stamp_resolved_tag(
+                                _collection_result, search_root, element_data, iframe_context
+                            )
+                            return _collection_result
                     elif count > 1:
                         logger.info(f"   ⚠️ Candidate locator NOT UNIQUE (matches {count} elements)")
                         logger.info(
@@ -1193,6 +1201,8 @@ async def find_unique_locator_action(
             # not carry one, and inventing it here would corrupt pattern analysis.
             if isinstance(result.get("approach_metrics"), dict):
                 result["approach_metrics"]["duration_ms"] = round(duration_ms, 1)
+            # D v1: after LOCATOR_TIMER, so duration_ms stays comparable to baselines.
+            await _stamp_resolved_tag(result, search_context, element_data, iframe_context)
 
             # Log the result with detailed information
             if result.get("found"):

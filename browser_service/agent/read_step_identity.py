@@ -26,8 +26,8 @@ Plain DOM containment is the whole truth only on a light-DOM page: it stops at
 a shadow boundary, browser-use indexes nodes inside shadow roots (and a host
 too when it has its own click listener, clickable_elements.py:41), and a node
 slotted into a shadow control is not a DOM descendant of it. So K reads UNKNOWN
-whenever the candidate or the indexed node is in, hosts, or sits under a shadow
-root:
+whenever the candidate is in, hosts, or sits under a shadow root, or the indexed
+node is inside one:
 - B1 the candidate is not in its document tree (it sits in a shadow root);
 - B2 the candidate itself hosts an author (open or closed) shadow root;
 - B3 a light-DOM ancestor of the candidate hosts an author shadow root — this

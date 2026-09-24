@@ -7,10 +7,11 @@ wrong evidence. u07: the agent indexed the sidebar "Dashboard" link while its
 candidate named the page's <h6> heading; the reject sent the cascade back to
 the link, and the test passed while verifying the wrong element.
 
-K decides only on light-DOM, main-frame pages. There, the call site may accept
-such a candidate only when one live read proves all five clauses (evaluation
-spec §13.2, amended after the S1 spike, 2026-09-23; clause 1 amended in fix
-round 1; the scope narrowed to light-DOM pages in working session 3):
+K decides only when the candidate and the indexed node both sit in the main
+frame's light DOM, outside every shadow root (B1-B5 below). There, the call site
+may accept such a candidate only when one live read proves all five clauses
+(evaluation spec §13.2, amended after the S1 spike, 2026-09-23; clause 1 amended
+in fix round 1; the scope narrowed in working session 3):
 
 1. the candidate's node is not, and is not inside, the node of any selector-map
    entry other than the indexed one — compared by backend_node_id over the
@@ -22,9 +23,11 @@ round 1; the scope narrowed to light-DOM pages in working session 3):
 5. the indexed node, resolved by its backend id, is connected and keeps its tag.
 
 Plain DOM containment is the whole truth only on a light-DOM page: it stops at
-a shadow boundary, browser-use indexes nodes INSIDE shadow roots (never their
-hosts), and a node slotted into a shadow control is not a DOM descendant of it.
-So K does not decide any shadow shape; each reads UNKNOWN:
+a shadow boundary, browser-use indexes nodes inside shadow roots (and a host
+too when it has its own click listener, clickable_elements.py:41), and a node
+slotted into a shadow control is not a DOM descendant of it. So K reads UNKNOWN
+whenever the candidate or the indexed node is in, hosts, or sits under a shadow
+root:
 - B1 the candidate is not in its document tree (it sits in a shadow root);
 - B2 the candidate itself hosts an author (open or closed) shadow root;
 - B3 a light-DOM ancestor of the candidate hosts an author shadow root — this
@@ -39,6 +42,13 @@ it, or K would switch off for image reads. browser-use 0.13.7 indexes no node
 inside a user-agent root (measured across 18 host kinds); B5 keeps K fail-closed
 should an upgrade start to. A candidate or indexed node in a child frame reads
 UNKNOWN too.
+
+K does not look BELOW the candidate. A candidate that contains another indexed
+node (a light-DOM control, a web component whose shadow root holds one, or a
+child frame that holds one) is not declined for that: no clause covers
+"contains another indexed node", and clause 3 covers only the indexed node. It
+is the same accepted trade-off as a non-indexed candidate unrelated to the
+indexed node (the mirror case in the tests).
 
 Three guards keep clause 1 honest, because "not in the map" has causes other
 than "browser-use judged it not interactive":

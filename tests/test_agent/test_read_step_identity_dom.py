@@ -35,12 +35,13 @@ FIXTURE = (
 )
 
 # Every interactive element on the fixture page — what browser-use would index.
-# Re-measured 2026-09-23 on a real browser-use 0.13.7 session after the F1 web
-# component elements were added (throwaway probe, session scratchpad, never in
-# the worktree). browser-use also indexes the <button> inside #xclosed's CLOSED
-# shadow root, but Playwright cannot select into closed shadow content (0 matches
-# for "#xclosed button"), so that one node is deliberately left out here — this
-# tuple is "every node the fixture-lane tests can address", not the full map.
+# Re-measured 2026-09-24 on a real browser-use 0.13.7 session after the #team
+# <img> was added (throwaway probe, session scratchpad, never in the repo): the
+# map is unchanged at 18 nodes and #team is not in it. browser-use also indexes
+# the <button> inside #xclosed's CLOSED shadow root, but Playwright cannot select
+# into closed shadow content (0 matches for "#xclosed button"), so that one node
+# is deliberately left out here — this tuple is "every node the fixture-lane
+# tests can address", not the full map.
 INDEXED = (
     "#nav-admin",
     "a.menu-item",
@@ -153,6 +154,53 @@ async def _verdict(page, cdp, *, indexed, candidate, map_selectors=INDEXED):
     return facts, read_step_verdict(facts)
 
 
+async def _described(cdp, expression, **params):
+    """DOM.describeNode for the node a JS expression returns (params: depth, pierce)."""
+    found = await cdp.send("Runtime.evaluate", {"expression": expression})
+    described = await cdp.send(
+        "DOM.describeNode", {"objectId": found["result"]["objectId"], **params}
+    )
+    return described["node"]
+
+
+def _first_named(node, name):
+    """Depth-first search of a DOM.describeNode tree (children, shadow roots, frames)."""
+    if node.get("nodeName") == name:
+        return node
+    for key in ("children", "shadowRoots"):
+        for child in node.get(key) or []:
+            found = _first_named(child, name)
+            if found is not None:
+                return found
+    if node.get("contentDocument"):
+        return _first_named(node["contentDocument"], name)
+    return None
+
+
+async def _shadow_root_types(cdp, expression):
+    node = await _described(cdp, expression)
+    return [r.get("shadowRootType") for r in node.get("shadowRoots") or []]
+
+
+async def _light_page_read(page, cdp, body, candidate):
+    """u07 shape on a set_content page: the index is the #nav link, the map holds it
+    plus one unrelated node (#other), so the clause-1 ancestor walk has other ids.
+    Returns (facts, verdict, read seconds, the renderer's answer to 1 + 1 after)."""
+    await page.set_content(f"<!doctype html><html><body style='margin:0'>{body}</body></html>")
+    session, element_data, _ = await _setup(page, cdp, "#nav", map_selectors=("#nav", "#other"))
+    started = time.monotonic()
+    facts = await read_identity_facts(page, session, element_data, candidate)
+    elapsed = time.monotonic() - started
+    alive = await asyncio.wait_for(page.evaluate("() => 1 + 1"), 1.0)
+    return facts, read_step_verdict(facts), elapsed, alive
+
+
+_NAV_AND_OTHER = (
+    '<a id="nav" href="#d" style="display:block;width:200px">Dashboard</a>'
+    '<button id="other">Other</button>'
+)
+
+
 # --- accepts -------------------------------------------------------------
 
 
@@ -181,6 +229,34 @@ async def test_mirror_is_accepted_owner_trade_off():
     async with _page() as (page, cdp):
         _, (accept, why) = await _verdict(
             page, cdp, indexed="#export", candidate="span.export-note"
+        )
+    assert accept is True, why
+
+
+async def test_user_agent_host_candidate_accepts():
+    """R5: Chromium gives <img alt> a user-agent shadow root (the browser's own
+    chrome, never a place an indexed node could live). Counting it as a web
+    component would switch K off for image reads."""
+    async with _page() as (page, cdp):
+        assert await _shadow_root_types(cdp, "document.querySelector('#team')") == ["user-agent"]
+        _, (accept, why) = await _verdict(page, cdp, indexed="a.menu-item", candidate="#team")
+    assert accept is True, why
+
+
+async def test_user_agent_host_ancestor_does_not_block_accept():
+    """R5: the candidate sits inside <details>, which has a user-agent shadow root.
+    Real browser-use indexes both <details> and <summary> (measured), so on the
+    real map clause 1 rejects p.det-text first, as inside another indexed node.
+    The reduced map drops both, to isolate the user-agent exemption of the
+    ancestor shadow-host rule."""
+    async with _page() as (page, cdp):
+        assert await _shadow_root_types(cdp, "document.querySelector('details')") == ["user-agent"]
+        _, (accept, why) = await _verdict(
+            page,
+            cdp,
+            indexed="a.menu-item",
+            candidate="p.det-text",
+            map_selectors=tuple(s for s in INDEXED if s not in ("details", "summary")),
         )
     assert accept is True, why
 
@@ -227,119 +303,180 @@ async def test_candidate_inside_another_indexed_node_rejects_clause_1():
     assert "inside another indexed node" in why
 
 
-async def test_shadow_host_containing_index_rejects_clause_3():
-    """A shadow HOST whose open shadow root holds the indexed button: Node.contains
-    stops at the shadow boundary, so clause 3 must walk parentNode/host to catch it."""
+# --- shadow DOM: K decides only on light-DOM pages, so every shape reads unknown --
+
+_HOSTS = "the candidate hosts a shadow root (web component)"
+_ANCESTOR_HOSTS = "an ancestor of the candidate hosts a shadow root (web component)"
+_INDEXED_IN_SHADOW = "the indexed node is in a shadow root"
+_UA_MAP_NODE = "a selector-map node sits inside a browser-internal (user-agent) shadow root"
+
+
+async def test_shadow_host_holding_the_index_reads_unknown():
+    """A shadow HOST whose open shadow root holds the indexed button. Plain
+    Node.contains stops at the shadow boundary, so K does not decide this shape."""
     async with _page() as (page, cdp):
         facts, (accept, why) = await _verdict(
             page, cdp, indexed="#alert2 button.close", candidate="#alert2"
         )
     assert accept is False
-    assert "clause 3" in why
-    assert facts.contains is True
+    assert why.startswith("unknown")
+    assert "hosts a shadow root" in why
+    assert _HOSTS in facts.unknown
 
 
-async def test_host_of_another_indexed_node_rejects_clause_1():
-    """F1(a): the candidate is a shadow HOST whose shadow root holds a DIFFERENT
-    indexed node (#alert2's shadow Close button, indexed separately from #flash's).
-    browser-use indexes the button inside the shadow root, never its host, so
-    "not in the map" has this fourth cause too."""
+async def test_host_of_another_indexed_node_reads_unknown():
+    """The candidate is a shadow HOST whose shadow root holds a DIFFERENT indexed
+    node (#alert2's shadow Close button, indexed separately from #flash's).
+    browser-use indexes the button inside the shadow root, never its host."""
     async with _page() as (page, cdp):
-        _, (accept, why) = await _verdict(
+        facts, (accept, why) = await _verdict(
             page, cdp, indexed="#flash button.close", candidate="#alert2"
         )
     assert accept is False
-    assert "hosts another indexed node" in why
+    assert "hosts a shadow root" in why
+    assert _HOSTS in facts.unknown
 
 
-# Measured 2026-09-23: real browser-use 0.13.7 indexes BOTH #xbtn's shadow button
-# AND its slotted span (see the re-measured INDEXED tuple above) — the light-DOM
-# fold-into-parent heuristic the reviewer's evidence relied on for a plain
-# <a>/<button> does not apply across this shadow boundary on this fixture. That
-# makes span.xb-lbl itself an indexed node here, which trips clause 1's
-# is_indexed check before the ancestor walk is ever exercised. The clause 1/2
-# ancestor-walk logic this covers is real regardless (the module docstring's own
-# "folded children" note says the omission can happen for OTHER shapes), so these
-# two tests use a reduced map that omits the span — modelling the shape where it
-# is not separately indexed, same as the reviewer's own ad hoc probe fixture.
-_MAP_WITHOUT_SLOTTED_SPAN = tuple(s for s in INDEXED if s != "#xbtn span.xb-lbl")
+async def test_slotted_into_another_indexed_node_reads_unknown():
+    """A span slotted into #xbtn's shadow button, while #save is indexed. On the
+    real map the span is itself indexed (measured); the ancestor host rule must
+    still name the web component, whatever the map holds."""
+    async with _page() as (page, cdp):
+        _, (accept, why) = await _verdict(page, cdp, indexed="#save", candidate="#xbtn span.xb-lbl")
+    assert accept is False
+    assert why.startswith("unknown")
+    assert _ANCESTOR_HOSTS in why
 
 
-async def test_slotted_into_another_indexed_node_rejects_clause_1():
-    """F1(b): a span slotted into #xbtn's shadow button, while #save is indexed —
-    the flat-tree ancestor walk must find the (different) indexed button via
-    assignedSlot, not the host via parentElement."""
+async def test_slotted_into_the_indexed_node_reads_unknown():
+    """The same slotted span, but this time the shadow button ITSELF is the index."""
     async with _page() as (page, cdp):
         _, (accept, why) = await _verdict(
-            page,
-            cdp,
-            indexed="#save",
-            candidate="#xbtn span.xb-lbl",
-            map_selectors=_MAP_WITHOUT_SLOTTED_SPAN,
+            page, cdp, indexed="#xbtn button.inner", candidate="#xbtn span.xb-lbl"
         )
     assert accept is False
-    assert "inside another indexed node" in why
-
-
-async def test_slotted_into_the_indexed_node_rejects_clause_2():
-    """F1(b): the same slotted span, but this time the shadow button ITSELF is the
-    indexed node — clause 2, not clause 1."""
-    async with _page() as (page, cdp):
-        _, (accept, why) = await _verdict(
-            page,
-            cdp,
-            indexed="#xbtn button.inner",
-            candidate="#xbtn span.xb-lbl",
-            map_selectors=_MAP_WITHOUT_SLOTTED_SPAN,
-        )
-    assert accept is False
-    assert "clause 2" in why
+    assert why.startswith("unknown")
+    assert _ANCESTOR_HOSTS in why
 
 
 async def test_slotted_into_a_closed_host_reads_unknown():
-    """F1(c): assignedSlot is null for a slot inside a CLOSED root, so the flat-tree
-    walk cannot see past #xclosed's boundary — it must read unknown, not accept."""
+    """A span in the light DOM of a CLOSED shadow host: DOM.describeNode reports the
+    closed root on the ancestor, so the ancestor host rule catches it."""
     async with _page() as (page, cdp):
         _, (accept, why) = await _verdict(
             page, cdp, indexed="#save", candidate="#xclosed span.xc-lbl"
         )
     assert accept is False
-    assert "closed shadow host" in why
+    assert _ANCESTOR_HOSTS in why
 
 
-async def test_user_agent_shadow_host_does_not_block_accept():
-    """<details> reports a shadowRoots entry (measured: shadowRootType "user-agent",
-    Chromium's own internal implementation of the disclosure triangle) — the F1(a)
-    host check must ignore it, never treat <details> as hosting another indexed
-    node just because it has *a* shadow root. Candidate is <details> itself (the
-    host); DETAILS/SUMMARY are dropped from the map so is_indexed/ancestor checks
-    do not also fire — real browser-use indexes both (measured), which is a
-    separate, correct rejection unrelated to this UA-root guard."""
+async def test_indexed_node_in_a_shadow_root_reads_unknown():
+    """The index lives inside #alert2's open shadow root; the light-DOM heading is
+    unrelated by plain containment, which is not the whole truth across a shadow
+    boundary — K must not accept."""
     async with _page() as (page, cdp):
-        _, (accept, why) = await _verdict(
-            page,
+        facts, (accept, why) = await _verdict(
+            page, cdp, indexed="#alert2 button.close", candidate="h6.crumb"
+        )
+    assert accept is False
+    assert why.startswith("unknown")
+    assert _INDEXED_IN_SHADOW in facts.unknown
+
+
+async def test_host_whose_shadow_holds_an_iframe_reads_unknown():
+    """R2: a host whose OPEN shadow root holds a same-origin iframe with an indexed
+    button. That button is reachable only through the iframe's contentDocument."""
+    async with _page() as (page, cdp):
+        await page.set_content(
+            "<!doctype html><html><body style='margin:0'>"
+            "<a id='nav' href='#d' style='display:block;width:200px'>Dashboard</a>"
+            "<x-w id='w' style='display:block'></x-w>"
+            "<script>document.getElementById('w').attachShadow({mode:'open'}).innerHTML ="
+            ' \'<iframe style="width:300px;height:80px" srcdoc="<button id=b>Go</button>">'
+            "</iframe>';</script></body></html>"
+        )
+        await page.wait_for_timeout(300)
+        host = await _described(cdp, "document.getElementById('w')", depth=-1, pierce=True)
+        iframe = host["shadowRoots"][0]["children"][0]
+        assert iframe["nodeName"] == "IFRAME"
+        button = _first_named(iframe["contentDocument"], "BUTTON")
+        assert button is not None
+        target_id = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
+        nav_id, nav_name = await _node(page, cdp, "#nav")
+        session = _FakeBrowserSession(
             cdp,
-            indexed="a.menu-item",
-            candidate="details",
-            map_selectors=tuple(s for s in INDEXED if s not in ("details", "summary")),
+            target_id,
+            {
+                1: SimpleNamespace(backend_node_id=nav_id, node_name=nav_name, target_id=target_id),
+                2: SimpleNamespace(
+                    backend_node_id=button["backendNodeId"], node_name="BUTTON", target_id=target_id
+                ),
+            },
         )
-    assert accept is True, why
+        facts = await read_identity_facts(
+            page, session, {"tagName": "a", "backendNodeId": nav_id}, "#w"
+        )
+    accept, why = read_step_verdict(facts)
+    assert accept is False
+    assert why.startswith("unknown")
+    assert _HOSTS in facts.unknown
 
 
-async def test_page_js_error_in_ancestor_walk_fails_closed():
-    """F2: a page script that throws inside the ancestor walk must fail the read
-    closed (None), not silently read "not inside" and accept."""
+async def test_closed_indexed_button_alone_in_the_map_reads_unknown():
+    """R3: the index is the button inside #xclosed's CLOSED root and the map holds
+    nothing else, so there are no OTHER indexed ids. The ancestor read must still
+    run, and the indexed node must still read as inside a shadow root."""
     async with _page() as (page, cdp):
-        session, element_data, _ = await _setup(page, cdp, "#save")
-        await page.evaluate(
-            "() => { const d = Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement');"
-            " Object.defineProperty(Element.prototype, 'parentElement', {configurable: true,"
-            " get() { if (this.classList && this.classList.contains('lbl'))"
-            " throw new Error('page broke it'); return d.get.call(this); }}); }"
+        host = await _described(cdp, "document.getElementById('xclosed')", depth=-1, pierce=True)
+        button = host["shadowRoots"][0]["children"][0]
+        assert (host["shadowRoots"][0]["shadowRootType"], button["nodeName"]) == (
+            "closed",
+            "BUTTON",
         )
-        facts = await read_identity_facts(page, session, element_data, "#save-link span.lbl")
-    assert facts is None
-    assert read_step_verdict(facts)[0] is False
+        target_id = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
+        session = _FakeBrowserSession(
+            cdp,
+            target_id,
+            {
+                1: SimpleNamespace(
+                    backend_node_id=button["backendNodeId"], node_name="BUTTON", target_id=target_id
+                )
+            },
+        )
+        facts = await read_identity_facts(
+            page,
+            session,
+            {"tagName": "button", "backendNodeId": button["backendNodeId"]},
+            "#xclosed span.xc-lbl",
+        )
+    accept, why = read_step_verdict(facts)
+    assert accept is False
+    assert why.startswith("unknown")
+    assert _ANCESTOR_HOSTS in facts.unknown
+    assert _INDEXED_IN_SHADOW in facts.unknown
+
+
+async def test_map_node_in_a_user_agent_root_reads_unknown():
+    """B5: browser-use 0.13.7 indexes no node inside a user-agent root (measured),
+    but if an upgrade ever does, plain containment cannot see it — K must decline.
+    The extra map node is the real first node of #city's user-agent root."""
+    async with _page() as (page, cdp):
+        session, element_data, target_id = await _setup(page, cdp, "a.menu-item")
+        city = await _described(cdp, "document.getElementById('city')", depth=-1, pierce=True)
+        ua_root = city["shadowRoots"][0]
+        assert ua_root["shadowRootType"] == "user-agent"
+        internal = ua_root["children"][0]
+        selector_map = session._dom_watchdog.selector_map
+        selector_map[len(selector_map) + 1] = SimpleNamespace(
+            backend_node_id=internal["backendNodeId"],
+            node_name=internal["nodeName"],
+            target_id=target_id,
+            parent_node=SimpleNamespace(shadow_root_type="user-agent", parent_node=None),
+        )
+        facts = await read_identity_facts(page, session, element_data, "h6.crumb")
+    accept, why = read_step_verdict(facts)
+    assert accept is False
+    assert _UA_MAP_NODE in why
 
 
 async def test_indexed_node_in_a_child_frame_reads_unknown():
@@ -463,6 +600,76 @@ async def test_covered_candidate_reads_unknown():
         )
     assert accept is False
     assert "covered" in why
+
+
+_REDEFINE_PARENT_ELEMENT = (
+    "(body) => Object.defineProperty(Node.prototype, 'parentElement',"
+    " {configurable: true, get: new Function(body)})"
+)
+
+
+async def test_ancestor_walk_is_capped():
+    """R1: a parentElement cycle must stop at the walk's own cap, well inside the
+    read's 2 s bound, and leave the renderer answering."""
+    async with _page() as (page, cdp):
+        session, element_data, _ = await _setup(page, cdp, "a.menu-item")
+        await page.evaluate(_REDEFINE_PARENT_ELEMENT, "return this;")
+        started = time.monotonic()
+        facts = await read_identity_facts(page, session, element_data, "h6.crumb")
+        elapsed = time.monotonic() - started
+        alive = await asyncio.wait_for(page.evaluate("() => 1 + 1"), 1.0)
+    assert facts is None
+    assert elapsed < 1.0, f"read took {elapsed:.2f} s"
+    assert alive == 2
+
+
+# --- DOM clobbering: named elements must never hang the renderer ------------
+
+
+async def test_clobbered_document_host_does_not_hang():
+    """<form name="host"> makes document.host that FORM."""
+    async with _page() as (page, cdp):
+        _, (accept, why), elapsed, alive = await _light_page_read(
+            page,
+            cdp,
+            _NAV_AND_OTHER
+            + '<h6 class="crumb">Dashboard</h6><form name="host"><input name="q"></form>',
+            "h6.crumb",
+        )
+    assert accept is True, why
+    assert elapsed < 1.0, f"read took {elapsed:.2f} s"
+    assert alive == 2
+
+
+async def test_clobbered_parent_element_does_not_hang():
+    """A form control named "parentElement" makes form.parentElement that INPUT."""
+    async with _page() as (page, cdp):
+        _, (accept, why), elapsed, alive = await _light_page_read(
+            page,
+            cdp,
+            _NAV_AND_OTHER + '<form><input name="parentElement">'
+            '<span class="crumb" style="display:block;width:200px">Dashboard</span></form>',
+            "span.crumb",
+        )
+    assert accept is True, why
+    assert elapsed < 1.0, f"read took {elapsed:.2f} s"
+    assert alive == 2
+
+
+async def test_clobbered_document_accessors_keep_the_verdict():
+    """Named images make document.documentElement and document.elementFromPoint
+    those IMGs. Read through Document.prototype, the verdict is unchanged."""
+    async with _page() as (page, cdp):
+        _, (accept, why), elapsed, alive = await _light_page_read(
+            page,
+            cdp,
+            _NAV_AND_OTHER + '<h6 class="crumb">Dashboard</h6>'
+            '<img name="documentElement"><img name="elementFromPoint">',
+            "h6.crumb",
+        )
+    assert accept is True, why
+    assert elapsed < 1.0, f"read took {elapsed:.2f} s"
+    assert alive == 2
 
 
 # Busies the page's main thread for 10 s, starting on the next task.

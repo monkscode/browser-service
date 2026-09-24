@@ -602,10 +602,34 @@ async def test_covered_candidate_reads_unknown():
     assert "covered" in why
 
 
+async def test_page_js_error_in_the_clauses_call_fails_the_read():
+    """R6: a page-JS error inside the clauses call comes back as exceptionDetails on
+    an otherwise successful CDP response; it must fail the read, never be read as an
+    empty result (which would read "clause 5" or worse)."""
+    async with _page() as (page, cdp):
+        session, element_data, _ = await _setup(page, cdp, "a.menu-item")
+        await page.evaluate(
+            "() => { Element.prototype.getBoundingClientRect ="
+            " function () { throw new Error('page broke it'); }; }"
+        )
+        facts = await read_identity_facts(page, session, element_data, "h6.crumb")
+    assert facts is None
+
+
 _REDEFINE_PARENT_ELEMENT = (
     "(body) => Object.defineProperty(Node.prototype, 'parentElement',"
     " {configurable: true, get: new Function(body)})"
 )
+
+
+async def test_empty_ancestor_walk_fails_the_read():
+    """R6: an empty ancestor list is legitimate only for <html>; for any other node in
+    the document tree it means the walk broke, not that nothing contains the node."""
+    async with _page() as (page, cdp):
+        session, element_data, _ = await _setup(page, cdp, "a.menu-item")
+        await page.evaluate(_REDEFINE_PARENT_ELEMENT, "return null;")
+        facts = await read_identity_facts(page, session, element_data, "h6.crumb")
+    assert facts is None
 
 
 async def test_ancestor_walk_is_capped():

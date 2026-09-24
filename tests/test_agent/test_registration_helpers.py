@@ -163,6 +163,41 @@ class TestExtractDomNodeAttributes:
         result = self._get_fn()(node)
         assert result["parentClassName"] == ""
 
+    # --- K v1: the indexed node's CDP identity rides along ---
+
+    def test_backend_node_id_carried_when_int(self):
+        fn = self._get_fn()
+        node = MagicMock()
+        node.node_name = "A"
+        node.attributes = {}
+        node.xpath = "html/body/aside/nav/ul/li[8]/a"
+        node.backend_node_id = 230
+        assert fn(node)["backendNodeId"] == 230
+
+    def test_backend_node_id_none_when_not_an_int(self):
+        """A MagicMock attribute is not an id — it must never reach a CDP call."""
+        fn = self._get_fn()
+        node = MagicMock()
+        node.node_name = "A"
+        node.attributes = {}
+        node.xpath = ""
+        assert fn(node)["backendNodeId"] is None
+
+    def test_backend_node_id_none_when_absent(self):
+        fn = self._get_fn()
+        node = MagicMock(spec=[])
+        node.node_name = "SPAN"
+        assert fn(node)["backendNodeId"] is None
+
+    def test_backend_node_id_bool_is_not_an_id(self):
+        fn = self._get_fn()
+        node = MagicMock()
+        node.node_name = "A"
+        node.attributes = {}
+        node.xpath = ""
+        node.backend_node_id = True
+        assert fn(node)["backendNodeId"] is None
+
 
 class TestDomNodeText:
     """Tests for _dom_node_text.

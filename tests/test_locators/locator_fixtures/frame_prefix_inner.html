@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Inner frame — editor</title>
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    .block { margin: 12px; }
+    label, #email-in { display: block; }
+    #email-in { margin-top: 160px; }
+  </style>
+</head>
+<body>
+  <!-- The q09 shape: an editable paragraph with no id. -->
+  <p class="block" contenteditable="true">frame paragraph</p>
+
+  <div class="block"><button id="save-btn" type="button">Save draft</button></div>
+
+  <ul id="chapters" class="block">
+    <li class="chapter-item"><span>Chapter one</span></li>
+    <li class="chapter-item"><span>Chapter two</span></li>
+    <li class="chapter-item"><span>Chapter three</span></li>
+  </ul>
+
+  <!-- Named only through its label, and more than 100px from it: the label's
+       text is unique but is not the element at the input's coordinates. -->
+  <div class="block">
+    <label for="email-in">Work email</label>
+    <input id="email-in" type="text">
+  </div>
+
+  <!-- No role, no label, no id: only the coordinate strategies can address
+       it, and they validate several alternatives before choosing. -->
+  <div class="block"><span class="sync-chip" data-state="ok">Synced</span></div>
+
+  <!-- A session-counter id (volatile) and nothing else to address it by. -->
+  <div class="block"><span id="ext-gen1042">Panel</span></div>
+
+  <!-- An empty input: it cannot perform a read of "buy milk". -->
+  <div class="block"><input id="todo-in" type="text"></div>
+
+  <!-- A frame nested in this frame, carrying the SAME id as the frame that
+       hosts this page: its in-frame locator begins with the host's selector. -->
+  <div class="block">
+    <iframe id="editor-frame" title="nested preview" src="frame_prefix_decoy.html" style="width: 300px; height: 40px"></iframe>
+  </div>
+</body>
+</html>

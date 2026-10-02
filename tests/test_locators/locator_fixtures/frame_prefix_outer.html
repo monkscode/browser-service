@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<head><title>Outer page — frame prefix fixture</title></head>
+<body style="margin: 0">
+  <h1>Editor host</h1>
+  <!-- Same selector as the paragraph inside #editor-frame: a locator that
+       lost its frame, run at page level, lands on THIS element. -->
+  <p contenteditable="true">main page twin</p>
+  <!-- First in document order, so `iframe >> nth=1` is the editor frame. -->
+  <iframe id="decoy-frame" src="frame_prefix_decoy.html" style="width: 700px; height: 60px"></iframe>
+  <iframe id="editor-frame" src="frame_prefix_inner.html" style="width: 700px; height: 640px"></iframe>
+</body>
+</html>

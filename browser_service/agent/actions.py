@@ -27,6 +27,8 @@ Usage:
 """
 
 import asyncio
+import functools
+import inspect
 import logging
 import re
 import time
@@ -35,6 +37,7 @@ from typing import Any, Dict, Optional, Tuple
 from browser_service.agent.read_step_identity import read_identity_facts, read_step_verdict
 from browser_service.locators.action_fit import READ_ACTIONS, check_action_fit
 from browser_service.locators.classifier import classify_element_type
+from browser_service.locators.frame_locator import ensure_frame_on_result, strip_frame
 from browser_service.locators.read_target import apply_read_target_policy
 from browser_service.locators.stability import (
     STABLE,
@@ -148,10 +151,7 @@ async def _stamp_resolved_tag(
     if not result.get("found"):
         metrics["element_tag_source"] = "indexed"
         return
-    locator = result.get("best_locator") or ""
-    prefix = f"{iframe_context} >>> " if iframe_context else ""
-    if prefix and locator.startswith(prefix):
-        locator = locator[len(prefix) :]
+    locator = strip_frame(result.get("best_locator") or "", iframe_context)
     resolved = (
         await _read_resolved_element(search_root, locator, first_only=True) if locator else None
     )
@@ -470,6 +470,36 @@ def _log_failure_result(
     logger.error("\n".join(lines))
 
 
+def _through_frame_gate(action):
+    """Return every result of ``action`` through the frame gate (#35).
+
+    The agent's candidate, its collection candidate, a parked candidate and
+    the coordinate fallback all returned a locator validated INSIDE the frame
+    without the frame, because each exit decided for itself. Wrapping the
+    function covers every return path — the ones that exist and the next one
+    — and every direct caller. The gate only adds a missing frame: a result
+    that already carries it, a not-found result and a call with no frame come
+    back as the same, unchanged object.
+    """
+    signature = inspect.signature(action)
+
+    @functools.wraps(action)
+    async def gated(*args, **kwargs):
+        result = await action(*args, **kwargs)
+        iframe_context = signature.bind(*args, **kwargs).arguments.get("iframe_context")
+        bare = result.get("best_locator") if isinstance(result, dict) else None
+        result = ensure_frame_on_result(result, iframe_context)
+        if isinstance(result, dict) and result.get("best_locator") != bare:
+            logger.info(
+                f"   🖼️ FRAME PREFIX ADDED: '{bare}' → '{result.get('best_locator')}' "
+                f"(signal: frame-prefix-added)"
+            )
+        return result
+
+    return gated
+
+
+@_through_frame_gate
 async def find_unique_locator_action(
     x: float,
     y: float,

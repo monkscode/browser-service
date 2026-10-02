@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head><title>Outer page — interaction-in-frame fixture</title></head>
+<body style="margin: 0">
+  <h1>Host</h1>
+  <!-- Twins of the frame's controls, same selectors: an action that lost
+       its frame lands HERE. The <select> is a Tom Select with the same id as
+       the one in the frame. -->
+  <label><input type="checkbox" name="remember"> Remember me (main page twin)</label>
+  <input type="text" id="email" name="email">
+  <button id="save" type="button" onclick="this.dataset.clicked = 'yes'">Save (main page twin)</button>
+  <select id="pricelist_id"><option value="1">Default</option><option value="2">Gold</option></select>
+
+  <!-- First in document order, so `iframe >> nth=1` is the application frame. -->
+  <iframe id="ad-frame" srcdoc="<p>ad</p>" style="width: 700px; height: 40px"></iframe>
+  <iframe id="app-frame" title="Application" class="app-shell" src="interaction_frame_inner.html" style="width: 700px; height: 520px"></iframe>
+
+  <script>
+    (function () {
+      var select = document.getElementById('pricelist_id');
+      select.tomselect = { setValue: function (v) { select.value = v; } };
+    })();
+  </script>
+</body>
+</html>

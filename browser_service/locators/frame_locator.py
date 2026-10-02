@@ -25,7 +25,7 @@ It lives here once:
 
 Not handled: a frame inside a frame (the detector returns one frame).
 
-Referenced by: locators/smart_locator.py, agent/actions.py
+Referenced by: locators/smart_locator.py, agent/actions.py, agent/registration.py
 Depends on: locators/stability.py
 """
 

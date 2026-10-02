@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Inner frame — one control per fallback action</title>
+  <style>
+    body { margin: 8px; font-family: sans-serif; }
+    .row { margin: 10px 0; }
+    .ts-wrapper { border: 1px solid #ccc; padding: 6px; min-height: 24px; width: 260px; }
+    .ts-hidden-accessible { display: none; }
+    .dropdown-menu { display: none; border: 1px solid #999; width: 200px; }
+    .dropdown-menu.open { display: block; }
+  </style>
+</head>
+<body>
+  <div class="row"><label><input type="checkbox" name="remember"> Remember me</label></div>
+  <div class="row"><label><input type="checkbox" name="newsletter" checked> Newsletter</label></div>
+  <div class="row"><input type="text" id="email" name="email"></div>
+  <div class="row"><button id="save" type="button" onclick="this.dataset.clicked = 'yes'">Save</button></div>
+  <div class="row">
+    <select id="plan" name="plan">
+      <option value="f">Free</option>
+      <option value="p">Pro</option>
+    </select>
+  </div>
+
+  <!-- flatpickr shape: a readonly input carrying the widget instance. -->
+  <div class="row"><input type="text" id="event_date" name="event_date" class="flatpickr-input" readonly></div>
+
+  <!-- Tom Select shape: the hidden <select> is the previous sibling of .ts-wrapper. -->
+  <div class="row tom-select-custom">
+    <select name="pricelist_id" id="pricelist_id" class="tomselected ts-hidden-accessible">
+      <option value="1">Default</option>
+      <option value="2">Gold</option>
+    </select>
+    <div class="ts-wrapper">
+      <div class="ts-control">
+        <input role="combobox" id="pricelist_id-ts-control">
+      </div>
+    </div>
+  </div>
+
+  <!-- A custom dropdown: only the click-to-open tier can select from it. -->
+  <div class="row" id="colour-box">
+    <div id="colour-trigger" onclick="document.getElementById('colour-menu').classList.add('open')">Pick colour</div>
+    <div id="colour-menu" class="dropdown-menu">
+      <div onclick="document.getElementById('colour-trigger').dataset.picked = 'Green'; this.parentElement.classList.remove('open')">Green</div>
+      <div onclick="document.getElementById('colour-trigger').dataset.picked = 'Blue'; this.parentElement.classList.remove('open')">Blue</div>
+    </div>
+  </div>
+
+  <script>
+    // Minimal widget stubs: the structural signals the fallback's JS tiers
+    // read (el._flatpickr.setDate, select.tomselect.setValue), no library.
+    (function () {
+      document.querySelectorAll('input.flatpickr-input').forEach(function (el) {
+        el._flatpickr = {
+          selectedDates: [],
+          setDate: function (v) {
+            this.selectedDates = [new Date(2026, 6, 1)];
+            el.value = String(v);
+          }
+        };
+      });
+      var select = document.getElementById('pricelist_id');
+      select.tomselect = { setValue: function (v) { select.value = v; } };
+    })();
+  </script>
+</body>
+</html>

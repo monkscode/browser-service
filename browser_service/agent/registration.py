@@ -36,6 +36,7 @@ import logging
 import re
 from typing import Optional
 
+from browser_service.locators.frame_locator import strip_frame
 from browser_service.locators.stability import (
     STABLE,
     is_dynamic_text,
@@ -524,13 +525,24 @@ async def _do_interaction_playwright(
     dropdown_framework: str = "",
     select_id: str | None = None,
     datepicker_framework: str = "",
+    iframe_context: str | None = None,
 ):
     """Playwright fallback with layered retry chains.
 
     Each action type runs through multiple strategies in order, stopping at first success.
-    All strategies exhausted → auto_failed. performed_actions.add() only on confirmed success."""
+    All strategies exhausted → auto_failed. performed_actions.add() only on confirmed success.
+
+    iframe_context is the frame the step is in, as the action detected it. A locator
+    found there arrives as ``<frame> >>> <locator>`` — Browser Library's frame piercing,
+    which Playwright reads as "a child of the iframe element". Every strategy therefore
+    works from ``root``: the page, or Playwright's own frame locator — the mechanism the
+    validator uses and the one Browser Library turns ``>>>`` into, so the step is
+    performed on the element the generated test will act on. A frame that cannot be
+    entered fails the strategies; nothing is ever tried at page level, where the inner
+    locator can name a different element."""
     try:
-        loc = active_page.locator(locator_str)
+        root = active_page.frame_locator(iframe_context) if iframe_context else active_page
+        loc = root.locator(strip_frame(locator_str, iframe_context))
         if action in ("input", "type"):
             if not value:
                 return "", "not_applicable"
@@ -682,10 +694,12 @@ async def _do_interaction_playwright(
             if dropdown_framework == "tom-select":
                 # Tier 0 (preferred): direct getElementById when select_id is known.
                 # Bypasses all DOM traversal — most reliable path, zero UI interaction needed.
+                # Evaluated on root's own document element, so `document` is the
+                # frame's document for an element inside an iframe.
                 if select_id:
                     try:
-                        diag = await active_page.evaluate(
-                            """(args) => {
+                        diag = await root.locator(":root").evaluate(
+                            """(_root, args) => {
                                 try {
                                     const select = document.getElementById(args.selectId);
                                     if (!select) return 'no_select';
@@ -799,14 +813,14 @@ async def _do_interaction_playwright(
                 dropdown_opened = True
 
                 # Adaptive wait: block until any dropdown container is actually visible.
-                # Let wait_for_selector raise on timeout — the outer except catches it and
+                # Let the wait raise on timeout — the outer except catches it and
                 # falls through to the final auto_failed return below.
                 container_selectors = (
                     ".ts-dropdown-content, [role='listbox'], "
                     ".select2-results__options, .dropdown-menu"
                 )
-                await active_page.wait_for_selector(
-                    container_selectors, state="visible", timeout=2000
+                await root.locator(container_selectors).first.wait_for(
+                    state="visible", timeout=2000
                 )
 
                 parent = loc.locator("..")
@@ -818,9 +832,9 @@ async def _do_interaction_playwright(
                 ]
 
                 # Exact match — parent-scoped first to avoid multi-dropdown ambiguity,
-                # then page-global as fallback. .first.click() directly — no count() check
+                # then root-wide as fallback. .first.click() directly — no count() check
                 # needed; absent/uninteractable raises and except continues to next strategy.
-                for scope in [parent, active_page]:
+                for scope in [parent, root]:
                     for sel in option_selectors:
                         try:
                             await (
@@ -838,7 +852,7 @@ async def _do_interaction_playwright(
                             continue
 
                 # Partial match — handles minor whitespace/casing differences in option text
-                for scope in [parent, active_page]:
+                for scope in [parent, root]:
                     for sel in option_selectors:
                         try:
                             await scope.locator(sel).get_by_text(value).first.click(timeout=1500)
@@ -934,6 +948,7 @@ async def _do_interaction(
     dropdown_framework: str = "",
     select_id: str | None = None,
     datepicker_framework: str = "",
+    iframe_context: str | None = None,
 ):
     """Orchestrate the interaction for one element — event path first, Playwright fallback second.
 
@@ -1016,6 +1031,7 @@ async def _do_interaction(
         dropdown_framework=dropdown_framework,
         select_id=select_id,
         datepicker_framework=datepicker_framework,
+        iframe_context=iframe_context,
     )
     if action in ("click", "submit", "select") and status == "auto_ok":
         await _wait_for_page_stability(active_page)
@@ -1818,6 +1834,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         dropdown_framework=result.get("dropdown_framework") or "",
                         select_id=result.get("select_id") or None,
                         datepicker_framework=result.get("datepicker_framework") or "",
+                        iframe_context=iframe_context,
                     )
                     result["interaction_status"] = interaction_status
                     _idx = params.element_index

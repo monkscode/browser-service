@@ -338,18 +338,28 @@ class TestPerformedActionsIsolation:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _page_with_document_root():
+    """A mock page whose ``locator(":root")`` is a different object from the
+    element locator, so the two evaluate calls can be told apart."""
+    mock_page = MagicMock()
+    mock_root = MagicMock()
+    mock_loc = MagicMock()
+    mock_page.locator.side_effect = lambda selector: mock_root if selector == ":root" else mock_loc
+    return mock_page, mock_root, mock_loc
+
+
 class TestTomSelectTier0SelectId:
     """When select_id is provided, Tier 0 (getElementById) must succeed without touching loc.evaluate."""
 
     async def test_tier0_select_id_succeeds(self, performed_actions):
         _, _do_interaction_playwright = _import_helpers()
 
-        mock_page = MagicMock()
-        mock_loc = MagicMock()
-        mock_page.locator.return_value = mock_loc
+        mock_page, mock_root, mock_loc = _page_with_document_root()
 
-        # page.evaluate is async — JS returns "ok" on success (string, not bool)
-        mock_page.evaluate = AsyncMock(return_value="ok")
+        # The getElementById tier evaluates on the document's root element (so that
+        # inside an iframe it reads the frame's document) — JS returns "ok" on
+        # success (string, not bool)
+        mock_root.evaluate = AsyncMock(return_value="ok")
         # loc.evaluate must NOT be called when select_id succeeds
         mock_loc.evaluate = AsyncMock(return_value="ok")
 
@@ -366,8 +376,8 @@ class TestTomSelectTier0SelectId:
 
         assert status == "auto_ok"
         assert "AUTO-SELECT" in note
-        # page.evaluate called for getElementById tier; loc.evaluate must not be called
-        mock_page.evaluate.assert_awaited_once()
+        # document-root evaluate called for getElementById tier; loc.evaluate must not be called
+        mock_root.evaluate.assert_awaited_once()
         mock_loc.evaluate.assert_not_awaited()
         assert "elem_1" in performed_actions
 
@@ -375,12 +385,10 @@ class TestTomSelectTier0SelectId:
         """If getElementById JS returns False (option not found), fall through to Tier 0b."""
         _, _do_interaction_playwright = _import_helpers()
 
-        mock_page = MagicMock()
-        mock_loc = MagicMock()
-        mock_page.locator.return_value = mock_loc
+        mock_page, mock_root, mock_loc = _page_with_document_root()
 
         # Tier 0 diagnostic: option not found in ts.options
-        mock_page.evaluate = AsyncMock(return_value="no_opt")
+        mock_root.evaluate = AsyncMock(return_value="no_opt")
         # Tier 0b succeeds via locator-based traversal — JS returns "ok"
         mock_loc.evaluate = AsyncMock(return_value="ok")
 
@@ -396,7 +404,7 @@ class TestTomSelectTier0SelectId:
         )
 
         assert status == "auto_ok"
-        mock_page.evaluate.assert_awaited_once()
+        mock_root.evaluate.assert_awaited_once()
         mock_loc.evaluate.assert_awaited_once()
         assert "elem_1" in performed_actions
 

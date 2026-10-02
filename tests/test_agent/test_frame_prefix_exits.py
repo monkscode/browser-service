@@ -306,6 +306,26 @@ async def test_candidate_in_an_ordinal_frame_is_positional(page):
     assert [entry["stability"] for entry in out["all_locators"]] == ["positional"]
 
 
+async def test_nested_frame_with_the_hosts_selector_still_gets_the_frame_hop(page):
+    """The frame hosts a nested <iframe> with its own id. That element's
+    in-frame locator IS the host's selector, so "starts with the frame text"
+    would read it as already framed and ship it bare — and at page level the
+    bare string is the HOST frame, the wrong element."""
+    out = await _in_frame(
+        page,
+        FRAME,
+        indexed=True,
+        element_description="the nested preview frame",
+        candidate_locator=FRAME,
+    )
+    assert out["found"] is True, out.get("error")
+    assert _approach(out) == "actions_candidate"
+    assert out["best_locator"] == f"{PREFIX}{FRAME}"
+    inner = strip_frame(out["best_locator"], FRAME)
+    nested = page.frame_locator(FRAME).locator(inner)
+    assert await nested.get_attribute("title") == "nested preview"
+
+
 # ---------------------------------------------------------------------------
 # Control: with no frame, nothing is added
 # ---------------------------------------------------------------------------

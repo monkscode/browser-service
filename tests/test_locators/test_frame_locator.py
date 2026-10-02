@@ -47,6 +47,23 @@ def test_add_frame_is_idempotent():
     assert add_frame(once, FRAME) == once
 
 
+@pytest.mark.parametrize(
+    "frame, inner",
+    [
+        pytest.param("iframe.editor", "iframe.editor-preview", id="class-prefix"),
+        pytest.param(FRAME, FRAME, id="same-selector-nested"),
+        pytest.param(ORDINAL_FRAME, "iframe >> nth=10", id="ordinal-prefix"),
+        pytest.param(FRAME, f"{FRAME} >> p", id="chained-not-pierced"),
+    ],
+)
+def test_add_frame_frames_a_locator_that_only_starts_with_the_frame_text(frame, inner):
+    """An in-frame locator can BEGIN with the frame's own text — an <iframe>
+    nested inside the frame. Only the full hop, `<frame> >>> `, means the
+    locator already carries its frame."""
+    assert add_frame(inner, frame) == f"{frame} >>> {inner}"
+    assert strip_frame(add_frame(inner, frame), frame) == inner
+
+
 def test_strip_frame_removes_the_frame_hop():
     assert strip_frame(f"{FRAME} >>> #save-btn", FRAME) == "#save-btn"
 
@@ -147,6 +164,17 @@ def test_gate_adds_the_frame_to_a_bare_result():
     assert out["best_locator"] == f"{FRAME} >>> #save-btn"
     assert [e for e in out["all_locators"] if not e["locator"].startswith(f"{FRAME} >>> ")] == []
     assert out["iframe_context"] == FRAME
+
+
+def test_gate_adds_the_frame_to_a_result_that_only_starts_with_the_frame_text():
+    result = {
+        "found": True,
+        "best_locator": "iframe.editor-preview",
+        "all_locators": [{"locator": "iframe.editor-preview", "stability": "stable"}],
+    }
+    out = ensure_frame_on_result(result, "iframe.editor")
+    assert out["best_locator"] == "iframe.editor >>> iframe.editor-preview"
+    assert out["all_locators"][0]["locator"] == "iframe.editor >>> iframe.editor-preview"
 
 
 def test_gate_prefixes_a_bare_alternative_of_a_prefixed_best():

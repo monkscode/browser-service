@@ -37,9 +37,21 @@ from browser_service.locators.stability import POSITIONAL, is_positional_locator
 FRAME_SEPARATOR = " >>> "
 
 
+def _carries_frame(locator: str, iframe_context: str) -> bool:
+    """True when ``locator`` starts with the full hop, ``<frame> >>> ``.
+
+    Starting with the frame's text is not enough: an <iframe> nested in the
+    frame can have an in-frame locator that begins with — or equals — the
+    host frame's own selector (``iframe.editor-preview`` inside
+    ``iframe.editor``). Read as "already framed", it would ship bare and
+    resolve, at page level, to the host frame.
+    """
+    return locator.startswith(f"{iframe_context}{FRAME_SEPARATOR}")
+
+
 def add_frame(locator: str, iframe_context: Optional[str]) -> str:
     """``locator`` addressed through ``iframe_context``; idempotent."""
-    if iframe_context and not locator.startswith(iframe_context):
+    if iframe_context and not _carries_frame(locator, iframe_context):
         return f"{iframe_context}{FRAME_SEPARATOR}{locator}"
     return locator
 
@@ -47,9 +59,8 @@ def add_frame(locator: str, iframe_context: Optional[str]) -> str:
 def strip_frame(locator: str, iframe_context: Optional[str]) -> str:
     """``locator`` without its ``iframe_context`` hop — the form a
     ``page.frame_locator(iframe_context)`` search root can resolve."""
-    prefix = f"{iframe_context}{FRAME_SEPARATOR}" if iframe_context else ""
-    if prefix and locator.startswith(prefix):
-        return locator[len(prefix) :]
+    if iframe_context and _carries_frame(locator, iframe_context):
+        return locator[len(iframe_context) + len(FRAME_SEPARATOR) :]
     return locator
 
 
@@ -105,7 +116,7 @@ def ensure_frame_on_result(result: Any, iframe_context: Optional[str]) -> Any:
         return result
 
     locators = [result.get("best_locator")] + [e.get("locator") for e in _entries(result)]
-    if all(loc.startswith(iframe_context) for loc in locators if isinstance(loc, str) and loc):
+    if all(_carries_frame(loc, iframe_context) for loc in locators if isinstance(loc, str) and loc):
         return result
 
     return apply_frame_to_result(result, iframe_context)

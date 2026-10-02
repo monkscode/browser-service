@@ -37,5 +37,11 @@
 
   <!-- An empty input: it cannot perform a read of "buy milk". -->
   <div class="block"><input id="todo-in" type="text"></div>
+
+  <!-- A frame nested in this frame, carrying the SAME id as the frame that
+       hosts this page: its in-frame locator begins with the host's selector. -->
+  <div class="block">
+    <iframe id="editor-frame" title="nested preview" src="frame_prefix_decoy.html" style="width: 300px; height: 40px"></iframe>
+  </div>
 </body>
 </html>

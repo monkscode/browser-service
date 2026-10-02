@@ -28,8 +28,9 @@
     <input id="email-in" type="text">
   </div>
 
-  <!-- No role, no label: only the coordinate strategies can address it. -->
-  <div class="block"><span id="sync-chip" class="chip">Synced</span></div>
+  <!-- No role, no label, no id: only the coordinate strategies can address
+       it, and they validate several alternatives before choosing. -->
+  <div class="block"><span class="sync-chip" data-state="ok">Synced</span></div>
 
   <!-- A session-counter id (volatile) and nothing else to address it by. -->
   <div class="block"><span id="ext-gen1042">Panel</span></div>

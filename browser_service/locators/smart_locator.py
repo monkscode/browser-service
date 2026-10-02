@@ -12,6 +12,7 @@ import re
 from typing import Any, Optional
 
 from browser_service.locators.action_fit import check_action_fit
+from browser_service.locators.frame_locator import add_frame, apply_frame_to_result
 from browser_service.locators.stability import (
     POSITIONAL,
     STABLE,
@@ -1138,7 +1139,7 @@ def _classify_result_stability(
     classify_locator can't tell it from a genuine nth disambiguation
     (which never sets row_anchored). An ordinal iframe hop still makes
     the whole composite positional, exactly as
-    ``_apply_iframe_prefix_to_result`` rules for STEP-0 results.
+    ``frame_locator.apply_frame_to_result`` rules for STEP-0 results.
     Non-anchored results classify the finished locator (iframe prefix
     included when present, so a positional hop is caught there too).
     """
@@ -1680,11 +1681,6 @@ async def _find_element_by_playwright_role(
     logger.info("   🎯 PLAYWRIGHT ROLE: Trying native Playwright accessibility APIs")
     logger.info(f"      Text: '{text[:40]}...' | Description: '{desc_lower[:40]}...'")
 
-    def apply_iframe_prefix(locator: str) -> str:
-        if iframe_context and not locator.startswith(iframe_context):
-            return f"{iframe_context} >>> {locator}"
-        return locator
-
     # Map description keywords to likely roles
     role_hints = []
     if any(kw in desc_lower for kw in ["button", "submit", "click", "press"]):
@@ -1735,7 +1731,7 @@ async def _find_element_by_playwright_role(
                 if count == 1:
                     # Convert to string locator for Robot Framework compatibility
                     locator_str = f'role={role}[name="{text}"]'
-                    locator_str = apply_iframe_prefix(locator_str)
+                    locator_str = add_frame(locator_str, iframe_context)
 
                     logger.info(f"   ✅ PLAYWRIGHT ROLE SUCCESS: {locator_str}")
                     return {
@@ -1758,7 +1754,7 @@ async def _find_element_by_playwright_role(
 
             if count == 1:
                 locator_str = f'[aria-label="{text}"]'  # Closest RF equivalent
-                locator_str = apply_iframe_prefix(locator_str)
+                locator_str = add_frame(locator_str, iframe_context)
 
                 logger.info(f"   ✅ PLAYWRIGHT LABEL SUCCESS: {locator_str}")
                 return {
@@ -1781,7 +1777,7 @@ async def _find_element_by_playwright_role(
 
             if count == 1:
                 locator_str = f'[placeholder="{text}"]'
-                locator_str = apply_iframe_prefix(locator_str)
+                locator_str = add_frame(locator_str, iframe_context)
 
                 logger.info(f"   ✅ PLAYWRIGHT PLACEHOLDER SUCCESS: {locator_str}")
                 return {
@@ -1805,7 +1801,7 @@ async def _find_element_by_playwright_role(
 
                 if count == 1:
                     locator_str = f'role={role}[name="{text}"]'
-                    locator_str = apply_iframe_prefix(locator_str)
+                    locator_str = add_frame(locator_str, iframe_context)
 
                     logger.info(f"   ✅ PLAYWRIGHT ROLE (partial) SUCCESS: {locator_str}")
                     return {
@@ -1828,7 +1824,7 @@ async def _find_element_by_playwright_role(
 
             if count == 1:
                 locator_str = f'[alt="{text}"]'
-                locator_str = apply_iframe_prefix(locator_str)
+                locator_str = add_frame(locator_str, iframe_context)
 
                 logger.info(f"   ✅ PLAYWRIGHT ALT TEXT SUCCESS: {locator_str}")
                 return {
@@ -1851,7 +1847,7 @@ async def _find_element_by_playwright_role(
 
             if count == 1:
                 locator_str = f'[title="{text}"]'
-                locator_str = apply_iframe_prefix(locator_str)
+                locator_str = add_frame(locator_str, iframe_context)
 
                 logger.info(f"   ✅ PLAYWRIGHT TITLE SUCCESS: {locator_str}")
                 return {
@@ -1912,11 +1908,6 @@ async def _find_element_via_accessibility_tree(
 
     logger.info(f"   🌳 STEP 2.5c: Searching via Playwright native APIs for '{expected_text}'")
 
-    def apply_iframe_prefix(locator: str) -> str:
-        if iframe_context and not locator.startswith(iframe_context):
-            return f"{iframe_context} >>> {locator}"
-        return locator
-
     # Derive role hints from description
     desc_lower = element_description.lower() if element_description else ""
     # q05 guard (ii): a description that names a field/input must never
@@ -1956,7 +1947,7 @@ async def _find_element_via_accessibility_tree(
                 if count == 1:
                     safe_name = expected_text.replace('"', '\\"')
                     locator_str = f'role={role}[name="{safe_name}"]'
-                    locator_str = apply_iframe_prefix(locator_str)
+                    locator_str = add_frame(locator_str, iframe_context)
 
                     logger.info(f"   ✅ NATIVE API SUCCESS (exact): {locator_str}")
                     return {
@@ -1976,7 +1967,7 @@ async def _find_element_via_accessibility_tree(
                 if count == 1:
                     safe_name = expected_text.replace('"', '\\"')
                     locator_str = f'role={role}[name="{safe_name}"]'
-                    locator_str = apply_iframe_prefix(locator_str)
+                    locator_str = add_frame(locator_str, iframe_context)
 
                     logger.info(f"   ✅ NATIVE API SUCCESS (partial): {locator_str}")
                     return {
@@ -1996,7 +1987,7 @@ async def _find_element_via_accessibility_tree(
                 if count == 1:
                     safe_name = expected_text.replace('"', '\\"')
                     locator_str = f'role={role}[name="{safe_name}"]'
-                    locator_str = apply_iframe_prefix(locator_str)
+                    locator_str = add_frame(locator_str, iframe_context)
 
                     logger.info(f"   ✅ NATIVE API SUCCESS (regex): {locator_str}")
                     return {
@@ -2046,7 +2037,7 @@ async def _find_element_via_accessibility_tree(
             ):
                 # Get the text locator string
                 locator_str = f'text="{expected_text}"'
-                locator_str = apply_iframe_prefix(locator_str)
+                locator_str = add_frame(locator_str, iframe_context)
 
                 logger.info(f"   ✅ NATIVE TEXT SUCCESS: {locator_str}")
                 return {
@@ -2069,7 +2060,7 @@ async def _find_element_via_accessibility_tree(
                 not is_field_description or await _text_match_is_form_control(locator_obj)
             ):
                 locator_str = f'text="{expected_text}"'
-                locator_str = apply_iframe_prefix(locator_str)
+                locator_str = add_frame(locator_str, iframe_context)
 
                 logger.info(f"   ✅ NATIVE TEXT (partial) SUCCESS: {locator_str}")
                 return {
@@ -2109,7 +2100,7 @@ async def _find_element_via_accessibility_tree(
                     candidates.append(f'{tag}[name="{safe}"]')
                 for resolved in candidates:
                     if await page.locator(resolved).count() == 1:
-                        locator_str = apply_iframe_prefix(resolved)
+                        locator_str = add_frame(resolved, iframe_context)
                         logger.info(
                             f"   ✅ NATIVE LABEL SUCCESS: {locator_str} "
                             f"(signal: label-resolved-to-control)"
@@ -2471,11 +2462,6 @@ async def _find_element_via_accessibility(
     ctx = search_context if search_context is not None else page
     desc_lower = element_description.lower() if element_description else ""
 
-    def apply_iframe_prefix(locator: str) -> str:
-        if iframe_context and not locator.startswith(iframe_context):
-            return f"{iframe_context} >>> {locator}"
-        return locator
-
     # === STRATEGY 2.5a: COORDINATE-INDEPENDENT (Playwright Native APIs) ===
     # Try this FIRST - uses getByRole, getByLabel, etc. without coordinates
     # This is the Microsoft-recommended approach for accessibility
@@ -2504,7 +2490,7 @@ async def _find_element_via_accessibility(
         table_result = await _find_table_via_accessibility(ctx, x, y, expected_text)
 
         if table_result:
-            table_result["locator"] = apply_iframe_prefix(table_result["locator"])
+            table_result["locator"] = add_frame(table_result["locator"], iframe_context)
             logger.info(f"   ✅ ACCESSIBILITY TABLE: {table_result['locator']}")
             return table_result
 
@@ -2616,7 +2602,7 @@ async def _find_element_via_accessibility(
                 return tree_result
             return None
 
-        locator = apply_iframe_prefix(locator)
+        locator = add_frame(locator, iframe_context)
 
         logger.info(f"   ✅ ACCESSIBILITY SUCCESS: {locator} ({count} matches)")
 
@@ -4117,44 +4103,6 @@ async def find_unique_locator_at_coordinates(
     if search_context is None:
         search_context = page
 
-    # Helper function to create composite locator for iframe elements
-    def _make_composite_locator(locator: str) -> str:
-        """Prefix locator with iframe context if element is inside iframe."""
-        if iframe_context and not locator.startswith(iframe_context):
-            return f"{iframe_context} >>> {locator}"
-        return locator
-
-    # Helper function to apply iframe prefix to entire result
-    def _apply_iframe_prefix_to_result(result: dict) -> dict:
-        """Apply iframe prefix to best_locator and all entries in all_locators."""
-        if not iframe_context:
-            return result
-
-        # Apply to best_locator
-        if result.get("best_locator"):
-            result["best_locator"] = _make_composite_locator(result["best_locator"])
-
-        # Apply to ALL locators in all_locators array
-        for loc in result.get("all_locators", []):
-            if loc.get("locator") and not loc["locator"].startswith(iframe_context):
-                loc["locator"] = _make_composite_locator(loc["locator"])
-
-        # An ordinal iframe hop (iframe >> nth=N >>> ...) encodes DOM order:
-        # the whole composite is positional even when the inner locator is
-        # stable (B2). Row-anchored results are exempt from the whole-string
-        # check — their >> nth=0 is the containment collapse (structural,
-        # parent-first document order); for those only the hop itself can
-        # make the composite positional.
-        best = result.get("best_locator", "")
-        positional_scope = iframe_context if result.get("row_anchored") else best
-        if best and is_positional_locator(positional_scope):
-            result["stability"] = POSITIONAL
-            for loc in result.get("all_locators", []):
-                loc["stability"] = POSITIONAL
-
-        result["iframe_context"] = iframe_context
-        return result
-
     # ========================================
     # PRE-CHECK: Reset element_data if it's the iframe container
     # ========================================
@@ -4230,7 +4178,7 @@ async def find_unique_locator_at_coordinates(
                 "success": True,
             }
             # Add iframe prefix to best_locator AND all_locators
-            return _apply_iframe_prefix_to_result(result)
+            return apply_frame_to_result(result, iframe_context)
     # ========================================
     # STEP 0.5: Collection detection (hybrid: is_collection flag + keyword fallback)
     # ========================================
@@ -4269,7 +4217,7 @@ async def find_unique_locator_at_coordinates(
 
                 # Apply iframe prefix if needed
                 if iframe_context:
-                    locator = _make_composite_locator(locator)
+                    locator = add_frame(locator, iframe_context)
 
                 collection_stability = classify_locator(locator)
                 return {
@@ -4374,7 +4322,7 @@ async def find_unique_locator_at_coordinates(
 
             # Add iframe prefix if needed
             if iframe_context:
-                text_locator = _make_composite_locator(text_locator)
+                text_locator = add_frame(text_locator, iframe_context)
 
             logger.info(
                 f"✅ TEXT-FIRST locator found: {text_locator}"
@@ -4488,7 +4436,7 @@ async def find_unique_locator_at_coordinates(
             semantic_locator = semantic_result["locator"]
             # Add iframe prefix if needed
             if iframe_context:
-                semantic_locator = _make_composite_locator(semantic_locator)
+                semantic_locator = add_frame(semantic_locator, iframe_context)
 
             # If expected_text provided, validate that we found the right element
             semantic_match = True
@@ -4664,7 +4612,7 @@ async def find_unique_locator_at_coordinates(
         logger.info(f"✅ ACCESSIBILITY FALLBACK SUCCESS: {locator}")
 
         accessibility_stability = classify_locator(locator)
-        return _apply_iframe_prefix_to_result(
+        return apply_frame_to_result(
             {
                 # CRITICAL: workflow.py extraction requires these fields
                 "element_id": element_id,
@@ -4719,7 +4667,8 @@ async def find_unique_locator_at_coordinates(
                     "fallback_depth": 6,  # Accessibility fallback
                     "success": True,
                 },
-            }
+            },
+            iframe_context,
         )
 
     else:

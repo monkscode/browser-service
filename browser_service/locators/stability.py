@@ -99,6 +99,18 @@ _HEX_HASH_RE = re.compile(r"(?=[0-9a-fA-F]*\d)[0-9a-fA-F]{16,}$")
 # no \D and never matches — that is the narrowed digit rule.
 _DIGIT_SUFFIX_RE = re.compile(r".*\D\d{4,}$")
 
+# Attribute NAMES generated per build: Vue's scoped-style attribute
+# data-v-<8 hex> is a hash of the component and changes when the component
+# changes (vuejs.org 2026-10-04: a child component's root carries its
+# parent's hash and its own).
+_VOLATILE_ATTR_NAME_RE = re.compile(r"data-v-[0-9a-f]{8}")
+
+
+def is_volatile_attr_name(name: str) -> bool:
+    """True for an attribute NAME a build generates (Vue's scoped data-v-<8 hex>)."""
+    return bool(_VOLATILE_ATTR_NAME_RE.fullmatch(name or ""))
+
+
 # --- positional locator shapes -------------------------------------------
 _NTH_ENGINE_RE = re.compile(r">>\s*nth=")  # Playwright nth engine
 _NTH_CSS_RE = re.compile(r":nth-(?:child|of-type)\(")  # CSS structural

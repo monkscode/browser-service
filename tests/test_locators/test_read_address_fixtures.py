@@ -2,6 +2,7 @@
 #31 read-address rule on real Chromium (local HTML): the structural address of the element the agent pointed at — no displayed value, exactly one match, the same node — and the shapes R1–R4 of the spec.
 """
 
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -300,3 +301,108 @@ async def test_flow_shadow_root_keeps_todays_locator(page, action_fit_on):
     )
     assert result["found"] is True
     assert result["best_locator"] == 'text="Shadow text"'
+
+
+# ---- Edge cases: direct text, a confirming ancestor, CSS-hostile and volatile tokens -------------
+
+EDGE = (
+    (Path(__file__).parent / "locator_fixtures" / "read_address_edge_cases.html").resolve().as_uri()
+)
+
+
+@pytest.fixture
+async def edge():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page_obj = await (
+            await browser.new_context(viewport={"width": 1280, "height": 900})
+        ).new_page()
+        await page_obj.goto(EDGE, wait_until="domcontentloaded")
+        try:
+            yield page_obj
+        finally:
+            await browser.close()
+
+
+async def test_flash_with_a_close_link_is_confirmed_by_its_direct_text(edge):
+    """the-internet /secure: the flash shows the message plus a close-link ×; its direct text is the message."""
+    observed = "You logged into a secure area!"
+    verdict = await resolve_read_address(edge, observed, await _element_data(edge, "#flash"), None)
+    assert verdict["source"] == "pointed element"
+    await _assert_rule(edge, verdict, "#flash", observed)
+
+
+async def test_point_on_inline_markup_confirms_the_heading(edge):
+    """The vision point lands on the <b> inside the heading; the heading, its parent, confirms."""
+    verdict = await resolve_read_address(edge, "Welcome John", None, await _center(edge, "#who"))
+    assert verdict["source"] == "screen point"
+    await _assert_rule(edge, verdict, "h1.greet", "Welcome John")
+
+
+async def test_point_on_the_required_star_confirms_the_label(edge):
+    """The vision point lands on the required-field star inside the label; the label confirms."""
+    verdict = await resolve_read_address(edge, "Email *", None, await _center(edge, ".req"))
+    assert verdict["source"] == "screen point"
+    await _assert_rule(edge, verdict, "label.lbl", "Email *")
+
+
+async def test_sort_select_and_an_unrelated_point_stay_unconfirmed(edge):
+    """The direct text and the ancestor walk must not widen into a wrong accept: saucedemo's sort select, a point on a price."""
+    verdict = await resolve_read_address(
+        edge,
+        "Products",
+        await _element_data(edge, "select.product_sort_container"),
+        await _center(edge, ".inventory_item_price"),
+    )
+    assert "unconfirmed" in verdict, verdict
+    assert "name (a to z)" in verdict["unconfirmed"].lower()
+    assert "$29.99" in verdict["unconfirmed"]
+
+
+@pytest.mark.parametrize(
+    "target, observed",
+    [("[class~='md:text-lg']", "Total: 42"), ("[class~='w-1/2']", "Half width")],
+)
+async def test_tailwind_classes_get_no_backslash(edge, target, observed):
+    """Robot Framework reads a CSS escape's backslash as its own escape: such a class is written as a quoted attribute."""
+    verdict = await resolve_read_address(edge, observed, await _element_data(edge, target), None)
+    assert "\\" not in verdict["locator"], verdict["locator"]
+    await _assert_rule(edge, verdict, target, observed)
+
+
+async def test_vue_scoped_hash_is_not_a_card_mark(edge):
+    """data-v-<hash> sits on the grid, every card and every node inside a card — not a card mark."""
+    target = ".card >> nth=1 >> h3"
+    verdict = await resolve_read_address(edge, "Beta", await _element_data(edge, target), None)
+    assert verdict["locator"].startswith("div.card >> nth=1 >> "), verdict["locator"]
+    await _assert_rule(edge, verdict, target, "Beta")
+
+
+async def test_volatile_container_id_is_walked_past(edge):
+    """Rows inside <div id="ember55"> plus one row elsewhere — a card path, not an xpath."""
+    target = "#ember55 .row >> nth=1 >> span"
+    verdict = await resolve_read_address(edge, "Two", await _element_data(edge, target), None)
+    assert verdict["kind"] == "card-path", verdict
+    assert "ember55" not in verdict["locator"]
+    await _assert_rule(edge, verdict, target, "Two")
+
+
+@pytest.mark.parametrize(
+    "anchor, observed",
+    [("user.name", "Alice"), ("1st", "Bob"), ("form:main", "Carol"), ("-side", "Dan")],
+)
+async def test_anchor_id_that_needs_css_escaping(edge, anchor, observed):
+    """An anchor id CSS.escape would escape, or one NLRF would not prefix with css= (`#-side`): no backslash, no bare `#` + non-letter."""
+    target = f'[id="{anchor}"] span.val'
+    verdict = await resolve_read_address(edge, observed, await _element_data(edge, target), None)
+    assert "\\" not in verdict["locator"], verdict["locator"]
+    assert not re.match(r"#[^A-Za-z_]", verdict["locator"]), verdict["locator"]
+    await _assert_rule(edge, verdict, target, observed)
+
+
+async def test_vue_child_component_root_hash_is_not_a_card_mark(edge):
+    """A child component's root carries its parent's data-v hash and its own (vuejs.org sponsors)."""
+    target = ".spsr-container.platinum a.spsr-item >> nth=1"
+    verdict = await resolve_read_address(edge, "Plat Two", await _element_data(edge, target), None)
+    assert "data-v-" not in verdict["locator"], verdict["locator"]
+    await _assert_rule(edge, verdict, target, "Plat Two")

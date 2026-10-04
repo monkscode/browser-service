@@ -9,11 +9,17 @@ somewhere on the page, and it breaks on the next run when the data changes
 When the chosen read locator carries the observed text (any displayed-text
 form, any length), the address is rebuilt from what the agent POINTED at —
 the indexed element, then the element under its vision point — never from the
-text. The element must show the observed text in one of its own texts; its
-address is the first structural candidate (stable id, test id, repeated
-container + position + shortest inner selector, class, anchored short path,
-then the xpath fallbacks) that is stable, value-free, matches once and is the
-same node, with Playwright's `>> visible=true` filter for a hidden twin.
+text. The element must show the observed text in one of its own texts, its
+direct text included (a close link or a required-field star inside it does not
+count); when the pointed node shows nothing or only part of that text, its
+nearest three ancestors may confirm instead. Its address is the first
+structural candidate (stable id, test id, repeated container + position +
+shortest inner selector, class, anchored short path, then the xpath
+fallbacks) that is stable, value-free, matches once and is the same node,
+with Playwright's `>> visible=true` filter for a hidden twin. The candidate
+script never builds on a token Python scores volatile, and writes a class or
+id that would need a CSS backslash as a quoted attribute, because Robot
+Framework strips backslashes.
 Nothing confirmed → found=False with the reason; registration.py asks the
 agent once more, then reports the element not found. Untouched: non-read
 actions, iframes, collections, row-anchored results, shadow-root elements,
@@ -28,7 +34,12 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from browser_service.locators.action_fit import FIT_READ_TIMEOUT_MS, READ_ACTIONS
-from browser_service.locators.stability import STABLE, classify_locator, score_stability
+from browser_service.locators.stability import (
+    STABLE,
+    classify_locator,
+    is_volatile_attr_name,
+    score_stability,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,31 +124,94 @@ def own_texts_match(texts: List[Optional[str]], observed: Optional[str]) -> bool
 
 
 # Every text the element itself shows or announces: rendered text, a control's
-# value / placeholder, an image's alt, the title tooltip, the aria-label.
+# value / placeholder, an image's alt, the title tooltip, the aria-label — and
+# its DIRECT text: its own child text nodes only, whitespace-collapsed (a flash
+# message with a close link, a label with a required star).
 OWN_TEXT_JS = """el => [(el.innerText || '').trim(), el.value || '', el.getAttribute('placeholder') || '',
-    el.getAttribute('alt') || '', el.getAttribute('title') || '', el.getAttribute('aria-label') || '']"""
+    el.getAttribute('alt') || '', el.getAttribute('title') || '', el.getAttribute('aria-label') || '',
+    Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.nodeValue).join('')
+      .replace(/\\s+/g, ' ').trim()]"""
 
-STRUCTURAL_CANDIDATES_JS = """el => {
+# Up to 3 ancestors of the source node (stopping before body): the own texts of
+# each, in order. Read only when the node itself does not match — an ancestor's
+# innerText can be a whole table. Text never FINDS a node — it only confirms one
+# the agent pointed at, or one that contains the agent's point.
+ANCESTOR_CONFIRM_LIMIT = 3
+ANCESTOR_TEXTS_JS = (
+    "el => { const own = "
+    + OWN_TEXT_JS
+    + "; const out = []; let n = el.parentElement;"
+    + " for (let i = 0; i < "
+    + str(ANCESTOR_CONFIRM_LIMIT)
+    + " && n && n.tagName !== 'BODY' && n.tagName !== 'HTML'; i++, n = n.parentElement)"
+    + " out.push(own(n)); return out; }"
+)
+ANCESTOR_AT_JS = (
+    "(el, k) => { let n = el; for (let i = 0; i < k; i++) n = n.parentElement; return n; }"
+)
+
+# Every token the candidate script may build on, for the element and ALL its
+# ancestors: [kind, value] with the same kinds the candidates' tokens use. Python
+# scores them and the volatile ones go back into STRUCTURAL_CANDIDATES_JS so it
+# never builds on one.
+TOKENS_JS = """el => { const out = [];
+  for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+    if (n.id) out.push(['id', n.id]);
+    for (const c of Array.from(n.classList || [])) out.push(['class', c]);
+    for (const at of Array.from(n.attributes)) {
+      if ((at.name.startsWith('data-') || at.name === 'role') && at.value) out.push([at.name, at.value]);
+      // a data-* NAME is a token too (containerBases builds tag[data-x])
+      if (at.name.startsWith('data-')) out.push(['attr-name', at.name]);
+    }
+  }
+  return out; }"""
+
+
+def _is_volatile_token(kind: str, value: str) -> bool:
+    """One verdict for a token: an attribute NAME by is_volatile_attr_name, a value by score_stability."""
+    if kind == "attr-name":
+        return is_volatile_attr_name(value)
+    return score_stability(kind, value) != STABLE
+
+
+STRUCTURAL_CANDIDATES_JS = """(el, volatile) => {
+  // Tokens Python scored volatile are never built on.
+  const V = new Set((volatile || []).map(([k, v]) => k + '\\n' + v));
+  const vol = (k, v) => V.has(k + '\\n' + v);
   const esc = s => CSS.escape(s);
+  // A token goes into a selector as-is when CSS.escape leaves it unchanged; otherwise in
+  // the quoted attribute form, which needs no backslash (Robot Framework strips
+  // backslashes) — class → tag[class~="token"], id → [id="token"]. A token holding a
+  // double quote or a backslash cannot be quoted safely: null, the token is skipped.
+  const clsSel = c => esc(c) === c ? '.' + esc(c)
+    : (c.includes('"') || c.includes('\\\\') ? null : `[class~="${c}"]`);
+  // An id not starting with a letter or underscore is quoted too: NLRF adds css= only to a
+  // cell matching ^[#.][A-Za-z_], so `#-side` would become a Robot comment.
+  const idSel = v => (esc(v) === v && /^[A-Za-z_]/.test(v)) ? '#' + esc(v)
+    : (v.includes('"') || v.includes('\\\\') ? null : `[id="${v}"]`);
+  const okClass = c => !vol('class', c) && clsSel(c) !== null;
   const ROWS = ['TR', 'LI', 'ARTICLE'];
   const POS = ['TR', 'LI', 'ARTICLE', 'TD', 'TH'];
   const classesOf = n => Array.from(n.classList || []);
   const out = [];
   const add = (kind, locator, tokens) => out.push({kind, locator, tokens});
   const tag = el.tagName.toLowerCase();
-  if (el.id) add('id', /^[A-Za-z][\\w-]*$/.test(el.id) ? `id=${el.id}` : `[id="${el.id}"]`, [['id', el.id]]);
+  if (el.id && !vol('id', el.id))
+    add('id', /^[A-Za-z][\\w-]*$/.test(el.id) ? `id=${el.id}` : `[id="${el.id}"]`, [['id', el.id]]);
   for (const a of ['data-testid', 'data-test', 'data-qa', 'data-cy']) {
     const v = el.getAttribute(a);
-    if (v && !v.includes('"')) add('test-id', `[${a}="${v}"]`, [[a, v]]);
+    if (v && !v.includes('"') && !vol(a, v)) add('test-id', `[${a}="${v}"]`, [[a, v]]);
   }
-  const step = n => { const c = classesOf(n)[0]; return n.tagName.toLowerCase() + (c ? '.' + esc(c) : ''); };
-  const stepTokens = n => { const c = classesOf(n)[0]; return c ? [['class', c]] : []; };
+  // The first class that is not volatile and can be written.
+  const firstClass = n => classesOf(n).find(okClass);
+  const step = n => { const c = firstClass(n); return n.tagName.toLowerCase() + (c ? clsSel(c) : ''); };
+  const stepTokens = n => { const c = firstClass(n); return c ? [['class', c]] : []; };
   // The shortest selector that finds exactly el inside container a: tag.class, tag, then the
   // hop path with R2 pins.
   const innerSel = a => {
     const tries = [];
-    const c = classesOf(el)[0];
-    if (c) tries.push([`${tag}.${esc(c)}`, [['class', c]]]);
+    const c = firstClass(el);
+    if (c) tries.push([`${tag}${clsSel(c)}`, [['class', c]]]);
     tries.push([tag, []]);
     const hops = [], hopTokens = [];
     for (let n = el; n !== a; n = n.parentElement) {
@@ -164,24 +238,30 @@ STRUCTURAL_CANDIDATES_JS = """el => {
     const out = [];
     for (const at of SHARED_ATTRS) {
       const v = a.getAttribute(at);
-      if (v && !v.includes('"')) out.push([`[${at}="${v}"]`, [[at, v]]]);
+      if (v && !v.includes('"') && !vol(at, v)) out.push([`[${at}="${v}"]`, [[at, v]]]);
     }
     for (const at of Array.from(a.attributes))
-      if (at.name.startsWith('data-') && !SHARED_ATTRS.includes(at.name)) out.push([`${t}[${at.name}]`, []]);
-    for (const c of classesOf(a)) out.push([`${t}.${esc(c)}`, [['class', c]]]);
+      if (at.name.startsWith('data-') && !SHARED_ATTRS.includes(at.name)
+          // a data-* NAME the parent carries too (Vue's scoped data-v-<hash> is on every
+          // element of a component) is not a container mark; nor is a build-generated name.
+          && !(a.parentElement && a.parentElement.hasAttribute(at.name))
+          && !vol('attr-name', at.name))
+        out.push([`${t}[${at.name}]`, [['attr-name', at.name]]]);
+    for (const c of classesOf(a).filter(okClass)) out.push([`${t}${clsSel(c)}`, [['class', c]]]);
     if (ROWS.includes(a.tagName)) out.push([t, []]);
     return out;
   };
   const anchorOf = n => {
     for (let a = n.parentElement; a; a = a.parentElement) {
-      if (a.id) return [`#${esc(a.id)}`, a, [['id', a.id]]];
+      // A volatile id / test id / class is skipped and the walk goes on.
+      if (a.id && !vol('id', a.id) && idSel(a.id) !== null) return [idSel(a.id), a, [['id', a.id]]];
       for (const t of ['data-testid', 'data-test']) {
         const v = a.getAttribute(t);
-        if (v && !v.includes('"')) return [`[${t}="${v}"]`, a, [[t, v]]];
+        if (v && !v.includes('"') && !vol(t, v)) return [`[${t}="${v}"]`, a, [[t, v]]];
       }
-      const c = classesOf(a)[0];
-      if (c && document.querySelectorAll(`${a.tagName.toLowerCase()}.${esc(c)}`).length === 1)
-        return [`${a.tagName.toLowerCase()}.${esc(c)}`, a, [['class', c]]];
+      const c = firstClass(a);
+      if (c && document.querySelectorAll(`${a.tagName.toLowerCase()}${clsSel(c)}`).length === 1)
+        return [`${a.tagName.toLowerCase()}${clsSel(c)}`, a, [['class', c]]];
     }
     return null;
   };
@@ -207,9 +287,9 @@ STRUCTURAL_CANDIDATES_JS = """el => {
       break;
     }
   }
-  const cls = classesOf(el);
-  for (const c of cls) add('class', `${tag}.${esc(c)}`, [['class', c]]);
-  if (cls.length > 1) add('class', tag + cls.map(c => '.' + esc(c)).join(''), cls.map(c => ['class', c]));
+  const cls = classesOf(el).filter(okClass);
+  for (const c of cls) add('class', `${tag}${clsSel(c)}`, [['class', c]]);
+  if (cls.length > 1) add('class', tag + cls.map(clsSel).join(''), cls.map(c => ['class', c]));
   // Anchored short path: the nearest uniquely identifiable ancestor (id, test id or a class
   // unique in the document) and the shortest selector inside it — generic, usually position-free.
   const near = anchorOf(el);
@@ -220,7 +300,9 @@ STRUCTURAL_CANDIDATES_JS = """el => {
   const xpathOf = (node, stopAtId) => {
     const parts = [];
     for (let n = node; n && n.nodeType === 1; n = n.parentElement) {
-      if (stopAtId && n !== node && n.id) { parts.unshift(`//*[@id="${n.id}"]`); return [parts.join('/'), n.id]; }
+      if (stopAtId && n !== node && n.id && !vol('id', n.id)) {
+        parts.unshift(`//*[@id="${n.id}"]`); return [parts.join('/'), n.id];
+      }
       let i = 1;
       for (let s = n.previousElementSibling; s; s = s.previousElementSibling) if (s.tagName === n.tagName) i++;
       parts.unshift(`${n.tagName.toLowerCase()}[${i}]`);
@@ -250,16 +332,36 @@ async def _unique_same(search_context, locator: str, handle) -> bool:
 _VISIBLE_RETRY_KINDS = frozenset({"id", "test-id", "class", "anchored-path"})
 
 
+async def _volatile_tokens(handle) -> List[List[str]]:
+    """The [kind, value] tokens of the element and all its ancestors that Python scores volatile; [] when they cannot be read."""
+    try:
+        tokens = await handle.evaluate(TOKENS_JS)
+    except Exception as e:
+        logger.info(f"   ⚠️ Read-address token read failed: {e}")
+        return []
+    seen = set()
+    volatile: List[List[str]] = []
+    for kind, value in tokens or []:
+        if (kind, value) in seen:
+            continue
+        seen.add((kind, value))
+        if _is_volatile_token(kind, value):
+            volatile.append([kind, value])
+    return volatile
+
+
 async def structural_address(search_context, handle, observed: str) -> Optional[Dict[str, Any]]:
     """The first structural address of the element that is stable, value-free, unique and the same node — with Playwright's `>> visible=true` filter for a hidden twin — or None."""
+    volatile = await _volatile_tokens(handle)
     try:
-        candidates = await handle.evaluate(STRUCTURAL_CANDIDATES_JS)
+        candidates = await handle.evaluate(STRUCTURAL_CANDIDATES_JS, volatile)
     except Exception as e:
         logger.info(f"   ⚠️ Read-address candidate read failed: {e}")
         return None
     for cand in candidates or []:
         locator = cand.get("locator") or ""
-        if any(score_stability(kind, value) != STABLE for kind, value in cand.get("tokens") or []):
+        # Backstop: never ship a candidate built on a volatile token.
+        if any(_is_volatile_token(kind, value) for kind, value in cand.get("tokens") or []):
             continue
         if carries_value(locator, observed):
             continue
@@ -303,24 +405,54 @@ def _short(text: Any) -> str:
     return normalize_text(text)[:40]
 
 
+def _may_walk_up(own_text: Any, observed: str) -> bool:
+    """Walk up only from a node whose own rendered text is empty or a FRAGMENT of what the agent saw ("John" in "Welcome John"); a node with its own other text ("edit", a select's options) is not a fragment of it."""
+    src = normalize_text(own_text)
+    return not src or src in normalize_text(observed)
+
+
+async def _confirmed_node(handle, observed: str) -> Tuple[Any, Optional[List[Any]]]:
+    """The pointed node, or the first of its nearest ancestors, whose own texts show the observed text, with the pointed node's own texts: (node, own); (None, own) when nothing confirms; (None, None) when the node cannot be read."""
+    try:
+        chain = [list(await handle.evaluate(OWN_TEXT_JS) or [])]
+    except Exception:
+        return None, None
+    if not own_texts_match(chain[0], observed):
+        try:
+            chain += [list(own or []) for own in await handle.evaluate(ANCESTOR_TEXTS_JS) or []]
+        except Exception as e:
+            logger.info(f"   ⚠️ Read-address: ancestor texts not readable: {e}")
+    hit = next((k for k, own in enumerate(chain) if own_texts_match(own, observed)), None)
+    if hit and not _may_walk_up(chain[0][0], observed):
+        hit = None
+    if hit is None:
+        return None, chain[0]
+    if hit == 0:
+        return handle, chain[0]
+    try:
+        node = (await handle.evaluate_handle(ANCESTOR_AT_JS, hit)).as_element()
+    except Exception:
+        node = None
+    # An ancestor that cannot be reached is skipped silently, like an unreadable node.
+    return (node, chain[0]) if node is not None else (None, None)
+
+
 async def resolve_read_address(
     search_context,
     observed: str,
     element_data: Optional[Dict[str, Any]],
     point: Optional[Tuple[float, float]],
 ) -> Dict[str, Any]:
-    """Confirm what the agent pointed at — the indexed element, then the element under its vision point — by its own texts, and return its structural address, or {'unconfirmed': reason}."""
+    """Confirm what the agent pointed at — the indexed element, then the element under its vision point — by its own texts (or a near ancestor's), and return its structural address, or {'unconfirmed': reason}."""
     reasons: List[str] = []
     for source, handle in await _pointed_sources(search_context, element_data, point):
-        try:
-            own = await handle.evaluate(OWN_TEXT_JS)
-        except Exception:
+        node, own = await _confirmed_node(handle, observed)
+        if node is None:
+            if own is not None:
+                shown = next((t for t in own if t), "")
+                reasons.append(f"the {source} shows {_short(shown)!r}, not {_short(observed)!r}")
             continue
-        if not own_texts_match(own, observed):
-            shown = next((t for t in own if t), "")
-            reasons.append(f"the {source} shows {_short(shown)!r}, not {_short(observed)!r}")
-            continue
-        address = await structural_address(search_context, handle, observed)
+        address = await structural_address(search_context, node, observed)
         if address:
             return {**address, "source": source}
         reasons.append(

@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>read address edge cases</title>
+<style>
+  body { font: 16px sans-serif; margin: 0; }
+  section { margin: 8px; }
+</style></head>
+<body>
+<!-- direct text: the-internet /secure flash — the message plus a close link -->
+<div id="flash" class="flash success" style="padding:20px;background:#5da423">
+            You logged into a secure area!
+            <a href="#" class="close">×</a>
+</div>
+<!-- an ancestor confirms: inline markup; the vision point lands on the <b> -->
+<h1 class="greet" style="font-size:30px;margin:0">Welcome <b id="who" style="font-size:70px">John</b></h1>
+<!-- an ancestor confirms: a label with a required star; the vision point lands on the star -->
+<label class="lbl" style="font-size:24px">Email <span class="req" style="font-size:60px">*</span></label>
+<!-- negative: the saucedemo inventory header (title, then the sort select) and a price -->
+<div class="header_secondary_container">
+  <span class="title" data-test="title">Products</span>
+  <div class="right_component"><span class="select_container"><span class="active_option">Name (A to Z)</span>
+    <select class="product_sort_container" data-test="product-sort-container">
+      <option value="az">Name (A to Z)</option><option value="za">Name (Z to A)</option>
+    </select></span></div>
+</div>
+<div class="inventory_item"><div class="inventory_item_description"><div class="pricebar">
+  <div class="inventory_item_price" style="font-size:30px">$29.99</div></div></div></div>
+<!-- Tailwind-style classes that CSS.escape would escape -->
+<section class="tw"><p class="md:text-lg">Total: 42</p><p class="other">Other</p></section>
+<section class="tw2"><div class="w-1/2">Half width</div><div class="w-full">Full width</div></section>
+<!-- Vue scoped style hash on every element of the component -->
+<div class="grid" data-v-7ba5bd90>
+  <div class="card" data-v-7ba5bd90><div class="body" data-v-7ba5bd90><h3 class="name" data-v-7ba5bd90>Alpha</h3></div></div>
+  <div class="card" data-v-7ba5bd90><div class="body" data-v-7ba5bd90><h3 class="name" data-v-7ba5bd90>Beta</h3></div></div>
+  <div class="card" data-v-7ba5bd90><div class="body" data-v-7ba5bd90><h3 class="name" data-v-7ba5bd90>Gamma</h3></div></div>
+</div>
+<!-- rows inside a volatile-id container, plus one row elsewhere -->
+<div id="ember55"><div class="row"><span class="v">One</span></div><div class="row"><span class="v">Two</span></div></div>
+<div class="row"><span class="v">Elsewhere</span></div>
+<!-- anchors whose id needs CSS escaping -->
+<div id="user.name"><span class="val">Alice</span></div>
+<div id="1st"><span class="val">Bob</span></div>
+<div id="form:main"><span class="val">Carol</span></div>
+<div id="-side"><span class="val">Dan</span></div>
+<!-- Vue child-component roots (vuejs.org sponsors): each root carries its parent's hash and its own -->
+<section id="spsrs" data-v-7d4b747f>
+  <div class="spsr-container platinum" data-v-7d4b747f data-v-03eb1f1f>
+    <a class="spsr-item" href="#" data-v-03eb1f1f>Plat One</a><a class="spsr-item" href="#" data-v-03eb1f1f>Plat Two</a></div>
+  <div class="spsr-container gold" data-v-7d4b747f data-v-03eb1f1f>
+    <a class="spsr-item" href="#" data-v-03eb1f1f>Gold One</a><a class="spsr-item" href="#" data-v-03eb1f1f>Gold Two</a></div>
+</section>
+</body></html>

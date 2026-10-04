@@ -66,7 +66,7 @@ def test_displayed_literals_reads_every_quote_style():
     [
         ("Products", "Products", True),
         ("  PRODUCTS\n", "products", True),
-        ("Products ", "Products", True),
+        ("Products\u00a0", "Products", True),
         ("A Light in the Attic", "A Light in the ...", True),
         ("A Light in the Attic", "A Light in the …", True),
         ("Name (A to Z)\nName (Z to A)", "Products", False),

@@ -1,13 +1,9 @@
-"""
-E2b read-target policy, no browser: which locators count as embedding the
-value being read, and what the policy does with the builder's answer.
-"""
+"""#31 read-address rule, no browser: which read locators carry the observed text, how an element's own texts are matched, and what the gate does with the resolver's answer."""
 
-from unittest.mock import ANY, AsyncMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from browser_service.locators import read_target
 from browser_service.locators.read_target import (
     apply_read_target_policy,
     carries_value,
@@ -95,93 +91,80 @@ def test_own_texts_match_any_own_text():
     assert own_texts_match([], "Products") is False
 
 
-REWRITTEN = '[data-component-type="s-search-result"] >> nth=0 >> h2'
 BASE = {
     "found": True,
-    "best_locator": f'[aria-label="{AMAZON}"]',
+    "best_locator": "text=Products",
     "stability": "volatile",
-    "all_locators": [{"locator": f'[aria-label="{AMAZON}"]'}, {"locator": "xpath=//h2[1]"}],
-    "element_info": {"id": ""},
+    "all_locators": [{"locator": "text=Products"}],
+    "element_id": "elem_4",
+    "description": "heading",
 }
 
 
-async def _apply(result=None, action="get_text", expected=AMAZON, iframe=None, built=REWRITTEN):
-    builder = AsyncMock(return_value=built)
-    with patch("browser_service.locators.read_target.build_container_ordinal", new=builder):
-        out = await apply_read_target_policy(
-            object(), dict(result or BASE), action, expected, iframe
-        )
-    return out, builder
-
-
-async def _apply_id(id_validates, result, expected=AMAZON, built=REWRITTEN):
-    builder = AsyncMock(return_value=built)
-    id_validator = AsyncMock(return_value=id_validates)
+async def _gate(
+    result=None, action="get_text", expected="Products", iframe=None, verdict=None, in_shadow=False
+):
+    resolver = AsyncMock(
+        return_value=verdict or {"locator": ".title", "kind": "class", "source": "pointed element"}
+    )
     with (
-        patch("browser_service.locators.read_target.build_container_ordinal", new=builder),
-        patch("browser_service.locators.read_target._resolves_to_same_element", new=id_validator),
+        patch("browser_service.locators.read_target.resolve_read_address", new=resolver),
+        patch(
+            "browser_service.locators.read_target._in_shadow_root",
+            new=AsyncMock(return_value=in_shadow),
+        ),
     ):
-        out = await apply_read_target_policy(object(), dict(result), "get_text", expected, None)
-    return out, builder, id_validator
+        out = await apply_read_target_policy(
+            object(),
+            dict(result or BASE),
+            action,
+            expected,
+            iframe,
+            element_data={"xpath": "html/body/span"},
+            point=(10, 20),
+        )
+    return out, resolver
 
 
-class TestPolicy:
-    async def test_rewrites_a_data_bound_read(self):
-        out, _ = await _apply()
-        assert out["best_locator"] == REWRITTEN
-        assert out["stability"] == "positional"
-        assert [e["locator"] for e in out["all_locators"]] == [REWRITTEN]
-        assert out["read_target_rewritten_from"] == BASE["best_locator"]
+class TestGate:
+    async def test_rewrites_a_value_bearing_read(self):
+        out, resolver = await _gate()
+        assert out["best_locator"] == ".title"
+        assert [e["locator"] for e in out["all_locators"]] == [".title"]
+        assert out["read_target_rewritten_from"] == "text=Products"
+        resolver.assert_awaited_once()
 
-    async def test_keeps_it_when_no_container_validates(self):
-        out, _ = await _apply(built=None)
-        assert out["best_locator"] == BASE["best_locator"]
-        assert "read_target_rewritten_from" not in out
+    async def test_unconfirmed_is_not_found_with_the_reason(self):
+        out, _ = await _gate(verdict={"unconfirmed": "the screen point shows 'x', not 'products'"})
+        assert out["found"] is False
+        assert out["read_address_unconfirmed"] == "the screen point shows 'x', not 'products'"
+        assert out["read_address_rejected"] == "text=Products"
+        assert "best_locator" not in out
 
-    @pytest.mark.parametrize("action", ["click", "input", None])
+    async def test_value_free_read_is_untouched(self):
+        out, resolver = await _gate(result={**BASE, "best_locator": ".title"})
+        assert out["best_locator"] == ".title"
+        resolver.assert_not_awaited()
+
+    @pytest.mark.parametrize("action", ["click", "input", "select", None])
     async def test_only_read_actions(self, action):
-        out, builder = await _apply(action=action)
-        assert out["best_locator"] == BASE["best_locator"]
-        builder.assert_not_awaited()
+        out, resolver = await _gate(action=action)
+        assert out["best_locator"] == "text=Products"
+        resolver.assert_not_awaited()
 
-    async def test_skips_iframes(self):
-        out, builder = await _apply(iframe='iframe[id="main"]')
-        builder.assert_not_awaited()
+    async def test_iframe_is_untouched(self):
+        out, resolver = await _gate(iframe='iframe[id="main"]')
+        assert out["best_locator"] == "text=Products"
+        resolver.assert_not_awaited()
 
     @pytest.mark.parametrize(
         "extra", [{"row_anchored": True}, {"element_type": "collection"}, {"found": False}]
     )
-    async def test_skips_anchored_collections_and_misses(self, extra):
-        out, builder = await _apply(result={**BASE, **extra})
-        builder.assert_not_awaited()
+    async def test_anchored_collections_and_misses_are_untouched(self, extra):
+        out, resolver = await _gate(result={**BASE, **extra})
+        resolver.assert_not_awaited()
 
-    async def test_uses_the_stable_id_when_it_validates(self):
-        result = {**BASE, "element_info": {"id": "result-title"}}
-        out, builder, id_validator = await _apply_id(True, result)
-        assert out["best_locator"] == "id=result-title"
-        assert [e["locator"] for e in out["all_locators"]] == ["id=result-title"]
-        assert out["read_target_rewritten_from"] == BASE["best_locator"]
-        id_validator.assert_awaited_once_with(ANY, BASE["best_locator"], "id=result-title")
-        builder.assert_not_awaited()
-
-    async def test_falls_through_to_container_when_the_id_does_not_validate(self):
-        result = {**BASE, "element_info": {"id": "result-title"}}
-        out, builder, id_validator = await _apply_id(False, result)
-        assert out["best_locator"] == REWRITTEN
-        id_validator.assert_awaited_once_with(ANY, BASE["best_locator"], "id=result-title")
-        builder.assert_awaited_once()
-
-    async def test_volatile_id_skips_id_validation(self):
-        result = {**BASE, "element_info": {"id": "ember472"}}
-        out, builder, id_validator = await _apply_id(True, result)
-        assert out["best_locator"] == REWRITTEN
-        id_validator.assert_not_awaited()
-        builder.assert_awaited_once()
-
-
-def test_container_walk_max_ancestors_is_16():
-    """E2b depth fix (2026-09-16): live amazon.in nests the product title
-    14 ancestors below the repeated card; the walk must reach past that."""
-    assert read_target.CONTAINER_WALK_MAX_ANCESTORS == 16
-    assert "depth < 16" in read_target.CONTAINER_ORDINAL_JS
-    assert "depth < 8" not in read_target.CONTAINER_ORDINAL_JS
+    async def test_shadow_root_keeps_todays_locator(self):
+        out, resolver = await _gate(in_shadow=True)
+        assert out["best_locator"] == "text=Products"
+        resolver.assert_not_awaited()

@@ -3,10 +3,13 @@
 """
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from playwright.async_api import async_playwright
 
+from browser_service.agent.actions import find_unique_locator_action
+from browser_service.config import config
 from browser_service.locators.read_target import (
     carries_value,
     resolve_read_address,
@@ -190,3 +193,110 @@ async def test_title_attribute_confirms_when_the_visible_text_differs(page):
     observed = "Trendy Sports Running Shoes For Men (Black, 8)"
     verdict = await resolve_read_address(page, observed, await _element_data(page, target), None)
     await _assert_rule(page, verdict, target, observed)
+
+
+# ---- Task 3 flow tests -------------------------------------------------------------------------
+
+
+@pytest.fixture
+def action_fit_on():
+    with patch.object(config.locator, "enable_action_fit", True):
+        yield
+
+
+async def _find(page, *, action, candidate, pointed, point_at, expected, element_id="elem_4"):
+    x, y = await _center(page, point_at)
+    return await find_unique_locator_action(
+        x=x,
+        y=y,
+        element_id=element_id,
+        element_description="the heading",
+        expected_text=expected,
+        candidate_locator=candidate,
+        element_data=await _element_data(page, pointed),
+        page=page,
+        is_collection=False,
+        action=action,
+        vision_point=(x, y),
+    )
+
+
+async def test_flow_text_candidate_with_wrong_index_ships_the_heading(page, action_fit_on):
+    result = await _find(
+        page,
+        action="get_text",
+        candidate="text=Products",
+        pointed=".select_container",
+        point_at=".title",
+        expected="Products",
+    )
+    assert result["found"] is True
+    assert not carries_value(result["best_locator"], "Products")
+    assert result["read_target_rewritten_from"] == "text=Products"
+    assert result["element_info"]["source"] == "read_address_resolved_element"
+    assert "title" in result["element_info"]["className"]
+
+
+async def test_flow_both_wrong_is_not_found_never_text(page, action_fit_on):
+    result = await _find(
+        page,
+        action="get_text",
+        candidate="text=Products",
+        pointed=".select_container",
+        point_at=".price >> nth=0",
+        expected="Products",
+    )
+    assert result["found"] is False
+    assert "read_address_unconfirmed" in result
+
+
+async def test_flow_click_keeps_its_text_locator(page, action_fit_on):
+    result = await _find(
+        page,
+        action="click",
+        candidate="text=Products",
+        pointed=".title",
+        point_at=".title",
+        expected="Products",
+    )
+    assert result["found"] is True
+    assert result["best_locator"] == "text=Products"
+
+
+async def test_flow_value_free_candidate_is_unchanged(page, action_fit_on):
+    result = await _find(
+        page,
+        action="get_text",
+        candidate=".title",
+        pointed=".title",
+        point_at=".title",
+        expected="Products",
+    )
+    assert result["best_locator"] == ".title"
+    assert "read_target_rewritten_from" not in result
+
+
+async def test_flow_flag_off_is_todays_behaviour(page):
+    result = await _find(
+        page,
+        action=None,
+        candidate="text=Products",
+        pointed=".select_container",
+        point_at=".price >> nth=0",
+        expected="Products",
+    )
+    assert result["found"] is True
+    assert result["best_locator"] == "text=Products"
+
+
+async def test_flow_shadow_root_keeps_todays_locator(page, action_fit_on):
+    result = await _find(
+        page,
+        action="get_text",
+        candidate='text="Shadow text"',
+        pointed="#host",
+        point_at="#host",
+        expected="Shadow text",
+    )
+    assert result["found"] is True
+    assert result["best_locator"] == 'text="Shadow text"'

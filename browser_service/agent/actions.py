@@ -289,6 +289,17 @@ def _candidate_element_info(
     }
 
 
+async def _refresh_read_address_info(result: Dict[str, Any], search_root) -> None:
+    """#31: a read-address swap can return a different node than the locator it
+    replaced (the text found one element, the agent pointed at another), so
+    element_info must describe the node now returned. Unknown → keep the old."""
+    if not result.get("read_target_rewritten_from"):
+        return
+    resolved = await _read_resolved_element(search_root, result.get("best_locator") or "")
+    if resolved:
+        result["element_info"] = _candidate_element_info(resolved, "read_address_resolved_element")
+
+
 def _candidate_tier0_stamp(
     element_data: Optional[Dict[str, Any]], element_description: str
 ) -> Dict[str, Any]:
@@ -1001,7 +1012,10 @@ async def find_unique_locator_action(
                                     action,
                                     expected_text,
                                     iframe_context,
+                                    element_data=element_data,
+                                    point=vision_point or (x, y),
                                 )
+                                await _refresh_read_address_info(_accepted, search_root)
                                 await _stamp_resolved_tag(
                                     _accepted, search_root, element_data, iframe_context
                                 )
@@ -1256,8 +1270,15 @@ async def find_unique_locator_action(
             if action:
                 result = await _settle_action_fit(result, _fallback_result, _run_cascade, action)
                 result = await apply_read_target_policy(
-                    search_context, result, action, expected_text, iframe_context
+                    search_context,
+                    result,
+                    action,
+                    expected_text,
+                    iframe_context,
+                    element_data=element_data,
+                    point=vision_point or (x, y),
                 )
+                await _refresh_read_address_info(result, search_context)
 
             duration_ms = (time.monotonic() - _locator_timer_start) * 1000.0
             logger.info(

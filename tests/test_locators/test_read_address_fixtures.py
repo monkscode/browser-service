@@ -347,7 +347,7 @@ async def test_point_on_the_required_star_confirms_the_label(edge):
 
 
 async def test_sort_select_and_an_unrelated_point_stay_unconfirmed(edge):
-    """The direct text and the ancestor walk must not widen into a wrong accept: saucedemo's sort select, a point on a price."""
+    """saucedemo's sort select pointed and a point on an unrelated price stay unconfirmed, the reason naming what each source shows: no node or near ancestor shows exactly 'Products' (the header holds it among the sort options). It passes without the walk-up guard too — the guard tests below pin that."""
     verdict = await resolve_read_address(
         edge,
         "Products",
@@ -406,3 +406,56 @@ async def test_vue_child_component_root_hash_is_not_a_card_mark(edge):
     verdict = await resolve_read_address(edge, "Plat Two", await _element_data(edge, target), None)
     assert "data-v-" not in verdict["locator"], verdict["locator"]
     await _assert_rule(edge, verdict, target, "Plat Two")
+
+
+async def test_shared_attribute_name_on_every_element_is_not_a_card_mark(edge):
+    """A data-* NAME on the grid, every card and their insides (Astro's scoped style — not a build hash, so not volatile) marks no card: the parent carries it too."""
+    target = ".tile >> nth=1 >> h3"
+    verdict = await resolve_read_address(
+        edge, "Second tile", await _element_data(edge, target), None
+    )
+    assert verdict["locator"].startswith("div.tile >> nth=1 >> "), verdict["locator"]
+    assert "data-astro-cid" not in verdict["locator"]
+    await _assert_rule(edge, verdict, target, "Second tile")
+
+
+# ---- The walk-up guard: an ancestor confirms only when the pointed node shows nothing or a piece of the text
+
+
+async def _center_in_view(page, selector):
+    await page.locator(selector).scroll_into_view_if_needed()
+    return await _center(page, selector)
+
+
+async def test_point_on_an_edit_button_inside_the_heading_stays_unconfirmed(edge):
+    """The point lands on the heading's Edit button: the button shows its own other text, so the heading must not confirm."""
+    verdict = await resolve_read_address(
+        edge, "Order summary", None, await _center_in_view(edge, "button.edit")
+    )
+    assert "unconfirmed" in verdict, verdict
+    assert "the screen point shows 'edit'" in verdict["unconfirmed"]
+
+
+async def test_pointed_select_inside_the_crumb_stays_unconfirmed(edge):
+    """The agent pointed at the select inside "Products <select>": the select shows its options, so the crumb must not confirm."""
+    verdict = await resolve_read_address(
+        edge, "Products", await _element_data(edge, "select.sorter"), None
+    )
+    assert "unconfirmed" in verdict, verdict
+    assert "the pointed element shows 'name (a to z) price'" in verdict["unconfirmed"]
+
+
+async def test_pointed_edit_link_inside_the_cell_stays_unconfirmed(edge):
+    """The agent pointed at the cell's edit link: the link shows its own other text, so the cell "John edit" must not confirm."""
+    verdict = await resolve_read_address(
+        edge, "John", await _element_data(edge, "td.nm >> nth=0 >> a.act"), None
+    )
+    assert "unconfirmed" in verdict, verdict
+    assert "the pointed element shows 'edit'" in verdict["unconfirmed"]
+
+
+async def test_point_on_a_piece_of_a_split_price_confirms_its_container(edge):
+    """Control: the point lands on "29.99", a piece of "$29.99", so the price container confirms."""
+    verdict = await resolve_read_address(edge, "$29.99", None, await _center_in_view(edge, ".amt"))
+    assert verdict["source"] == "screen point"
+    await _assert_rule(edge, verdict, ".price-wrap", "$29.99")

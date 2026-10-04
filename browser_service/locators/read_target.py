@@ -133,9 +133,10 @@ OWN_TEXT_JS = """el => [(el.innerText || '').trim(), el.value || '', el.getAttri
       .replace(/\\s+/g, ' ').trim()]"""
 
 # Up to 3 ancestors of the source node (stopping before body): the own texts of
-# each, in order. Read only when the node itself does not match — an ancestor's
-# innerText can be a whole table. Text never FINDS a node — it only confirms one
-# the agent pointed at, or one that contains the agent's point.
+# each, in order. Read only when the node itself does not match and may walk up
+# (_may_walk_up) — an ancestor's innerText can be a whole table. Text never FINDS
+# a node — it only confirms one the agent pointed at, or one that contains the
+# agent's point.
 ANCESTOR_CONFIRM_LIMIT = 3
 ANCESTOR_TEXTS_JS = (
     "el => { const own = "
@@ -151,15 +152,17 @@ ANCESTOR_AT_JS = (
 )
 
 # Every token the candidate script may build on, for the element and ALL its
-# ancestors: [kind, value] with the same kinds the candidates' tokens use. Python
-# scores them and the volatile ones go back into STRUCTURAL_CANDIDATES_JS so it
-# never builds on one.
+# ancestors: [kind, value] with the same kinds the candidates' tokens use — ids,
+# classes, data-* attribute NAMES and the VALUES of the attributes it builds on
+# (its SHARED_ATTRS, the test ids among them). Python scores them and the
+# volatile ones go back into STRUCTURAL_CANDIDATES_JS so it never builds on one.
 TOKENS_JS = """el => { const out = [];
+  const VALUE_ATTRS = ['data-component-type', 'data-testid', 'data-test', 'data-qa', 'data-cy', 'role'];
   for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
     if (n.id) out.push(['id', n.id]);
     for (const c of Array.from(n.classList || [])) out.push(['class', c]);
     for (const at of Array.from(n.attributes)) {
-      if ((at.name.startsWith('data-') || at.name === 'role') && at.value) out.push([at.name, at.value]);
+      if (VALUE_ATTRS.includes(at.name) && at.value) out.push([at.name, at.value]);
       // a data-* NAME is a token too (containerBases builds tag[data-x])
       if (at.name.startsWith('data-')) out.push(['attr-name', at.name]);
     }
@@ -405,9 +408,9 @@ def _short(text: Any) -> str:
     return normalize_text(text)[:40]
 
 
-def _may_walk_up(own_text: Any, observed: str) -> bool:
+def _may_walk_up(own: List[Any], observed: str) -> bool:
     """Walk up only from a node whose own rendered text is empty or a FRAGMENT of what the agent saw ("John" in "Welcome John"); a node with its own other text ("edit", a select's options) is not a fragment of it."""
-    src = normalize_text(own_text)
+    src = normalize_text(own[0] if own else "")
     return not src or src in normalize_text(observed)
 
 
@@ -417,14 +420,14 @@ async def _confirmed_node(handle, observed: str) -> Tuple[Any, Optional[List[Any
         chain = [list(await handle.evaluate(OWN_TEXT_JS) or [])]
     except Exception:
         return None, None
-    if not own_texts_match(chain[0], observed):
+    # The ancestors are read only on a miss the guard allows — an ancestor's innerText can
+    # be a whole table, and an ancestor match from a node the guard refuses is never used.
+    if not own_texts_match(chain[0], observed) and _may_walk_up(chain[0], observed):
         try:
             chain += [list(own or []) for own in await handle.evaluate(ANCESTOR_TEXTS_JS) or []]
         except Exception as e:
             logger.info(f"   ⚠️ Read-address: ancestor texts not readable: {e}")
     hit = next((k for k, own in enumerate(chain) if own_texts_match(own, observed)), None)
-    if hit and not _may_walk_up(chain[0][0], observed):
-        hit = None
     if hit is None:
         return None, chain[0]
     if hit == 0:

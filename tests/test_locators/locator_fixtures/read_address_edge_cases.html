@@ -48,4 +48,17 @@
   <div class="spsr-container gold" data-v-7d4b747f data-v-03eb1f1f>
     <a class="spsr-item" href="#" data-v-03eb1f1f>Gold One</a><a class="spsr-item" href="#" data-v-03eb1f1f>Gold Two</a></div>
 </section>
+<!-- walk-up guard: the pointed node shows its own OTHER text, so its container must not confirm -->
+<div class="crumb">Products <select class="sorter"><option>Name (A to Z)</option><option>Price</option></select></div>
+<h2 class="sec" style="margin:0">Order summary <button class="edit" style="font-size:30px">Edit</button></h2>
+<table class="people"><tbody><tr><td class="nm">John <a class="act" href="#">edit</a></td></tr>
+<tr><td class="nm">Jane <a class="act" href="#">edit</a></td></tr></tbody></table>
+<!-- walk-up guard control: a price split into two spans; the point lands on the amount, a piece of it -->
+<div class="price-wrap" style="font-size:20px"><span class="cur">$</span><span class="amt" style="font-size:50px">29.99</span></div>
+<!-- a shared data-* NAME that is not a build hash, on every element of the component (Astro's scoped style) -->
+<div class="tiles" data-astro-cid-abc>
+  <div class="tile" data-astro-cid-abc><div class="tile-body" data-astro-cid-abc><h3 class="tile-name" data-astro-cid-abc>First tile</h3></div></div>
+  <div class="tile" data-astro-cid-abc><div class="tile-body" data-astro-cid-abc><h3 class="tile-name" data-astro-cid-abc>Second tile</h3></div></div>
+  <div class="tile" data-astro-cid-abc><div class="tile-body" data-astro-cid-abc><h3 class="tile-name" data-astro-cid-abc>Third tile</h3></div></div>
+</div>
 </body></html>

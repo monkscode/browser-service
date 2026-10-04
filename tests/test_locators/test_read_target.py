@@ -1,10 +1,14 @@
 """#31 read-address rule, no browser: which read locators carry the observed text, how an element's own texts are matched, and what the gate does with the resolver's answer."""
 
+import ast
+import re
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from browser_service.locators.read_target import (
+    STRUCTURAL_CANDIDATES_JS,
+    TOKENS_JS,
     apply_read_target_policy,
     carries_value,
     displayed_literals,
@@ -168,3 +172,14 @@ class TestGate:
         out, resolver = await _gate(in_shadow=True)
         assert out["best_locator"] == "text=Products"
         resolver.assert_not_awaited()
+
+
+def test_tokens_script_reads_every_value_the_candidate_script_builds_on():
+    """TOKENS_JS reads the VALUES of exactly the attributes STRUCTURAL_CANDIDATES_JS builds on (its SHARED_ATTRS, the test ids among them): one missing would let a volatile value through."""
+    values = re.search(r"const VALUE_ATTRS = (\[[^\]]*\]);", TOKENS_JS)
+    assert values, TOKENS_JS
+    read = ast.literal_eval(values.group(1))
+    shared = re.search(r"const SHARED_ATTRS = (\[[^\]]*\]);", STRUCTURAL_CANDIDATES_JS)
+    assert read == ast.literal_eval(shared.group(1))
+    for listed in re.findall(r"for \(const \w+ of (\[[^\]]*\])\)", STRUCTURAL_CANDIDATES_JS):
+        assert set(ast.literal_eval(listed)) <= set(read), listed

@@ -1092,6 +1092,10 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
         _expected_element_ids: set = set(_element_specs.keys())
         _total_expected: int = len(_expected_element_ids)
         _completed_elements: dict = {}  # element_id → best_locator (mutated by inner function)
+        # #31: element_id → how many times its read address came back
+        # unconfirmed. The first gets one retry with the reason; after that
+        # the element is reported not found (owner: "Retry once, then not found").
+        _read_address_attempts: dict = {}
         # D3 (dialog-clobber): element_id → True when the stored result was
         # fully validated (validated=True and semantic_match not False).
         # A re-query may only replace a fully-validated result with another
@@ -1975,7 +1979,45 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     # If element_index was not provided AND fallback failed,
                     # request LLM to retry with the correct element_index.
                     # This handles interactable elements with stale DOM.
-                    if element_index_was_none:
+                    _read_unconfirmed = result.get("read_address_unconfirmed")
+                    if _read_unconfirmed:
+                        _n = _read_address_attempts.get(params.element_id, 0) + 1
+                        _read_address_attempts[params.element_id] = _n
+                        if _n == 1:
+                            retry_msg = (
+                                f"Could not confirm '{params.element_id}': {_read_unconfirmed}. "
+                                f"Point at the element itself — its own text must be the text you read — "
+                                f"and call find_unique_locator again with its element_index or the "
+                                f"coordinates of its centre. A screenshot of the current page is attached "
+                                f"to your next message (when available)."
+                            )
+                            logger.info(
+                                f"🔄 READ ADDRESS RETRY for {params.element_id}: {_read_unconfirmed} "
+                                f"(signal: read-address-retry)"
+                            )
+                            action_result = ActionResult(
+                                extracted_content=retry_msg,
+                                error=retry_msg,
+                                is_done=False,
+                                metadata={**result, "include_screenshot": True},
+                            )
+                        else:
+                            final_msg = (
+                                f"'{params.element_id}' could not be confirmed again ({_read_unconfirmed}); "
+                                f"it is recorded as NOT FOUND. Do not retry it — continue with the "
+                                f"remaining elements."
+                            )
+                            logger.info(
+                                f"⛔ READ ADDRESS NOT FOUND for {params.element_id} after {_n} attempts "
+                                f"(signal: read-address-not-found)"
+                            )
+                            action_result = ActionResult(
+                                extracted_content=final_msg,
+                                error=final_msg,
+                                is_done=False,
+                                metadata=result,
+                            )
+                    elif element_index_was_none:
                         retry_msg = (
                             f"Fallback strategies failed for '{params.element_id}'. "
                             f"Reason: {fallback_error}. "

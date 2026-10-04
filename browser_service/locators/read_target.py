@@ -393,6 +393,8 @@ async def apply_read_target_policy(
         **result,
         "best_locator": rewritten,
         "stability": stability,
+        # The only entry: workflow.py's PHASE-2 re-ranker scores every
+        # unique+valid entry and would otherwise re-promote the original.
         "all_locators": [
             {
                 "type": f"read-address-{verdict['kind']}",

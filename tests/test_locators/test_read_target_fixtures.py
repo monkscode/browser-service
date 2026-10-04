@@ -1,7 +1,7 @@
 """
-E2b on real Chromium, through find_unique_locator_action, on the amazon u01
-shape: each accept path (element_data, agent candidate, text-first) must
-end on a container-ordinal locator; a long static heading must not.
+#31 on real Chromium, through find_unique_locator_action, on the amazon u01
+shape: each accept path (element_data, agent candidate, text-first) must end
+on a value-free structural address; a long static heading gets one too.
 """
 
 from pathlib import Path
@@ -109,9 +109,9 @@ async def test_candidate_path_rewrites_to_the_card(page, action_fit_on):
 
 async def test_candidate_path_uses_the_candidate_hook(page, action_fit_on):
     """The candidate-path hook (actions.py, the `if not _demote_reason` exit).
-    A 28-char literal is over read_target's 25-char rewrite floor and under
-    stability's 40-char LONG_TEXT_CHARS, so the candidate is accepted, not
-    demoted, and the rewrite must come from that exit."""
+    A 28-char literal is under stability's 40-char LONG_TEXT_CHARS, so the
+    candidate is accepted, not demoted, and that exit re-addresses it. The
+    assertions check the end state, not which exit produced it."""
     candidate = "h2[aria-label*='Logitech B170 Wireless Mouse']"
     out = await _read(page, f"{CARD} >> nth=1 >> h2", NAMES[1], "get_text", candidate=candidate)
     assert out["best_locator"].startswith(f"{CARD} >> nth=1 >> ")
@@ -225,8 +225,8 @@ async def test_stable_id_path_rewrites_to_the_id(detail_page, action_fit_on):
 
 async def test_duplicate_id_path_gets_a_structural_address(dup_id_page, action_fit_on):
     """The id resolves to count 2 on this page, so it must not be used; #31
-    falls through to the next structural address (here the absolute xpath,
-    the last resort) instead of keeping the value-bound locator."""
+    falls through to the next structural address (here the anchored short
+    path) instead of keeping the value-bound locator."""
     out = await _read(
         dup_id_page,
         "#productTitle",

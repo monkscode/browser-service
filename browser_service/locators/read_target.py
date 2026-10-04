@@ -29,6 +29,7 @@ Referenced by: agent/actions.py
 Depends on: locators/action_fit.py, locators/stability.py
 """
 
+import asyncio
 import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -467,15 +468,30 @@ async def resolve_read_address(
 _IN_SHADOW_JS = "el => el.getRootNode() instanceof ShadowRoot"
 
 
+# The guard reads the locator's own single match, not the pointed element:
+# document-level lookups never return a shadow-root node (an xpath does not
+# pierce it, elementFromPoint retargets to the host).
 async def _in_shadow_root(search_context, locator: str) -> bool:
     try:
-        return bool(
-            await search_context.locator(locator).first.evaluate(
-                _IN_SHADOW_JS, timeout=FIT_READ_TIMEOUT_MS
-            )
-        )
+        matches = search_context.locator(locator)
+        if await matches.count() != 1:
+            return False
+        return bool(await matches.evaluate(_IN_SHADOW_JS, timeout=FIT_READ_TIMEOUT_MS))
     except Exception:
         return False
+
+
+async def _check_read_address(
+    search_context,
+    locator: str,
+    expected_text: Optional[str],
+    element_data: Optional[Dict[str, Any]],
+    point: Optional[Tuple[float, float]],
+) -> Optional[Dict[str, Any]]:
+    """The page-touching half of the gate: None when the locator sits in a shadow root, else the resolver's verdict."""
+    if await _in_shadow_root(search_context, locator):
+        return None
+    return await resolve_read_address(search_context, expected_text or "", element_data, point)
 
 
 async def apply_read_target_policy(
@@ -495,13 +511,26 @@ async def apply_read_target_policy(
     locator = result.get("best_locator") or ""
     if not carries_value(locator, expected_text):
         return result
-    if await _in_shadow_root(search_context, locator):
+    from browser_service.config import config
+
+    budget = config.locator.custom_action_timeout
+    # The pass's OWN budget, not the cascade's remainder: the cascade budget is
+    # per run (the misfit legacy fallback in _settle_action_fit can run a second
+    # full cascade), so a remainder would turn a slow-but-successful cascade
+    # into a spurious not-found.
+    try:
+        verdict = await asyncio.wait_for(
+            _check_read_address(search_context, locator, expected_text, element_data, point),
+            timeout=budget,
+        )
+    except asyncio.TimeoutError:
+        verdict = {"unconfirmed": f"the page did not answer the address checks within {budget} s"}
+    if verdict is None:
         logger.info(
             f"   📎 READ ADDRESS: '{locator}' carries the value but sits in a shadow root — "
             f"keeping it (signal: read-address-shadow-kept)"
         )
         return result
-    verdict = await resolve_read_address(search_context, expected_text or "", element_data, point)
     if "unconfirmed" in verdict:
         logger.info(
             f"   📎 READ ADDRESS: '{locator}' carries the value being read and "

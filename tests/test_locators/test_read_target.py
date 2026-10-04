@@ -1,11 +1,15 @@
 """#31 read-address rule, no browser: which read locators carry the observed text, how an element's own texts are matched, and what the gate does with the resolver's answer."""
 
 import ast
+import asyncio
+import logging
 import re
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from browser_service.config import config
 from browser_service.locators.read_target import (
     STRUCTURAL_CANDIDATES_JS,
     TOKENS_JS,
@@ -172,6 +176,71 @@ class TestGate:
         out, resolver = await _gate(in_shadow=True)
         assert out["best_locator"] == "text=Products"
         resolver.assert_not_awaited()
+
+
+REWRITE = {"locator": ".title", "kind": "class", "source": "pointed element"}
+
+
+def _answers_late(value):
+    """A page call that would answer after a second — far past the budget."""
+
+    async def answer(*_args, **_kwargs):
+        await asyncio.sleep(1)
+        return value
+
+    return answer
+
+
+class TestGateBudget:
+    """The address checks are bounded by the custom-action budget; a page that does not answer in time is an unconfirmed verdict — the value-carrying locator is never handed over."""
+
+    BUDGET = 0.05
+    REASON = f"the page did not answer the address checks within {BUDGET} s"
+
+    async def _run(self, shadow, resolver):
+        with (
+            patch.object(config.locator, "custom_action_timeout", self.BUDGET),
+            patch("browser_service.locators.read_target.resolve_read_address", new=resolver),
+            patch("browser_service.locators.read_target._in_shadow_root", new=shadow),
+        ):
+            started = time.monotonic()
+            out = await apply_read_target_policy(
+                object(),
+                dict(BASE),
+                "get_text",
+                "Products",
+                element_data={"xpath": "html/body/span"},
+                point=(10, 20),
+            )
+            return out, time.monotonic() - started
+
+    def _assert_unconfirmed(self, out, elapsed):
+        assert out["found"] is False
+        assert out["read_address_unconfirmed"] == self.REASON
+        assert out["read_address_rejected"] == "text=Products"
+        assert out["error"] == f"the read locator would carry the value being read; {self.REASON}"
+        assert "best_locator" not in out
+        assert elapsed < 0.5
+
+    async def test_a_resolver_slower_than_the_budget_is_unconfirmed(self, caplog):
+        caplog.set_level(logging.INFO, logger="browser_service.locators.read_target")
+        out, elapsed = await self._run(
+            AsyncMock(return_value=False), AsyncMock(side_effect=_answers_late(REWRITE))
+        )
+        self._assert_unconfirmed(out, elapsed)
+        assert "signal: read-address-unconfirmed" in caplog.text
+
+    async def test_a_shadow_guard_slower_than_the_budget_is_unconfirmed(self):
+        resolver = AsyncMock(return_value=REWRITE)
+        out, elapsed = await self._run(AsyncMock(side_effect=_answers_late(False)), resolver)
+        self._assert_unconfirmed(out, elapsed)
+        resolver.assert_not_awaited()
+
+    async def test_answers_inside_the_budget_are_unchanged(self):
+        resolver = AsyncMock(return_value=REWRITE)
+        out, _ = await self._run(AsyncMock(return_value=False), resolver)
+        assert out["best_locator"] == ".title"
+        resolver.assert_awaited_once()
 
 
 def test_tokens_script_reads_every_value_the_candidate_script_builds_on():

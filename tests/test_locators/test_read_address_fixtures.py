@@ -12,6 +12,7 @@ from playwright.async_api import async_playwright
 from browser_service.agent.actions import find_unique_locator_action
 from browser_service.config import config
 from browser_service.locators.read_target import (
+    _in_shadow_root,
     carries_value,
     resolve_read_address,
     structural_address,
@@ -301,6 +302,31 @@ async def test_flow_shadow_root_keeps_todays_locator(page, action_fit_on):
     )
     assert result["found"] is True
     assert result["best_locator"] == 'text="Shadow text"'
+
+
+TWIN_PAGE = """
+<div id="host"></div>
+<p class="twin">Light twin</p>
+<script>
+  document.getElementById('host').attachShadow({mode: 'open'}).innerHTML =
+    '<span class="twin">Shadow twin</span><span class="solo">Shadow solo</span>';
+</script>
+"""
+
+
+async def test_shadow_guard_keeps_a_locator_only_when_it_matches_once(page):
+    """A selector list matching two nodes whose FIRST match sits in a shadow root: the guard must say False (the resolver then runs and fails closed). A unique shadow match is True."""
+    twins = "span.twin, p.twin"  # a plain ".twin" lists the light match first; a list keeps the shadow one first
+    await page.set_content(TWIN_PAGE)
+    assert await page.locator(twins).count() == 2
+    first_is_shadow = await page.locator(twins).first.evaluate(
+        "el => el.getRootNode() instanceof ShadowRoot"
+    )
+    assert first_is_shadow is True
+    assert await _in_shadow_root(page, twins) is False
+    assert await _in_shadow_root(page, ".solo") is True
+    assert await _in_shadow_root(page, "p.twin") is False  # unique, in the light DOM
+    assert await _in_shadow_root(page, ".absent") is False
 
 
 # ---- Edge cases: direct text, a confirming ancestor, CSS-hostile and volatile tokens -------------

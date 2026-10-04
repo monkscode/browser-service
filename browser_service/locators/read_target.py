@@ -40,10 +40,6 @@ from browser_service.locators.stability import STABLE, classify_locator, score_s
 
 logger = logging.getLogger(__name__)
 
-# The spec's §2.3 cut: Get Text locators embedding >=25 chars of literal
-# text failed 3 of 3 in the corpus; short literals are overwhelmingly labels.
-DATA_LITERAL_MIN_CHARS = 25
-
 # How far up the ancestor chain the container search looks. Measured on
 # live amazon.in (2026-09-16): the repeated s-search-result card sits 14
 # ancestors above the product title, behind intra-card wrappers that each
@@ -61,19 +57,76 @@ READ_TARGET_PRIORITY = 9
 # Mirrors smart_locator.py's PRIORITY_ID (native id attribute is priority 1).
 READ_TARGET_ID_PRIORITY = 1
 
-# Literal-bearing locator shapes. Each quote style has its own pattern so an
-# apostrophe inside a double-quoted value ("Men's ...") is still captured.
-_LITERAL_RES = (
-    re.compile(r'text\s*=\s*"([^"]*)"'),
-    re.compile(r"text\s*=\s*'([^']*)'"),
-    re.compile(r'\[(?:aria-label|title|alt|placeholder|name)\s*[*^$~|]?=\s*"([^"]*)"\s*\]'),
-    re.compile(r"\[(?:aria-label|title|alt|placeholder|name)\s*[*^$~|]?=\s*'([^']*)'\s*\]"),
-    re.compile(r':has-text\(\s*"([^"]*)"\s*\)'),
-    re.compile(r":has-text\(\s*'([^']*)'\s*\)"),
-    re.compile(r"text\(\)\s*=\s*'([^']*)'"),
-    re.compile(r"contains\(\s*(?:text\(\)|\.)\s*,\s*'([^']*)'\s*\)"),
-    re.compile(r"@(?:aria-label|title|alt)\s*=\s*'([^']*)'"),
+_Q = r"(?:\"([^\"]*)\"|'([^']*)')"
+_VALUE_PARTS = (
+    re.compile(r"(?:^|>>|\s)text\s*=\s*" + _Q),
+    re.compile(r":(?:has-text|text|text-is)\(\s*" + _Q + r"\s*\)"),
+    re.compile(r"\[\s*(?:title|aria-label|alt|placeholder)\s*[*^$~|]?=\s*" + _Q + r"\s*\]"),
+    re.compile(r"role\s*=\s*[\w-]+\s*\[[^\]]*\bname\s*[*^$~|]?=\s*" + _Q),
+    re.compile(r"text\(\)\s*=\s*" + _Q),
+    re.compile(r"contains\(\s*(?:text\(\)|\.|normalize-space\([^)]*\))\s*,\s*" + _Q + r"\s*\)"),
+    re.compile(r"normalize-space\([^)]*\)\s*=\s*" + _Q),
+    re.compile(r"@(?:title|aria-label|alt|placeholder)\s*=\s*" + _Q),
 )
+
+
+def normalize_text(text: Any) -> str:
+    """Casefold, collapse whitespace (NBSP included), drop a trailing ellipsis."""
+    return " ".join(str(text or "").split()).casefold().rstrip(".…").rstrip()
+
+
+_HAS_TEXT_ANY = re.compile(r":(?:has-text|text|text-is)\(([^)]*)\)")
+
+
+def displayed_literals(locator: str) -> List[str]:
+    """Every displayed-text literal the locator matches on (text=, :has-text, title / aria-label / alt / placeholder, role name, xpath text forms), quoted or unquoted."""
+    out: List[str] = []
+    for pattern in _VALUE_PARTS:
+        for m in pattern.finditer(locator or ""):
+            out.append(next((g for g in m.groups() if g is not None), ""))
+    # Unquoted forms, parsed without a backtracking regex: `text=Foo bar` as a
+    # whole `>>` hop, and `:has-text(Foo)`.
+    for part in (locator or "").split(">>"):
+        hop = part.strip()
+        if hop[:5].lower() == "text=" and hop[5:6] not in ("'", '"'):
+            out.append(hop[5:].strip())
+    for m in _HAS_TEXT_ANY.finditer(locator or ""):
+        inner = m.group(1).strip()
+        if inner[:1] not in ("'", '"'):
+            out.append(inner)
+    return out
+
+
+def carries_value(locator: str, observed: Optional[str]) -> bool:
+    """True when the locator matches on the observed text: equal, or one contains the other when both are >= 3 characters."""
+    value = normalize_text(observed)
+    if not value:
+        return False
+    for literal in displayed_literals(locator):
+        lit = normalize_text(literal)
+        if lit and (
+            lit == value or (len(lit) >= 3 and len(value) >= 3 and (lit in value or value in lit))
+        ):
+            return True
+    return False
+
+
+def own_text_equals(own: Optional[str], observed: Optional[str]) -> bool:
+    """True when an element's own text shows the observed text (normalised), a trailing ... allowed on either side."""
+    o, v = normalize_text(own), normalize_text(observed)
+    if not o or not v:
+        return False
+    if o == v:
+        return True
+    if str(observed).rstrip().endswith(("...", "…")) and o.startswith(v):
+        return True
+    return str(own).rstrip().endswith(("...", "…")) and v.startswith(o)
+
+
+def own_texts_match(texts: List[Optional[str]], observed: Optional[str]) -> bool:
+    """The element shows what the agent saw in ANY of its own texts."""
+    return any(own_text_equals(t, observed) for t in texts or [])
+
 
 # Walk up from the target to the nearest ancestor that is one of >=2
 # same-shape siblings (each holding exactly one element like the target),
@@ -149,31 +202,6 @@ CONTAINER_ORDINAL_JS = """el => {
 }""".replace("__MAX_DEPTH__", str(CONTAINER_WALK_MAX_ANCESTORS))
 
 
-def normalize_literal(text: Any) -> str:
-    """Casefold, collapse whitespace, drop a trailing ellipsis — the agent
-    copies truncated card titles verbatim ('… For Me...')."""
-    norm = " ".join(str(text or "").split()).casefold()
-    return norm.rstrip(".…").rstrip()
-
-
-def embedded_literals(locator: str) -> List[str]:
-    """Every literal text/attribute value the locator matches on."""
-    return [m.group(1) for pattern in _LITERAL_RES for m in pattern.finditer(locator or "")]
-
-
-def data_bound_literal(locator: str, expected_text: Optional[str]) -> str:
-    """The embedded literal that makes ``locator`` depend on the value being
-    read, or "" when there is none."""
-    needle = normalize_literal(expected_text)
-    if len(needle) < 3:
-        return ""
-    for literal in embedded_literals(locator):
-        norm = normalize_literal(literal)
-        if len(norm) >= DATA_LITERAL_MIN_CHARS and (norm in needle or needle in norm):
-            return literal
-    return ""
-
-
 async def _resolves_to_same_element(search_context, locator: str, candidate: str) -> bool:
     """True when ``candidate`` resolves to exactly one element, the SAME
     element ``locator`` resolves to. Every failure — a non-unique count, a
@@ -227,7 +255,7 @@ async def apply_read_target_policy(
     if result.get("row_anchored") or result.get("element_type") == "collection":
         return result
     locator = result.get("best_locator") or ""
-    literal = data_bound_literal(locator, expected_text)
+    literal = locator if carries_value(locator, expected_text) else ""
     if not literal:
         return result
     info_id = ((result.get("element_info") or {}).get("id") or "").strip()

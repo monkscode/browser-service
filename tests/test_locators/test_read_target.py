@@ -8,35 +8,91 @@ from unittest.mock import ANY, AsyncMock, patch
 import pytest
 
 from browser_service.locators import read_target
-from browser_service.locators.read_target import apply_read_target_policy, data_bound_literal
+from browser_service.locators.read_target import (
+    apply_read_target_policy,
+    carries_value,
+    displayed_literals,
+    own_text_equals,
+    own_texts_match,
+)
 
 AMAZON = "Portronics Toad 23 Wireless Optical Mouse with 2.4GHz USB Nano Dongle"
-FLIPKART = "Sports Sneaker Running And Outdoor Walking Shoes For Men"
-LOGI = "Logitech B170 Wireless Mouse, 2.4 GHz with USB Nano Receiver"
 
 
 @pytest.mark.parametrize(
-    "locator, expected, want",
+    "locator, observed, want",
     [
-        (f'[aria-label="{AMAZON}"]', AMAZON, True),  # u01
-        ('text="Sports Sneaker Running And Outdoor Walking Shoes For Me..."', FLIPKART, True),
-        ("a[title*='Sports Sneaker Running And Outdoor Walking Shoes']", FLIPKART, True),  # u02 r2
-        ('role=link[name="Logitech B170 Wireless Mouse, 2.4 GHz with USB"]', LOGI, True),
-        ("xpath=//h2[contains(text(),'Logitech B170 Wireless Mouse, 2.4 GHz')]", LOGI, True),
+        ("text=Products", "Products", True),
+        ('text="John" >> nth=0', "John", True),
+        ('text="Cierra"', "Cierra", True),
+        ("text=Sony vaio i5", "Sony vaio i5", True),
+        ("a:has-text('Sony vaio i5')", "Sony vaio i5", True),
+        ("header >> text=Dashboard", "Dashboard", True),
+        ('role=link[name="A Light in the Attic"]', "A Light in the Attic", True),
+        ('[title="A Light in the Attic"]', "A Light in the ...", True),
+        (f'[aria-label="{AMAZON}"]', AMAZON, True),
+        ('[aria-label="Men\'s Running Shoes"]', "Men's Running Shoes", True),
         (
-            '[aria-label="Men\'s Running Shoes With Extra Cushioning"]',
-            "Men's Running Shoes With Extra Cushioning",
+            "xpath=//h2[contains(text(),'Logitech B170 Wireless')]",
+            "Logitech B170 Wireless Mouse",
             True,
         ),
-        ('text="John" >> nth=0', "John", False),  # q05: short literal, 40/42 passed
-        ('text="buy milk"', "buy milk", False),  # u10: short
-        ('[aria-label="Search for Products, Brands and More"]', AMAZON, False),  # unrelated
-        ("id=twotabsearchtextbox", AMAZON, False),
-        (f'[aria-label="{AMAZON}"]', None, False),
+        ('[placeholder="Email"]', "Email", True),
+        ("text=1", "1", True),
+        ("li:nth-child(1) > span", "1", False),
+        ("input[name='email']", "Email", False),
+        ('[data-test="title"]', "Title", False),
+        ("#title", "Title", False),
+        (".title", "Products", False),
+        ('[aria-label="Search for Products, Brands and More"]', AMAZON, False),
+        ("text=Products", None, False),
+        ("text=Products", "", False),
     ],
 )
-def test_data_bound_literal(locator, expected, want):
-    assert bool(data_bound_literal(locator, expected)) is want
+def test_carries_value(locator, observed, want):
+    assert carries_value(locator, observed) is want
+
+
+def test_displayed_literals_reads_every_quote_style():
+    assert displayed_literals('text="a" >> [title=\'b\'] >> role=button[name="c"]') == [
+        "a",
+        "b",
+        "c",
+    ]
+
+
+@pytest.mark.parametrize(
+    "own, observed, want",
+    [
+        ("Products", "Products", True),
+        ("  PRODUCTS\n", "products", True),
+        ("Products ", "Products", True),
+        ("A Light in the Attic", "A Light in the ...", True),
+        ("A Light in the Attic", "A Light in the …", True),
+        ("Name (A to Z)\nName (Z to A)", "Products", False),
+        ("Products (6)", "Products", False),
+        ("", "Products", False),
+        ("Products", None, False),
+        ("A Light in the ...", "A Light in the Attic", True),  # the PAGE truncated (books)
+    ],
+)
+def test_own_text_equals(own, observed, want):
+    assert own_text_equals(own, observed) is want
+
+
+def test_own_texts_match_any_own_text():
+    """flipkart: the agent reported the title attribute; the visible text is shorter."""
+    texts = [
+        "Trendy Sports Running Shoes",
+        "",
+        "",
+        "",
+        "Trendy Sports Running Shoes For Men (Black, 8)",
+        "",
+    ]
+    assert own_texts_match(texts, "Trendy Sports Running Shoes For Men (Black, 8)") is True
+    assert own_texts_match(texts, "Premium White Sneakers") is False
+    assert own_texts_match([], "Products") is False
 
 
 REWRITTEN = '[data-component-type="s-search-result"] >> nth=0 >> h2'
@@ -121,12 +177,6 @@ class TestPolicy:
         assert out["best_locator"] == REWRITTEN
         id_validator.assert_not_awaited()
         builder.assert_awaited_once()
-
-    async def test_short_literal_is_left_alone(self):
-        result = {**BASE, "best_locator": 'text="John" >> nth=0'}
-        out, builder = await _apply(result=result, expected="John")
-        assert out["best_locator"] == 'text="John" >> nth=0'
-        builder.assert_not_awaited()
 
 
 def test_container_walk_max_ancestors_is_16():

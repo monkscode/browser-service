@@ -1,217 +1,497 @@
 """
-Read-target policy (E2b, 2026-09-15 locator evaluation).
+Read-address rule (bs #31, owner-approved 2026-10-03/04).
 
-A read step's locator must not embed the value it reads. amazon u01 shipped
-[aria-label="Portronics Toad 23 Wireless Optical Mouse…"] for "the first
-product name": unique and right at discovery, dead on the next search,
-because the name IS the data. Corpus read locators (1,921 runs): a literal
-of >=40 chars passed 0 of 4; literals under 10 chars passed 40 of 42
-(text="John" >> nth=0 on a static table).
+On a READ step a locator must never carry the value it reads — a heading's
+word, today's first product name. Such a locator proves only that the word is
+somewhere on the page, and it breaks on the next run when the data changes
+(flipkart 2026-10-02: two runs one minute apart, two different first products).
 
-Applied after the cascade has chosen, and only when both hold:
-- the step is a read (get_text / get_attribute) with an expected_text;
-- the locator embeds a literal of >= DATA_LITERAL_MIN_CHARS that equals,
-  contains or is contained in expected_text.
-The locator is then rewritten to id=<id> when the element carries a stable
-id, or otherwise to <container> >> nth=<i> >> <descendant> when the target
-sits in a REPEATED container (a list item, a table row, a result card — the
-structural evidence that the text is per-item data, not a label; a long
-static heading has no such ancestor). Either rewrite is validated live to
-resolve to the SAME element. When neither validates, the original stands
-(demote, never delete).
-
-Not applied to collections (the collection handler owns them), row-anchored
-results (anchored on the QA's row datum on purpose), or iframe results. An
-element with a stable id is rewritten straight to that id (validated live,
-same-element check) instead of the container-ordinal rewrite below — the
-agent-candidate path's element_info can carry an id that never lands in
-all_locators, so workflow.py's priority check has nothing there to force.
+When the chosen read locator carries the observed text (any displayed-text
+form, any length), the address is rebuilt from what the agent POINTED at —
+the indexed element, then the element under its vision point — never from the
+text. The element must show the observed text in one of its own texts, its
+direct text included (a close link or a required-field star inside it does not
+count); when the pointed node shows nothing or only part of that text, its
+nearest three ancestors may confirm instead. Its address is the first
+structural candidate (stable id, test id, repeated container + position +
+shortest inner selector, class, anchored short path, then the xpath
+fallbacks) that is stable, value-free, matches once and is the same node,
+with Playwright's `>> visible=true` filter for a hidden twin. The candidate
+script never builds on a token Python scores volatile, and writes a class or
+id that would need a CSS backslash as a quoted attribute, because Robot
+Framework strips backslashes.
+Nothing confirmed → found=False with the reason; registration.py asks the
+agent once more, then reports the element not found. Untouched: non-read
+actions, iframes, collections, row-anchored results, shadow-root elements,
+and everything when ENABLE_ACTION_FIT=false.
 
 Referenced by: agent/actions.py
 Depends on: locators/action_fit.py, locators/stability.py
 """
 
+import asyncio
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from browser_service.locators.action_fit import FIT_READ_TIMEOUT_MS, READ_ACTIONS
-from browser_service.locators.stability import STABLE, classify_locator, score_stability
+from browser_service.locators.stability import (
+    STABLE,
+    classify_locator,
+    is_volatile_attr_name,
+    score_stability,
+)
 
 logger = logging.getLogger(__name__)
 
-# The spec's §2.3 cut: Get Text locators embedding >=25 chars of literal
-# text failed 3 of 3 in the corpus; short literals are overwhelmingly labels.
-DATA_LITERAL_MIN_CHARS = 25
-
-# How far up the ancestor chain the container search looks. Measured on
+# How far up the ancestor chain the card / row search looks. Measured on
 # live amazon.in (2026-09-16): the repeated s-search-result card sits 14
-# ancestors above the product title, behind intra-card wrappers that each
-# have a single same-tag sibling, so a shallower walk gives up inside one
-# card and the data-bound locator stands. The walk returns at the FIRST
-# qualifying ancestor, so a larger bound can only turn "no rewrite" into a
-# rewrite — it can never substitute a different container for one already
-# found, and every other guard (>=2 same-shape peers, shared non-per-item
-# evidence, STABLE tokens, count==1, same-element validation) is unchanged.
+# ancestors above the product title, behind intra-card wrappers, so a
+# shallower walk gives up inside one card and finds no card address.
 CONTAINER_WALK_MAX_ANCESTORS = 16
 
 # Same band as the nth-child strategy — structural and positional.
 READ_TARGET_PRIORITY = 9
 
-# Mirrors smart_locator.py's PRIORITY_ID (native id attribute is priority 1).
-READ_TARGET_ID_PRIORITY = 1
-
-# Literal-bearing locator shapes. Each quote style has its own pattern so an
-# apostrophe inside a double-quoted value ("Men's ...") is still captured.
-_LITERAL_RES = (
-    re.compile(r'text\s*=\s*"([^"]*)"'),
-    re.compile(r"text\s*=\s*'([^']*)'"),
-    re.compile(r'\[(?:aria-label|title|alt|placeholder|name)\s*[*^$~|]?=\s*"([^"]*)"\s*\]'),
-    re.compile(r"\[(?:aria-label|title|alt|placeholder|name)\s*[*^$~|]?=\s*'([^']*)'\s*\]"),
-    re.compile(r':has-text\(\s*"([^"]*)"\s*\)'),
-    re.compile(r":has-text\(\s*'([^']*)'\s*\)"),
-    re.compile(r"text\(\)\s*=\s*'([^']*)'"),
-    re.compile(r"contains\(\s*(?:text\(\)|\.)\s*,\s*'([^']*)'\s*\)"),
-    re.compile(r"@(?:aria-label|title|alt)\s*=\s*'([^']*)'"),
+_Q = r"(?:\"([^\"]*)\"|'([^']*)')"
+_VALUE_PARTS = (
+    re.compile(r"(?:^|>>|\s)text\s*=\s*" + _Q),
+    re.compile(r":(?:has-text|text|text-is)\(\s*" + _Q + r"\s*\)"),
+    re.compile(r"\[\s*(?:title|aria-label|alt|placeholder)\s*[*^$~|]?=\s*" + _Q + r"\s*\]"),
+    re.compile(r"role\s*=\s*[\w-]+\s*\[[^\]]*\bname\s*[*^$~|]?=\s*" + _Q),
+    re.compile(r"text\(\)\s*=\s*" + _Q),
+    re.compile(r"contains\(\s*(?:text\(\)|\.|normalize-space\([^)]*\))\s*,\s*" + _Q + r"\s*\)"),
+    re.compile(r"normalize-space\([^)]*\)\s*=\s*" + _Q),
+    re.compile(r"@(?:title|aria-label|alt|placeholder)\s*=\s*" + _Q),
 )
 
-# Walk up from the target to the nearest ancestor that is one of >=2
-# same-shape siblings (each holding exactly one element like the target),
-# and describe it as a container selector + its document-order index + the
-# target's selector inside it. Only shared, non-per-item evidence names the
-# container: a shared data-*/role value, a shared class, or li/tr/article
-# under a parent with an id or class. Returns null when none qualifies.
-CONTAINER_ORDINAL_JS = """el => {
-    const SHARED_ATTRS = ['data-component-type', 'data-testid', 'data-test', 'data-qa',
-                          'data-cy', 'role'];
-    const ROW_TAGS = ['li', 'tr', 'article'];
-    const tag = el.tagName.toLowerCase();
-    const cls = el.classList.length ? el.classList[0] : '';
-    let node = el;
-    for (let depth = 0; depth < __MAX_DEPTH__ && node.parentElement; depth++) {
-        const tokens = [];
-        let descendant = '';
-        if (node !== el) {
-            const withClass = cls ? tag + '.' + CSS.escape(cls) : '';
-            if (withClass && node.querySelectorAll(withClass).length === 1) {
-                descendant = withClass;
-                tokens.push(['class', cls]);
-            } else if (node.querySelectorAll(tag).length === 1) {
-                descendant = tag;
-            } else {
-                node = node.parentElement;
-                continue;
-            }
-        }
-        const parent = node.parentElement;
-        const peers = Array.from(parent.children).filter(c =>
-            c.tagName === node.tagName
-            && (!descendant || c.querySelectorAll(descendant).length === 1));
-        if (peers.length >= 2) {
-            const ntag = node.tagName.toLowerCase();
-            let sel = '';
-            for (const a of SHARED_ATTRS) {
-                const v = node.getAttribute(a);
-                if (v && peers.filter(p => p.getAttribute(a) === v).length >= 2) {
-                    sel = '[' + a + '=' + JSON.stringify(v) + ']';
-                    tokens.push([a, v]);
-                    break;
-                }
-            }
-            if (!sel) {
-                const shared = Array.from(node.classList)
-                    .find(c => peers.filter(p => p.classList.contains(c)).length >= 2);
-                if (shared) {
-                    sel = ntag + '.' + CSS.escape(shared);
-                    tokens.push(['class', shared]);
-                }
-            }
-            if (!sel && ROW_TAGS.includes(ntag)) {
-                if (parent.id) {
-                    sel = '#' + CSS.escape(parent.id) + ' > ' + ntag;
-                    tokens.push(['id', parent.id]);
-                } else if (parent.classList.length) {
-                    sel = parent.tagName.toLowerCase() + '.'
-                        + CSS.escape(parent.classList[0]) + ' > ' + ntag;
-                    tokens.push(['class', parent.classList[0]]);
-                }
-            }
-            if (sel) {
-                const index = Array.from(document.querySelectorAll(sel)).indexOf(node);
-                if (index >= 0) {
-                    return {container: sel, index: index, descendant: descendant, tokens: tokens};
-                }
-            }
-        }
-        node = parent;
+
+def normalize_text(text: Any) -> str:
+    """Casefold, collapse whitespace (NBSP included), drop a trailing ellipsis."""
+    return " ".join(str(text or "").split()).casefold().rstrip(".…").rstrip()
+
+
+_HAS_TEXT_ANY = re.compile(r":(?:has-text|text|text-is)\(([^)]*)\)")
+
+
+def displayed_literals(locator: str) -> List[str]:
+    """Every displayed-text literal the locator matches on (text=, :has-text, title / aria-label / alt / placeholder, role name, xpath text forms), quoted or unquoted."""
+    out: List[str] = []
+    for pattern in _VALUE_PARTS:
+        for m in pattern.finditer(locator or ""):
+            out.append(next((g for g in m.groups() if g is not None), ""))
+    # Unquoted forms, parsed without a backtracking regex: `text=Foo bar` as a
+    # whole `>>` hop, and `:has-text(Foo)`.
+    for part in (locator or "").split(">>"):
+        hop = part.strip()
+        if hop[:5].lower() == "text=" and hop[5:6] not in ("'", '"'):
+            out.append(hop[5:].strip())
+    for m in _HAS_TEXT_ANY.finditer(locator or ""):
+        inner = m.group(1).strip()
+        if inner[:1] not in ("'", '"'):
+            out.append(inner)
+    return out
+
+
+def carries_value(locator: str, observed: Optional[str]) -> bool:
+    """True when the locator matches on the observed text: equal, or one contains the other when both are >= 3 characters."""
+    value = normalize_text(observed)
+    if not value:
+        return False
+    for literal in displayed_literals(locator):
+        lit = normalize_text(literal)
+        if lit and (
+            lit == value or (len(lit) >= 3 and len(value) >= 3 and (lit in value or value in lit))
+        ):
+            return True
+    return False
+
+
+def own_text_equals(own: Optional[str], observed: Optional[str]) -> bool:
+    """True when an element's own text shows the observed text (normalised), a trailing ... allowed on either side."""
+    o, v = normalize_text(own), normalize_text(observed)
+    if not o or not v:
+        return False
+    if o == v:
+        return True
+    if str(observed).rstrip().endswith(("...", "…")) and o.startswith(v):
+        return True
+    return str(own).rstrip().endswith(("...", "…")) and v.startswith(o)
+
+
+def own_texts_match(texts: List[Optional[str]], observed: Optional[str]) -> bool:
+    """The element shows what the agent saw in ANY of its own texts."""
+    return any(own_text_equals(t, observed) for t in texts or [])
+
+
+# Every text the element itself shows or announces: rendered text, a control's
+# value / placeholder, an image's alt, the title tooltip, the aria-label — and
+# its DIRECT text: its own child text nodes only, whitespace-collapsed (a flash
+# message with a close link, a label with a required star).
+OWN_TEXT_JS = """el => [(el.innerText || '').trim(), el.value || '', el.getAttribute('placeholder') || '',
+    el.getAttribute('alt') || '', el.getAttribute('title') || '', el.getAttribute('aria-label') || '',
+    Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.nodeValue).join('')
+      .replace(/\\s+/g, ' ').trim()]"""
+
+# Up to 3 ancestors of the source node (stopping before body): the own texts of
+# each, in order. Read only when the node itself does not match and may walk up
+# (_may_walk_up) — an ancestor's innerText can be a whole table. Text never FINDS
+# a node — it only confirms one the agent pointed at, or one that contains the
+# agent's point.
+ANCESTOR_CONFIRM_LIMIT = 3
+ANCESTOR_TEXTS_JS = (
+    "el => { const own = "
+    + OWN_TEXT_JS
+    + "; const out = []; let n = el.parentElement;"
+    + " for (let i = 0; i < "
+    + str(ANCESTOR_CONFIRM_LIMIT)
+    + " && n && n.tagName !== 'BODY' && n.tagName !== 'HTML'; i++, n = n.parentElement)"
+    + " out.push(own(n)); return out; }"
+)
+ANCESTOR_AT_JS = (
+    "(el, k) => { let n = el; for (let i = 0; i < k; i++) n = n.parentElement; return n; }"
+)
+
+# Every token the candidate script may build on, for the element and ALL its
+# ancestors: [kind, value] with the same kinds the candidates' tokens use — ids,
+# classes, data-* attribute NAMES and the VALUES of the attributes it builds on
+# (its SHARED_ATTRS, the test ids among them). Python scores them and the
+# volatile ones go back into STRUCTURAL_CANDIDATES_JS so it never builds on one.
+TOKENS_JS = """el => { const out = [];
+  const VALUE_ATTRS = ['data-component-type', 'data-testid', 'data-test', 'data-qa', 'data-cy', 'role'];
+  for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+    if (n.id) out.push(['id', n.id]);
+    for (const c of Array.from(n.classList || [])) out.push(['class', c]);
+    for (const at of Array.from(n.attributes)) {
+      if (VALUE_ATTRS.includes(at.name) && at.value) out.push([at.name, at.value]);
+      // a data-* NAME is a token too (containerBases builds tag[data-x])
+      if (at.name.startsWith('data-')) out.push(['attr-name', at.name]);
+    }
+  }
+  return out; }"""
+
+
+def _is_volatile_token(kind: str, value: str) -> bool:
+    """One verdict for a token: an attribute NAME by is_volatile_attr_name, a value by score_stability."""
+    if kind == "attr-name":
+        return is_volatile_attr_name(value)
+    return score_stability(kind, value) != STABLE
+
+
+STRUCTURAL_CANDIDATES_JS = """(el, volatile) => {
+  // Tokens Python scored volatile are never built on.
+  const V = new Set((volatile || []).map(([k, v]) => k + '\\n' + v));
+  const vol = (k, v) => V.has(k + '\\n' + v);
+  const esc = s => CSS.escape(s);
+  // A token goes into a selector as-is when CSS.escape leaves it unchanged; otherwise in
+  // the quoted attribute form, which needs no backslash (Robot Framework strips
+  // backslashes) — class → tag[class~="token"], id → [id="token"]. A token holding a
+  // double quote or a backslash cannot be quoted safely: null, the token is skipped.
+  const clsSel = c => esc(c) === c ? '.' + esc(c)
+    : (c.includes('"') || c.includes('\\\\') ? null : `[class~="${c}"]`);
+  // An id not starting with a letter or underscore is quoted too: NLRF adds css= only to a
+  // cell matching ^[#.][A-Za-z_], so `#-side` would become a Robot comment.
+  const idSel = v => (esc(v) === v && /^[A-Za-z_]/.test(v)) ? '#' + esc(v)
+    : (v.includes('"') || v.includes('\\\\') ? null : `[id="${v}"]`);
+  const okClass = c => !vol('class', c) && clsSel(c) !== null;
+  const ROWS = ['TR', 'LI', 'ARTICLE'];
+  const POS = ['TR', 'LI', 'ARTICLE', 'TD', 'TH'];
+  const classesOf = n => Array.from(n.classList || []);
+  const out = [];
+  const add = (kind, locator, tokens) => out.push({kind, locator, tokens});
+  const tag = el.tagName.toLowerCase();
+  if (el.id && !vol('id', el.id))
+    add('id', /^[A-Za-z][\\w-]*$/.test(el.id) ? `id=${el.id}` : `[id="${el.id}"]`, [['id', el.id]]);
+  for (const a of ['data-testid', 'data-test', 'data-qa', 'data-cy']) {
+    const v = el.getAttribute(a);
+    if (v && !v.includes('"') && !vol(a, v)) add('test-id', `[${a}="${v}"]`, [[a, v]]);
+  }
+  // The first class that is not volatile and can be written.
+  const firstClass = n => classesOf(n).find(okClass);
+  const step = n => { const c = firstClass(n); return n.tagName.toLowerCase() + (c ? clsSel(c) : ''); };
+  const stepTokens = n => { const c = firstClass(n); return c ? [['class', c]] : []; };
+  // The shortest selector that finds exactly el inside container a: tag.class, tag, then the
+  // hop path with R2 pins.
+  const innerSel = a => {
+    const tries = [];
+    const c = firstClass(el);
+    if (c) tries.push([`${tag}${clsSel(c)}`, [['class', c]]]);
+    tries.push([tag, []]);
+    const hops = [], hopTokens = [];
+    for (let n = el; n !== a; n = n.parentElement) {
+      let h = step(n);
+      const same = Array.from(n.parentElement.children).filter(s => s.matches(h));
+      if (same.length > 1 || POS.includes(n.tagName))
+        h += `:nth-of-type(${Array.from(n.parentElement.children).filter(s => s.tagName === n.tagName).indexOf(n) + 1})`;
+      hops.unshift(h);
+      hopTokens.push(...stepTokens(n));
+    }
+    tries.push([hops.join(' > '), hopTokens]);
+    for (const [s, t] of tries) {
+      const m = a.querySelectorAll(s);
+      if (m.length === 1 && m[0] === el) return [s, t];
     }
     return null;
+  };
+  // R1 + same shape: a container is a shared data-* VALUE (data-component-type, …), a shared
+  // data-* attribute NAME, a shared class, or a row/list tag; its peers must each hold exactly
+  // one element the inner selector finds. Never a bare div.
+  const SHARED_ATTRS = ['data-component-type', 'data-testid', 'data-test', 'data-qa', 'data-cy', 'role'];
+  const containerBases = a => {
+    const t = a.tagName.toLowerCase();
+    const out = [];
+    for (const at of SHARED_ATTRS) {
+      const v = a.getAttribute(at);
+      if (v && !v.includes('"') && !vol(at, v)) out.push([`[${at}="${v}"]`, [[at, v]]]);
+    }
+    for (const at of Array.from(a.attributes))
+      if (at.name.startsWith('data-') && !SHARED_ATTRS.includes(at.name)
+          // a data-* NAME the parent carries too (Vue's scoped data-v-<hash> is on every
+          // element of a component) is not a container mark; nor is a build-generated name.
+          && !(a.parentElement && a.parentElement.hasAttribute(at.name))
+          && !vol('attr-name', at.name))
+        out.push([`${t}[${at.name}]`, [['attr-name', at.name]]]);
+    for (const c of classesOf(a).filter(okClass)) out.push([`${t}${clsSel(c)}`, [['class', c]]]);
+    if (ROWS.includes(a.tagName)) out.push([t, []]);
+    return out;
+  };
+  const anchorOf = n => {
+    for (let a = n.parentElement; a; a = a.parentElement) {
+      // A volatile id / test id / class is skipped and the walk goes on.
+      if (a.id && !vol('id', a.id) && idSel(a.id) !== null) return [idSel(a.id), a, [['id', a.id]]];
+      for (const t of ['data-testid', 'data-test']) {
+        const v = a.getAttribute(t);
+        if (v && !v.includes('"') && !vol(t, v)) return [`[${t}="${v}"]`, a, [[t, v]]];
+      }
+      const c = firstClass(a);
+      if (c && document.querySelectorAll(`${a.tagName.toLowerCase()}${clsSel(c)}`).length === 1)
+        return [`${a.tagName.toLowerCase()}${clsSel(c)}`, a, [['class', c]]];
+    }
+    return null;
+  };
+  let cardFound = false;
+  for (let a = el.parentElement, depth = 0; a && a.parentElement && depth < __MAX_DEPTH__ && !cardFound;
+       a = a.parentElement, depth++) {
+    const inner = innerSel(a);
+    if (!inner) continue;
+    const [innerS, innerTokens] = inner;
+    for (const [base, baseTokens] of containerBases(a)) {
+      const peers = Array.from(a.parentElement.children).filter(p => p !== a && p.matches(base)
+        && p.querySelectorAll(innerS).length === 1);
+      if (!peers.length && !ROWS.includes(a.tagName)) continue;   // a lone row still means "row 1"
+      const sel = (a.parentElement.tagName === 'TBODY' ? 'tbody > ' : '') + base;
+      let scope = '', scopeTokens = [], root = document;
+      const anc = anchorOf(a);
+      if (anc && document.querySelectorAll(sel).length !== anc[1].querySelectorAll(sel).length)
+        [scope, root, scopeTokens] = [anc[0] + ' >> ', anc[1], anc[2]];
+      const index = Array.from(root.querySelectorAll(sel)).indexOf(a);
+      if (index < 0) continue;
+      add('card-path', `${scope}${sel} >> nth=${index} >> ${innerS}`, [...scopeTokens, ...baseTokens, ...innerTokens]);
+      cardFound = true;
+      break;
+    }
+  }
+  const cls = classesOf(el).filter(okClass);
+  for (const c of cls) add('class', `${tag}${clsSel(c)}`, [['class', c]]);
+  if (cls.length > 1) add('class', tag + cls.map(clsSel).join(''), cls.map(c => ['class', c]));
+  // Anchored short path: the nearest uniquely identifiable ancestor (id, test id or a class
+  // unique in the document) and the shortest selector inside it — generic, usually position-free.
+  const near = anchorOf(el);
+  if (near) {
+    const inside = innerSel(near[1]);
+    if (inside) add('anchored-path', `${near[0]} >> ${inside[0]}`, [...near[2], ...inside[1]]);
+  }
+  const xpathOf = (node, stopAtId) => {
+    const parts = [];
+    for (let n = node; n && n.nodeType === 1; n = n.parentElement) {
+      if (stopAtId && n !== node && n.id && !vol('id', n.id)) {
+        parts.unshift(`//*[@id="${n.id}"]`); return [parts.join('/'), n.id];
+      }
+      let i = 1;
+      for (let s = n.previousElementSibling; s; s = s.previousElementSibling) if (s.tagName === n.tagName) i++;
+      parts.unshift(`${n.tagName.toLowerCase()}[${i}]`);
+    }
+    return ['/' + parts.join('/'), null];
+  };
+  const [anchored, anchorId] = xpathOf(el, true);
+  if (anchorId) add('anchored-xpath', 'xpath=' + anchored, [['id', anchorId]]);
+  add('absolute-xpath', 'xpath=' + xpathOf(el, false)[0], []);
+  return out;
 }""".replace("__MAX_DEPTH__", str(CONTAINER_WALK_MAX_ANCESTORS))
 
-
-def normalize_literal(text: Any) -> str:
-    """Casefold, collapse whitespace, drop a trailing ellipsis — the agent
-    copies truncated card titles verbatim ('… For Me...')."""
-    norm = " ".join(str(text or "").split()).casefold()
-    return norm.rstrip(".…").rstrip()
+ELEMENT_FROM_POINT_JS = "([x, y]) => document.elementFromPoint(x, y)"
 
 
-def embedded_literals(locator: str) -> List[str]:
-    """Every literal text/attribute value the locator matches on."""
-    return [m.group(1) for pattern in _LITERAL_RES for m in pattern.finditer(locator or "")]
-
-
-def data_bound_literal(locator: str, expected_text: Optional[str]) -> str:
-    """The embedded literal that makes ``locator`` depend on the value being
-    read, or "" when there is none."""
-    needle = normalize_literal(expected_text)
-    if len(needle) < 3:
-        return ""
-    for literal in embedded_literals(locator):
-        norm = normalize_literal(literal)
-        if len(norm) >= DATA_LITERAL_MIN_CHARS and (norm in needle or needle in norm):
-            return literal
-    return ""
-
-
-async def _resolves_to_same_element(search_context, locator: str, candidate: str) -> bool:
-    """True when ``candidate`` resolves to exactly one element, the SAME
-    element ``locator`` resolves to. Every failure — a non-unique count, a
-    raised exception, a timeout — is False; never turn an uncertain read
-    into an accept."""
+async def _unique_same(search_context, locator: str, handle) -> bool:
     try:
-        target = search_context.locator(locator)
-        rewritten = search_context.locator(candidate)
-        if await rewritten.count() != 1:
+        loc = search_context.locator(locator)
+        if await loc.count() != 1:
             return False
-        handle = await target.element_handle(timeout=FIT_READ_TIMEOUT_MS)
-        same = await rewritten.evaluate("(el, t) => el === t", handle, timeout=FIT_READ_TIMEOUT_MS)
-    except Exception as e:
-        logger.info(f"   ⚠️ Read-target validation failed for '{candidate}': {e}")
+        same = await loc.evaluate("(el, t) => el === t", handle, timeout=FIT_READ_TIMEOUT_MS)
+    except Exception:
         return False
     return same is True
 
 
-async def build_container_ordinal(search_context, locator: str) -> Optional[str]:
-    """A container-ordinal locator that resolves to exactly the element
-    ``locator`` resolves to, or None. Every failure is None."""
-    target = search_context.locator(locator)
+_VISIBLE_RETRY_KINDS = frozenset({"id", "test-id", "class", "anchored-path"})
+
+
+async def _volatile_tokens(handle) -> List[List[str]]:
+    """The [kind, value] tokens of the element and all its ancestors that Python scores volatile; [] when they cannot be read."""
     try:
-        info = await target.evaluate(CONTAINER_ORDINAL_JS, timeout=FIT_READ_TIMEOUT_MS)
+        tokens = await handle.evaluate(TOKENS_JS)
     except Exception as e:
-        logger.info(f"   ⚠️ Read-target container read failed for '{locator}': {e}")
+        logger.info(f"   ⚠️ Read-address token read failed: {e}")
+        return []
+    seen = set()
+    volatile: List[List[str]] = []
+    for kind, value in tokens or []:
+        if (kind, value) in seen:
+            continue
+        seen.add((kind, value))
+        if _is_volatile_token(kind, value):
+            volatile.append([kind, value])
+    return volatile
+
+
+async def structural_address(search_context, handle, observed: str) -> Optional[Dict[str, Any]]:
+    """The first structural address of the element that is stable, value-free, unique and the same node — with Playwright's `>> visible=true` filter for a hidden twin — or None."""
+    volatile = await _volatile_tokens(handle)
+    try:
+        candidates = await handle.evaluate(STRUCTURAL_CANDIDATES_JS, volatile)
+    except Exception as e:
+        logger.info(f"   ⚠️ Read-address candidate read failed: {e}")
         return None
-    if not isinstance(info, dict) or not info.get("container"):
+    for cand in candidates or []:
+        locator = cand.get("locator") or ""
+        # Backstop: never ship a candidate built on a volatile token.
+        if any(_is_volatile_token(kind, value) for kind, value in cand.get("tokens") or []):
+            continue
+        if carries_value(locator, observed):
+            continue
+        if await _unique_same(search_context, locator, handle):
+            return {"locator": locator, "kind": cand.get("kind", "")}
+        # A hidden copy (display:none menu, responsive twin) makes an otherwise
+        # good address match twice — Playwright's visibility filter keeps the real one.
+        if cand.get("kind") in _VISIBLE_RETRY_KINDS and await _unique_same(
+            search_context, locator + " >> visible=true", handle
+        ):
+            return {"locator": locator + " >> visible=true", "kind": cand.get("kind", "")}
+    return None
+
+
+async def _pointed_sources(search_context, element_data, point) -> List[Tuple[str, Any]]:
+    sources: List[Tuple[str, Any]] = []
+    xpath = ((element_data or {}).get("xpath") or "").strip()
+    if xpath:
+        try:
+            handle = await search_context.locator("xpath=/" + xpath.lstrip("/")).element_handle(
+                timeout=FIT_READ_TIMEOUT_MS
+            )
+            if handle:
+                sources.append(("pointed element", handle))
+        except Exception as e:
+            logger.info(f"   ⚠️ Read-address: indexed element not reachable: {e}")
+    if point is not None:
+        try:
+            js_handle = await search_context.evaluate_handle(
+                ELEMENT_FROM_POINT_JS, [point[0], point[1]]
+            )
+            handle = js_handle.as_element()
+            if handle:
+                sources.append(("screen point", handle))
+        except Exception as e:
+            logger.info(f"   ⚠️ Read-address: vision point lookup failed: {e}")
+    return sources
+
+
+def _short(text: Any) -> str:
+    return normalize_text(text)[:40]
+
+
+def _may_walk_up(own: List[Any], observed: str) -> bool:
+    """Walk up only from a node whose own rendered text is empty or a FRAGMENT of what the agent saw ("John" in "Welcome John"); a node with its own other text ("edit", a select's options) is not a fragment of it."""
+    src = normalize_text(own[0] if own else "")
+    return not src or src in normalize_text(observed)
+
+
+async def _confirmed_node(handle, observed: str) -> Tuple[Any, Optional[List[Any]]]:
+    """The pointed node, or the first of its nearest ancestors, whose own texts show the observed text, with the pointed node's own texts: (node, own); (None, own) when nothing confirms; (None, None) when the node cannot be read."""
+    try:
+        chain = [list(await handle.evaluate(OWN_TEXT_JS) or [])]
+    except Exception:
+        return None, None
+    # The ancestors are read only on a miss the guard allows — an ancestor's innerText can
+    # be a whole table, and an ancestor match from a node the guard refuses is never used.
+    if not own_texts_match(chain[0], observed) and _may_walk_up(chain[0], observed):
+        try:
+            chain += [list(own or []) for own in await handle.evaluate(ANCESTOR_TEXTS_JS) or []]
+        except Exception as e:
+            logger.info(f"   ⚠️ Read-address: ancestor texts not readable: {e}")
+    hit = next((k for k, own in enumerate(chain) if own_texts_match(own, observed)), None)
+    if hit is None:
+        return None, chain[0]
+    if hit == 0:
+        return handle, chain[0]
+    try:
+        node = (await handle.evaluate_handle(ANCESTOR_AT_JS, hit)).as_element()
+    except Exception:
+        node = None
+    # An ancestor that cannot be reached is skipped silently, like an unreadable node.
+    return (node, chain[0]) if node is not None else (None, None)
+
+
+async def resolve_read_address(
+    search_context,
+    observed: str,
+    element_data: Optional[Dict[str, Any]],
+    point: Optional[Tuple[float, float]],
+) -> Dict[str, Any]:
+    """Confirm what the agent pointed at — the indexed element, then the element under its vision point — by its own texts (or a near ancestor's), and return its structural address, or {'unconfirmed': reason}."""
+    reasons: List[str] = []
+    for source, handle in await _pointed_sources(search_context, element_data, point):
+        node, own = await _confirmed_node(handle, observed)
+        if node is None:
+            if own is not None:
+                shown = next((t for t in own if t), "")
+                reasons.append(f"the {source} shows {_short(shown)!r}, not {_short(observed)!r}")
+            continue
+        address = await structural_address(search_context, node, observed)
+        if address:
+            return {**address, "source": source}
+        reasons.append(
+            f"the {source} shows {_short(observed)!r} but has no unique address without that text"
+        )
+    return {"unconfirmed": "; ".join(reasons) or "the agent pointed at no element"}
+
+
+_IN_SHADOW_JS = "el => el.getRootNode() instanceof ShadowRoot"
+
+
+# The guard reads the locator's own single match, not the pointed element:
+# document-level lookups never return a shadow-root node (an xpath does not
+# pierce it, elementFromPoint retargets to the host).
+async def _in_shadow_root(search_context, locator: str) -> bool:
+    try:
+        matches = search_context.locator(locator)
+        if await matches.count() != 1:
+            return False
+        return bool(await matches.evaluate(_IN_SHADOW_JS, timeout=FIT_READ_TIMEOUT_MS))
+    except Exception:
+        return False
+
+
+async def _check_read_address(
+    search_context,
+    locator: str,
+    expected_text: Optional[str],
+    element_data: Optional[Dict[str, Any]],
+    point: Optional[Tuple[float, float]],
+) -> Optional[Dict[str, Any]]:
+    """The page-touching half of the gate: None when the locator sits in a shadow root, else the resolver's verdict."""
+    if await _in_shadow_root(search_context, locator):
         return None
-    for kind, token in info.get("tokens") or []:
-        if score_stability(kind, token) != STABLE:
-            return None
-    candidate = f"{info['container']} >> nth={int(info['index'])}"
-    if info.get("descendant"):
-        candidate += f" >> {info['descendant']}"
-    return (
-        candidate if await _resolves_to_same_element(search_context, locator, candidate) else None
-    )
+    return await resolve_read_address(search_context, expected_text or "", element_data, point)
 
 
 async def apply_read_target_policy(
@@ -220,58 +500,58 @@ async def apply_read_target_policy(
     action: Optional[str],
     expected_text: Optional[str],
     iframe_context: Optional[str] = None,
+    element_data: Optional[Dict[str, Any]] = None,
+    point: Optional[Tuple[float, float]] = None,
 ) -> Dict[str, Any]:
-    """Rewrite a found read locator that embeds the value being read."""
+    """On a READ step, replace a found locator that carries the value being read with the pointed element's structural address, or return found=False with the reason."""
     if action not in READ_ACTIONS or not result.get("found") or iframe_context:
         return result
     if result.get("row_anchored") or result.get("element_type") == "collection":
         return result
     locator = result.get("best_locator") or ""
-    literal = data_bound_literal(locator, expected_text)
-    if not literal:
+    if not carries_value(locator, expected_text):
         return result
-    info_id = ((result.get("element_info") or {}).get("id") or "").strip()
-    if info_id and score_stability("id", info_id) == STABLE:
-        id_locator = f"id={info_id}"
-        if await _resolves_to_same_element(search_context, locator, id_locator):
-            id_stability = classify_locator(id_locator)
-            logger.info(
-                f"   📎 READ TARGET REWRITE: '{locator}' embeds the value being read — using "
-                f"'{id_locator}' (signal: read-target-id)"
-            )
-            return {
-                **result,
-                "best_locator": id_locator,
-                "stability": id_stability,
-                # The only entry: workflow.py's PHASE-2 re-ranker scores every
-                # unique+valid entry and would otherwise re-promote the original.
-                "all_locators": [
-                    {
-                        "type": "id",
-                        "locator": id_locator,
-                        "priority": READ_TARGET_ID_PRIORITY,
-                        "strategy": "ID selector from element_data",
-                        "count": 1,
-                        "unique": True,
-                        "valid": True,
-                        "validated": True,
-                        "validation_method": "playwright",
-                        "stability": id_stability,
-                    }
-                ],
-                "read_target_rewritten_from": locator,
-            }
-    rewritten = await build_container_ordinal(search_context, locator)
-    if not rewritten:
+    from browser_service.config import config
+
+    budget = config.locator.custom_action_timeout
+    # The pass's OWN budget, not the cascade's remainder: the cascade budget is
+    # per run (the misfit legacy fallback in _settle_action_fit can run a second
+    # full cascade), so a remainder would turn a slow-but-successful cascade
+    # into a spurious not-found.
+    try:
+        verdict = await asyncio.wait_for(
+            _check_read_address(search_context, locator, expected_text, element_data, point),
+            timeout=budget,
+        )
+    except asyncio.TimeoutError:
+        verdict = {"unconfirmed": f"the page did not answer the address checks within {budget} s"}
+    if verdict is None:
         logger.info(
-            f"   📎 READ TARGET: '{locator}' embeds the value being read but no repeated "
-            f"container validated — keeping it (signal: read-target-kept)"
+            f"   📎 READ ADDRESS: '{locator}' carries the value but sits in a shadow root — "
+            f"keeping it (signal: read-address-shadow-kept)"
         )
         return result
-    stability = classify_locator(rewritten)
+    if "unconfirmed" in verdict:
+        logger.info(
+            f"   📎 READ ADDRESS: '{locator}' carries the value being read and "
+            f"{verdict['unconfirmed']} — not handing it over (signal: read-address-unconfirmed)"
+        )
+        return {
+            "found": False,
+            "element_id": result.get("element_id"),
+            "description": result.get("description"),
+            "error": f"the read locator would carry the value being read; {verdict['unconfirmed']}",
+            "read_address_unconfirmed": verdict["unconfirmed"],
+            "read_address_rejected": locator,
+        }
+    rewritten = verdict["locator"]
+    # Owner (2026-10-04): a card / row address states its position on purpose
+    # ("the first product", "row 1") and the rule validated it — stable, no
+    # NLRF warning. The xpath fallbacks keep classify_locator's honest verdict.
+    stability = STABLE if verdict["kind"] == "card-path" else classify_locator(rewritten)
     logger.info(
-        f"   📎 READ TARGET REWRITE: '{locator}' embeds the value being read — using "
-        f"'{rewritten}' (signal: read-target-rewrite)"
+        f"   📎 READ ADDRESS: '{locator}' carries the value being read — using '{rewritten}' "
+        f"({verdict['source']}, {verdict['kind']}) (signal: read-address-rewritten)"
     )
     return {
         **result,
@@ -281,10 +561,10 @@ async def apply_read_target_policy(
         # unique+valid entry and would otherwise re-promote the original.
         "all_locators": [
             {
-                "type": "read-target-ordinal",
+                "type": f"read-address-{verdict['kind']}",
                 "locator": rewritten,
                 "priority": READ_TARGET_PRIORITY,
-                "strategy": "Repeated-container ordinal (read target)",
+                "strategy": f"Structural address of the {verdict['source']} (read address)",
                 "count": 1,
                 "unique": True,
                 "valid": True,
@@ -294,4 +574,5 @@ async def apply_read_target_policy(
             }
         ],
         "read_target_rewritten_from": locator,
+        "read_address_source": verdict["source"],
     }

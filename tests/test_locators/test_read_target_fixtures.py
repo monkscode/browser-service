@@ -1,7 +1,7 @@
 """
-E2b on real Chromium, through find_unique_locator_action, on the amazon u01
-shape: each accept path (element_data, agent candidate, text-first) must
-end on a container-ordinal locator; a long static heading must not.
+#31 on real Chromium, through find_unique_locator_action, on the amazon u01
+shape: each accept path (element_data, agent candidate, text-first) must end
+on a value-free structural address; a long static heading gets one too.
 """
 
 from pathlib import Path
@@ -12,6 +12,7 @@ from playwright.async_api import async_playwright
 
 from browser_service.agent.actions import find_unique_locator_action
 from browser_service.config import config
+from browser_service.locators.read_target import carries_value
 
 pytestmark = pytest.mark.integration
 
@@ -86,7 +87,12 @@ async def test_element_data_path_today_embeds_the_name(page):
 async def test_element_data_path_rewrites_to_the_card(page, action_fit_on):
     data = await page.locator(f"{CARD} >> nth=0 >> h2").evaluate(H2_DATA_JS)
     out = await _read(page, f"{CARD} >> nth=0 >> h2", NAMES[0], "get_text", element_data=data)
-    assert out["best_locator"] == f"{CARD} >> nth=0 >> h2"
+    # #31: the vision point lands on the title's inner span — same card, same text.
+    assert out["best_locator"].startswith(f"{CARD} >> nth=0 >> ")
+    assert not carries_value(out["best_locator"], NAMES[0])
+    assert (
+        out["stability"] == "stable"
+    )  # owner 2026-10-04: a card address states its position on purpose
     assert len(out["all_locators"]) == 1  # nothing left for PHASE-2 to re-promote
     assert (await page.locator(out["best_locator"]).inner_text()).strip() == NAMES[0]
 
@@ -103,12 +109,13 @@ async def test_candidate_path_rewrites_to_the_card(page, action_fit_on):
 
 async def test_candidate_path_uses_the_candidate_hook(page, action_fit_on):
     """The candidate-path hook (actions.py, the `if not _demote_reason` exit).
-    A 28-char literal is over read_target's 25-char rewrite floor and under
-    stability's 40-char LONG_TEXT_CHARS, so the candidate is accepted, not
-    demoted, and the rewrite must come from that exit."""
+    A 28-char literal is under stability's 40-char LONG_TEXT_CHARS, so the
+    candidate is accepted, not demoted, and that exit re-addresses it. The
+    assertions check the end state, not which exit produced it."""
     candidate = "h2[aria-label*='Logitech B170 Wireless Mouse']"
     out = await _read(page, f"{CARD} >> nth=1 >> h2", NAMES[1], "get_text", candidate=candidate)
-    assert out["best_locator"] == f"{CARD} >> nth=1 >> h2"
+    assert out["best_locator"].startswith(f"{CARD} >> nth=1 >> ")
+    assert not carries_value(out["best_locator"], NAMES[1])
     assert len(out["all_locators"]) == 1  # nothing left for PHASE-2 to re-promote
     assert (await page.locator(out["best_locator"]).inner_text()).strip() == NAMES[1]
 
@@ -119,10 +126,12 @@ async def test_text_first_path_rewrites_to_the_card(page, action_fit_on):
     assert (await page.locator(out["best_locator"]).inner_text()).strip() == NAMES[2]
 
 
-async def test_long_static_heading_is_left_alone(page, action_fit_on):
+async def test_long_static_heading_gets_a_structural_address(page, action_fit_on):
+    """#31 (owner, 2026-10-03): a heading is no exception — never ship the value it reads."""
     out = await _read(page, "h1.s-title", HEADING, "get_text")
-    assert out["best_locator"] == f'text="{HEADING}"'
-    assert "read_target_rewritten_from" not in out
+    assert out["read_target_rewritten_from"] == f'text="{HEADING}"'
+    assert not carries_value(out["best_locator"], HEADING)
+    assert (await page.locator(out["best_locator"]).inner_text()).strip() == HEADING
 
 
 # E2b depth fix (2026-09-16): amazon.in's real card sits 14 ancestors above
@@ -214,10 +223,10 @@ async def test_stable_id_path_rewrites_to_the_id(detail_page, action_fit_on):
     assert (await detail_page.locator(out["best_locator"]).inner_text()).strip() == PRODUCT_TITLE
 
 
-async def test_duplicate_id_path_keeps_the_original_locator(dup_id_page, action_fit_on):
-    """The id resolves to count 2 on this page, so it must not be used —
-    and a detail page has no repeated container for the fallback to rewrite
-    into either, so the original value-bound locator stands."""
+async def test_duplicate_id_path_gets_a_structural_address(dup_id_page, action_fit_on):
+    """The id resolves to count 2 on this page, so it must not be used; #31
+    falls through to the next structural address (here the anchored short
+    path) instead of keeping the value-bound locator."""
     out = await _read(
         dup_id_page,
         "#productTitle",
@@ -225,5 +234,9 @@ async def test_duplicate_id_path_keeps_the_original_locator(dup_id_page, action_
         "get_text",
         candidate=f'text="{PRODUCT_TITLE}"',
     )
-    assert out["best_locator"] == f'text="{PRODUCT_TITLE}"'
-    assert "read_target_rewritten_from" not in out
+    assert out["read_target_rewritten_from"] == f'text="{PRODUCT_TITLE}"'
+    assert out["best_locator"] == "h1.a-size-large >> span"  # anchored short path, no position
+    assert out["stability"] == "stable"
+    assert not carries_value(out["best_locator"], PRODUCT_TITLE)
+    assert await dup_id_page.locator(out["best_locator"]).count() == 1
+    assert (await dup_id_page.locator(out["best_locator"]).inner_text()).strip() == PRODUCT_TITLE

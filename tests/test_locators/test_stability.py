@@ -313,3 +313,22 @@ class TestLongText:
 
     def test_short_label_stays_stable(self, action_fit_on):
         assert classify_locator('[aria-label="Search"]') == STABLE
+
+
+@pytest.mark.parametrize(
+    "name, want",
+    [
+        ("data-v-7ba5bd90", True),  # Vue scoped-style hash
+        ("data-v-03eb1f1f", True),
+        ("data-v-app", False),  # Vue's mount marker, not a hash
+        ("data-v-7ba5bd9", False),  # 7 hex
+        ("data-v-7BA5BD90", False),  # Vue emits lowercase
+        ("data-id", False),
+        ("data-testid", False),
+        ("", False),
+    ],
+)
+def test_is_volatile_attr_name(name, want):
+    from browser_service.locators.stability import is_volatile_attr_name
+
+    assert is_volatile_attr_name(name) is want

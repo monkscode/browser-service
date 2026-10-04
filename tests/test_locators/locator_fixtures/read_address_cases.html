@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>read address cases</title>
+<style>
+  body { font: 14px sans-serif; margin: 0; }
+  header { display: flex; gap: 40px; padding: 20px; background: #eee; }
+  .grid { display: flex; gap: 10px; padding: 10px; }
+  .grid > div { width: 160px; border: 1px solid #ccc; padding: 5px; }
+  #overlay-wrap { position: relative; width: 320px; height: 40px; margin: 10px; }
+  #overlay-wrap h2 { margin: 0; }
+  #overlay { position: absolute; inset: 0; }
+</style></head>
+<body>
+<header id="hdr">
+  <span class="title" data-test="title">Products</span>
+  <span class="select_container">Name (A to Z) Name (Z to A)</span>
+  <a class="cart" href="#"><span class="badge">1</span></a>
+</header>
+<p class="price">$10.11</p><p class="price">$21.10</p>
+<section id="tables">
+  <table id="t1"><tbody>
+    <tr><td>Smith</td><td>John</td></tr><tr><td>Bach</td><td>Frank</td></tr>
+  </tbody></table>
+  <table id="t2"><tbody>
+    <tr><td>Doe</td><td>John</td></tr><tr><td>Conway</td><td>Tim</td></tr>
+  </tbody></table>
+</section>
+<div class="grid" id="shoes">
+  <div data-id="P1"><img alt="p1"><a class="t" href="#">Trendy Sports Running Shoes</a></div>
+  <div data-id="P2"><img alt="p2"><a class="t" href="#">Premium White Sneakers</a></div>
+</div>
+<div class="results"><table class="striped"><tbody>
+  <tr><td>Cierra</td><td>Vega</td></tr>
+</tbody></table></div>
+<ol class="row">
+  <li class="col"><article class="product_pod"><a href="#"><img alt="A Light in the Attic"></a>
+    <h3><a href="#" title="A Light in the Attic">A Light in the ...</a></h3></article></li>
+  <li class="col"><article class="product_pod"><a href="#"><img alt="Tipping the Velvet"></a>
+    <h3><a href="#" title="Tipping the Velvet">Tipping the Velvet</a></h3></article></li>
+</ol>
+<h2 id="ember1234" class="report-title">Quarterly report</h2>
+<div id="overlay-wrap"><h2 class="banner">Welcome back</h2><div id="overlay"></div></div>
+<label>Email <input class="email" placeholder="Email" value=""></label>
+<div class="promo"><b class="deal">Deal of the day</b></div>
+<div style="display: none"><b class="deal">Deal of the day</b></div>
+<div id="host"></div>
+<script>
+  document.getElementById('host').attachShadow({mode: 'open'}).innerHTML =
+    '<span class="inner">Shadow text</span>';
+</script>
+</body></html>

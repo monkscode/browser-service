@@ -158,5 +158,11 @@ async def test_todo_candidate_rejected_today(page, candidate):
 @pytest.mark.parametrize("candidate", TODO_CANDIDATES)
 async def test_todo_candidate_wins_over_an_unfit_index(page, action_fit_on, candidate):
     out = await _read_todo(page, candidate, "get_text")
-    assert out["best_locator"] == candidate
-    assert "buy milk" in await page.locator(candidate).inner_text()
+    if candidate == 'label:has-text("buy milk")':
+        # #31: the candidate carries the value it reads, so it is re-addressed
+        # to the todo item's own structural address (same element, no text).
+        assert out["read_target_rewritten_from"] == candidate
+        assert "buy milk" not in out["best_locator"]
+    else:
+        assert out["best_locator"] == candidate
+    assert "buy milk" in await page.locator(out["best_locator"]).inner_text()

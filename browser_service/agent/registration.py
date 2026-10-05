@@ -1835,6 +1835,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     )
 
                     # F1: snapshot before an action / mark a read that the last action changed.
+                    _f1_pending = None  # (element_id, html) to keep once the action is performed
                     try:
                         _f1_action = _element_specs.get(params.element_id, {}).get(
                             "action", "get_text"
@@ -1860,20 +1861,22 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                             _f1_action in _PERFORMED_ACTIONS
                             and params.element_id not in _performed_actions
                         ):
-                            # The saved page is ALWAYS the page right before the LATEST action
-                            # bs performs, or nothing: a later read is never compared with an
-                            # older action's page.
+                            # The saved page is the page right before the LATEST action bs
+                            # PERFORMED, or nothing: a later read is never compared with an
+                            # older action's page. The new value stays provisional until
+                            # _do_interaction reports it did not skip the action.
                             _read_remains = any(
                                 spec.get("action") in READ_ACTIONS
                                 and eid not in _completed_elements
                                 for eid, spec in _element_specs.items()
                             )
                             _html = await snapshot_html(active_page) if _read_remains else None
-                            _last_action_snapshot.update(
-                                element_id=params.element_id if _html is not None else None,
-                                html=_html,
+                            _f1_pending = (
+                                params.element_id if _html is not None else None,
+                                _html,
                             )
                     except Exception as _f1_err:  # noqa: BLE001 — F1 must never break discovery
+                        _f1_pending = None
                         _last_action_snapshot.update(element_id=None, html=None)
                         logger.warning(
                             f"   F1 read-change step skipped ({type(_f1_err).__name__}): {_f1_err}"
@@ -1896,6 +1899,15 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         iframe_context=iframe_context,
                     )
                     result["interaction_status"] = interaction_status
+                    if _f1_pending is not None and interaction_status != "not_applicable":
+                        try:  # F1 must never break discovery
+                            _last_action_snapshot.update(
+                                element_id=_f1_pending[0], html=_f1_pending[1]
+                            )
+                        except Exception as _f1_err:  # noqa: BLE001
+                            logger.warning(
+                                f"   F1 read-change step skipped ({type(_f1_err).__name__}): {_f1_err}"
+                            )
                     _idx = params.element_index
 
                     # Build display_note for the success message.

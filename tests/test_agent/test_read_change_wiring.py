@@ -62,6 +62,7 @@ async def _run(
     sessions=None,
     params_for=None,
     weak_first=(),
+    status_for=None,
 ):
     """Register the action, call it once per id in ``calls``.
 
@@ -74,9 +75,12 @@ async def _run(
     async def _interaction(browser_session, active_page, locator_str, element_id, *args, **kwargs):
         performed_actions = args[2]
         action = specs[element_id]["action"]
+        status = (status_for or {}).get(element_id, "auto_ok")
+        if status == "not_applicable":  # e.g. an input with an empty value: nothing performed
+            return "", status, action, ""
         if action in INTERACTING:
             performed_actions.add(element_id)  # the real function does the same
-        return "", "auto_ok", action, ""
+        return "", status, action, ""
 
     snapshot = AsyncMock(return_value="<html>before</html>", side_effect=snapshot_effect)
     interaction = AsyncMock(side_effect=_interaction)
@@ -280,3 +284,38 @@ async def test_a_raising_snapshot_clears_the_saved_page(caplog):
     read_changed.assert_not_awaited()
     assert "changed_by_action" not in results[2].metadata
     assert len([r for r in caplog.records if "F1 read-change step skipped" in r.getMessage()]) == 1
+
+
+EMPTY_INPUT = {"id": "elem_3", "action": "input", "value": ""}
+
+
+@pytest.mark.asyncio
+async def test_an_action_that_performs_nothing_keeps_the_earlier_saved_page():
+    # click A (saves page-A); B is an input with an empty value, so _do_interaction
+    # performs nothing ("not_applicable"); the read must still compare with page-A.
+    results, snapshot, _, read_changed, _ = await _run(
+        [CLICK, EMPTY_INPUT, READ],
+        ["elem_1", "elem_3", "elem_2"],
+        snapshot_effect=["<html>page-A</html>", "<html>page-B</html>"],
+        status_for={"elem_3": "not_applicable"},
+    )
+
+    assert snapshot.await_count == 2  # B's page was captured, then not kept
+    read_changed.assert_awaited_once()
+    assert read_changed.await_args.args[2] == "<html>page-A</html>"
+    assert results[2].metadata["changed_by_action"] == "elem_1"
+
+
+@pytest.mark.asyncio
+async def test_an_action_that_fails_automation_still_saves_its_page():
+    # auto_failed: the agent performs the action natively, so B's page IS the page before it.
+    results, _, _, read_changed, _ = await _run(
+        [CLICK, EMPTY_INPUT, READ],
+        ["elem_1", "elem_3", "elem_2"],
+        snapshot_effect=["<html>page-A</html>", "<html>page-B</html>"],
+        status_for={"elem_3": "auto_failed"},
+    )
+
+    read_changed.assert_awaited_once()
+    assert read_changed.await_args.args[2] == "<html>page-B</html>"
+    assert results[2].metadata["changed_by_action"] == "elem_3"

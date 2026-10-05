@@ -5,17 +5,20 @@ READ is located, read_changed_since parses that HTML inside the live page (DOMPa
 no script runs, nothing loads, no extra tab) and evaluates the read's OWN locator
 there. "changed" = the locator matched exactly one element before the action and its
 normalized textContent differs from the live element's. NLRF then makes the test wait
-for that change. Anything this cannot evaluate faithfully is "unknown" (no mark =
-today's behaviour): frame hops, engines other than css / id= / xpath= / nth=, any
-locator whose evaluation on the LIVE page does not find exactly Playwright's element,
-a live element whose shown text (innerText, what Get Text returns) is not its
-textContent (hidden text), and a locator that does not find that same element, once,
-when the CURRENT page is re-parsed the way the kept page was (JS-built nesting the HTML
-parser never produces).
+for that change. These cases are "unknown" (no mark = today's behaviour): frame hops,
+engines other than css / id= / xpath= / nth=, any locator whose evaluation on the LIVE
+page does not find exactly Playwright's element, a live element whose shown text
+(innerText, what Get Text returns) is not its textContent (hidden text), and a locator
+that does not find that same element, once, when the CURRENT page is re-parsed the way
+the kept page was (JS-built nesting the HTML parser never produces).
 
-Residuals, by design: (1) a mis-nested block that exists only BEFORE the action (the
-action removes it) above a positional address can still read as "changed"; (2) hidden
-text that existed only before the action is not seen (the live element shows none now).
+Residuals, by design: (1) nesting the HTML parser never produces that exists only
+BEFORE the action (the action removes or re-renders it) and touches the address - the
+read target itself, an element on its path, or a block above a positional step - can
+still read as "changed"; (2) hidden text that existed only before the action is not seen
+(the live element shows none now). Accepted limit (owner): a read target holding an
+inline <script> (e.g. JSON-LD) or an SVG <title> is "unknown" even when its visible text
+changed (the hidden-text check), so such reads get no mark.
 
 Referenced by: browser_service/agent/registration.py (find_unique_locator).
 Depends on: playwright page objects (duck-typed); playwright.async_api.Error (to tell an
@@ -80,7 +83,9 @@ _EVAL_JS = r"""([html, addr, live]) => {
     // The kept page went through the HTML parser; the live DOM may hold nesting the parser never
     // produces (JS-built). Parse the CURRENT page the same way: the address must find exactly one
     // element there, with the live element's text, or the two sides are not comparable.
-    const cur = new DOMParser().parseFromString('<!DOCTYPE html>' + document.documentElement.outerHTML, 'text/html');
+    // Use the page's own doctype, serialized as page.content() does (none = quirks mode).
+    const dt = document.doctype ? new XMLSerializer().serializeToString(document.doctype) : '';
+    const cur = new DOMParser().parseFromString(dt + document.documentElement.outerHTML, 'text/html');
     const curHits = run(cur);
     if (curHits.length !== 1 || textOf(curHits[0]) !== textOf(live)) return 'unknown';
     const preHits = run(new DOMParser().parseFromString(html, 'text/html'));

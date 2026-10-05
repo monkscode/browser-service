@@ -171,12 +171,12 @@ async def test_an_element_in_an_open_shadow_root_is_unknown(page):  # live-ident
     assert await read_changed_since(page, "css=#s", html) == "unknown"
 
 
-async def test_text_engine_is_unknown(page):  # live-identity guard
+async def test_text_engine_is_unknown(page):  # refused by the engine whitelist
     js = "document.getElementById('x').textContent='new'"
     assert await _run(page, "<p id='x'>old</p>", js, "text=new") == "unknown"
 
 
-async def test_visible_true_suffix_is_unknown(page):  # bs's own containment collapse
+async def test_visible_true_suffix_is_unknown(page):  # engine whitelist; bs's containment collapse
     js = "document.querySelector('p.t').textContent='new'"
     assert (
         await _run(page, "<p class='t'>old</p>", js, "css=p.t >> visible=true >> nth=0")
@@ -199,3 +199,21 @@ async def test_hidden_text_change_is_unknown(page):  # Get Text reads innerText,
     before = "<div id='card'><span>Phone A</span><span id='h' style='display:none'>0</span></div>"
     js = "document.getElementById('h').textContent = '1'"
     assert await _run(page, before, js, "id=card") == "unknown"
+
+
+async def test_page_without_a_doctype_is_re_parsed_in_its_own_mode(page):  # quirks mode
+    before = "<p id='x'>Total <table><tr><td>10</td></tr></table></p>"
+    js = "document.querySelector('td').textContent = '12'"
+    assert await _run(page, before, js, "id=x") == "changed"
+
+
+async def test_only_the_live_identity_guard_decides_a_shadow_last_match(page):
+    # Playwright's last css=span.s match is the span in the open shadow root; a plain
+    # querySelectorAll on the light DOM finds B. Only the guard sees the two differ.
+    await page.set_content("<div id='h'></div><span class='s'>B</span>")
+    await page.evaluate(
+        "document.getElementById('h').attachShadow({mode:'open'}).innerHTML = \"<span class='s'>A</span>\""
+    )
+    html = await snapshot_html(page)
+    await page.evaluate("document.querySelector('body > span.s').textContent = 'A'")
+    assert await read_changed_since(page, "css=span.s >> nth=-1", html) == "unknown"

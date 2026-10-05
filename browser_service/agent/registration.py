@@ -1874,6 +1874,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                 html=_html,
                             )
                     except Exception as _f1_err:  # noqa: BLE001 — F1 must never break discovery
+                        _last_action_snapshot.update(element_id=None, html=None)
                         logger.warning(
                             f"   F1 read-change step skipped ({type(_f1_err).__name__}): {_f1_err}"
                         )

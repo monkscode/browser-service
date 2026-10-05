@@ -263,3 +263,20 @@ async def test_a_failed_snapshot_clears_the_saved_page():
     assert snapshot.await_count == 2
     read_changed.assert_not_awaited()
     assert "changed_by_action" not in results[2].metadata
+
+
+@pytest.mark.asyncio
+async def test_a_raising_snapshot_clears_the_saved_page(caplog):
+    # A snapshots; B's snapshot RAISES (the F1 except path); the read after B must not be
+    # compared with the page from before A.
+    with caplog.at_level(logging.WARNING, logger="browser_service.agent.registration"):
+        results, snapshot, _, read_changed, _ = await _run(
+            [CLICK, NEXT, READ],
+            ["elem_1", "elem_3", "elem_2"],
+            snapshot_effect=["<html>pre-A</html>", RuntimeError("boom")],
+        )
+
+    assert snapshot.await_count == 2
+    read_changed.assert_not_awaited()
+    assert "changed_by_action" not in results[2].metadata
+    assert len([r for r in caplog.records if "F1 read-change step skipped" in r.getMessage()]) == 1

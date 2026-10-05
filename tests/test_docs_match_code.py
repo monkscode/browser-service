@@ -237,8 +237,9 @@ def test_readme_public_api_block_matches_dunder_all():
 def _actions_accepted_by_dispatcher() -> set[str]:
     """The dispatcher's canonical accept-list.
 
-    ``registration.py`` guards with ``if action not in (...)`` and rejects
-    anything else, so that single tuple is the whole supported action set —
+    ``registration.py`` guards with ``if action not in <accept-list>`` (a literal
+    tuple, or the module-level ``_PERFORMED_ACTIONS`` constant) and rejects
+    anything else, so that single list is the whole supported action set —
     every ``elif`` further down is a subset of it.
     """
     source = (REPO_ROOT / "browser_service" / "agent" / "registration.py").read_text(

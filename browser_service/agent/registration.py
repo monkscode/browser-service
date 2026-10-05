@@ -48,8 +48,9 @@ from browser_service.locators.stability import (
 # Get logger
 logger = logging.getLogger(__name__)
 
-# F1: the actions _do_interaction performs — the page is kept right before each.
-_F1_SNAPSHOT_ACTIONS = frozenset({"input", "type", "click", "submit", "select", "check", "uncheck"})
+# The actions _do_interaction performs. One list: F1 keeps the page right before each of
+# them, so an action added here is snapshotted and performed, never one without the other.
+_PERFORMED_ACTIONS = frozenset({"input", "type", "click", "submit", "select", "check", "uncheck"})
 
 # Class tokens usable as a bare `.class` selector — anything with CSS meta
 # characters (Tailwind `w-1/2`, `md:flex`) is skipped rather than escaped.
@@ -964,7 +965,7 @@ async def _do_interaction(
     spec = element_specs.get(element_id, {})
     action = spec.get("action", "get_text")
     value = spec.get("value", "")
-    if action not in ("input", "type", "click", "submit", "select", "check", "uncheck"):
+    if action not in _PERFORMED_ACTIONS:
         return "", "not_applicable", action, value
 
     # Tom Select: the ts-control is an <input>, so the agent labels it "input"/"type".
@@ -1856,21 +1857,26 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                         f"(signal: read-changed-by-action)"
                                     )
                         elif (
-                            _f1_action in _F1_SNAPSHOT_ACTIONS
+                            _f1_action in _PERFORMED_ACTIONS
                             and params.element_id not in _performed_actions
-                            and any(
+                        ):
+                            # The saved page is ALWAYS the page right before the LATEST action
+                            # bs performs, or nothing: a later read is never compared with an
+                            # older action's page.
+                            _read_remains = any(
                                 spec.get("action") in READ_ACTIONS
                                 and eid not in _completed_elements
                                 for eid, spec in _element_specs.items()
                             )
-                        ):
-                            _html = await snapshot_html(active_page)
-                            if _html is not None:
-                                _last_action_snapshot.update(
-                                    element_id=params.element_id, html=_html
-                                )
+                            _html = await snapshot_html(active_page) if _read_remains else None
+                            _last_action_snapshot.update(
+                                element_id=params.element_id if _html is not None else None,
+                                html=_html,
+                            )
                     except Exception as _f1_err:  # noqa: BLE001 — F1 must never break discovery
-                        logger.warning(f"   F1 read-change step skipped: {_f1_err}")
+                        logger.warning(
+                            f"   F1 read-change step skipped ({type(_f1_err).__name__}): {_f1_err}"
+                        )
 
                     # Reached only on locator-find success — best_locator is non-None by construction here.
                     # Unpack 4-tuple — action and value come from _do_interaction directly so this block

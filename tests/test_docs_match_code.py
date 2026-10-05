@@ -246,6 +246,20 @@ def _actions_accepted_by_dispatcher() -> set[str]:
     )
     tree = ast.parse(source)
 
+    # The accept-list may be a module-level ``NAME = frozenset({...})`` constant.
+    constants: dict[str, ast.expr] = {}
+    for stmt in tree.body:
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and isinstance(stmt.value, ast.Call)
+            and isinstance(stmt.value.func, ast.Name)
+            and stmt.value.func.id == "frozenset"
+            and len(stmt.value.args) == 1
+        ):
+            constants[stmt.targets[0].id] = stmt.value.args[0]
+
     for node in ast.walk(tree):
         if not isinstance(node, ast.Compare) or len(node.ops) != 1:
             continue
@@ -254,7 +268,9 @@ def _actions_accepted_by_dispatcher() -> set[str]:
         if not (isinstance(node.left, ast.Name) and node.left.id == "action"):
             continue
         right = node.comparators[0]
-        if isinstance(right, (ast.Tuple, ast.List)) and all(
+        if isinstance(right, ast.Name):
+            right = constants.get(right.id, right)
+        if isinstance(right, (ast.Tuple, ast.List, ast.Set)) and all(
             isinstance(e, ast.Constant) for e in right.elts
         ):
             return {e.value for e in right.elts}

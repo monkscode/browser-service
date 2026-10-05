@@ -66,6 +66,9 @@ def commit_reranked_winner(result: dict, scored_locators: list[dict]) -> None:
     that drift unrepresentable.
     """
     winner = scored_locators[0]
+    if winner["locator"] != result.get("best_locator"):
+        # F1's changed_by_action was proven for the old address only.
+        result.pop("changed_by_action", None)
     result["best_locator"] = winner["locator"]
     result["stability"] = winner.get("stability", STABLE)
     result["all_locators"] = scored_locators

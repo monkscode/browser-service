@@ -105,3 +105,97 @@ async def test_changed_text_beside_noscript_is_changed(page):
 async def test_a_noscript_element_itself_is_unknown(page):
     js = "document.getElementById('other').textContent = 'y'"
     assert await _run(page, CARD_BEFORE, js, "css=#card >> noscript") == "unknown"
+
+
+# --- final-review fixes -------------------------------------------------------------------------
+
+
+async def _run_built(page, build_js, action_js, locator):
+    """A page built by JavaScript (the DOM may hold nesting the HTML parser never produces)."""
+    await page.set_content("<div id='root'></div><p id='other'>x</p>")
+    await page.evaluate(build_js)
+    html = await snapshot_html(page)
+    await page.evaluate(action_js)  # an action that does not touch the read
+    return await read_changed_since(page, locator, html)
+
+
+UNRELATED = "document.getElementById('other').textContent = 'y'"
+
+
+async def test_p_holding_a_div_built_by_js_is_unknown(page):  # React validateDOMNesting shape
+    build = """
+      const p = document.createElement('p'); p.className = 'price';
+      const d = document.createElement('div'); d.textContent = '$10';
+      p.appendChild(d); document.getElementById('root').appendChild(p);
+    """
+    assert await _run_built(page, build, UNRELATED, "css=p.price") == "unknown"
+
+
+async def test_anchor_holding_an_anchor_built_by_js_is_unknown(page):
+    build = """
+      const a = document.createElement('a'); a.className = 'card'; a.href = '#c';
+      a.append('Phone A ');
+      const i = document.createElement('a'); i.href = '#s'; i.textContent = 'Seller';
+      a.appendChild(i); a.append(' $10');
+      document.getElementById('root').appendChild(a);
+    """
+    assert await _run_built(page, build, UNRELATED, "css=a.card") == "unknown"
+
+
+async def test_positional_xpath_below_a_misnested_block_is_unknown(page):
+    build = """
+      const root = document.getElementById('root');
+      const p = document.createElement('p');
+      const d = document.createElement('div'); d.textContent = 'banner';
+      p.appendChild(d); root.appendChild(p);
+      const t = document.createElement('div'); t.textContent = 'target'; root.appendChild(t);
+    """
+    assert await _run_built(page, build, UNRELATED, "xpath=//div[@id='root']/div[1]") == "unknown"
+
+
+async def test_two_live_matches_is_unknown(page):  # live-identity guard
+    before = "<p class='t'>a</p>"
+    js = "document.body.insertAdjacentHTML('beforeend', \"<p class='t'>b</p>\"); document.querySelector('p.t').textContent='z'"
+    assert await _run(page, before, js, "css=p.t") == "unknown"
+
+
+async def test_an_element_in_an_open_shadow_root_is_unknown(page):  # live-identity guard
+    await page.set_content("<div id='h'></div>")
+    await page.evaluate(
+        "document.getElementById('h').attachShadow({mode:'open'}).innerHTML = \"<span id='s'>old</span>\""
+    )
+    html = await snapshot_html(page)
+    await page.evaluate(
+        "document.getElementById('h').shadowRoot.getElementById('s').textContent='new'"
+    )
+    assert await read_changed_since(page, "css=#s", html) == "unknown"
+
+
+async def test_text_engine_is_unknown(page):  # live-identity guard
+    js = "document.getElementById('x').textContent='new'"
+    assert await _run(page, "<p id='x'>old</p>", js, "text=new") == "unknown"
+
+
+async def test_visible_true_suffix_is_unknown(page):  # bs's own containment collapse
+    js = "document.querySelector('p.t').textContent='new'"
+    assert (
+        await _run(page, "<p class='t'>old</p>", js, "css=p.t >> visible=true >> nth=0")
+        == "unknown"
+    )
+
+
+async def test_nth_minus_one_is_evaluated(page):
+    js = "document.querySelectorAll('li')[1].textContent='c'"
+    assert await _run(page, "<ul><li>a</li><li>b</li></ul>", js, "css=li >> nth=-1") == "changed"
+
+
+async def test_xpath_after_css_is_scoped_to_the_css_match(page):  # Playwright prefixes '.'
+    before = "<span>Old</span><div id='grid'></div>"
+    after = "<div id='grid'><span>New</span></div>"
+    assert await _run(page, before, None, "css=#grid >> xpath=//span", after_doc=after) == "absent"
+
+
+async def test_hidden_text_change_is_unknown(page):  # Get Text reads innerText, not textContent
+    before = "<div id='card'><span>Phone A</span><span id='h' style='display:none'>0</span></div>"
+    js = "document.getElementById('h').textContent = '1'"
+    assert await _run(page, before, js, "id=card") == "unknown"

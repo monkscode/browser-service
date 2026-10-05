@@ -6,8 +6,16 @@ no script runs, nothing loads, no extra tab) and evaluates the read's OWN locato
 there. "changed" = the locator matched exactly one element before the action and its
 normalized textContent differs from the live element's. NLRF then makes the test wait
 for that change. Anything this cannot evaluate faithfully is "unknown" (no mark =
-today's behaviour): frame hops, engines other than css / id= / xpath= / nth=, and any
-locator whose evaluation on the LIVE page does not find exactly Playwright's element.
+today's behaviour): frame hops, engines other than css / id= / xpath= / nth=, any
+locator whose evaluation on the LIVE page does not find exactly Playwright's element,
+a live element whose shown text (innerText, what Get Text returns) is not its
+textContent (hidden text), and a locator that does not find that same element, once,
+when the CURRENT page is re-parsed the way the kept page was (JS-built nesting the HTML
+parser never produces).
+
+Residuals, by design: (1) a mis-nested block that exists only BEFORE the action (the
+action removes it) above a positional address can still read as "changed"; (2) hidden
+text that existed only before the action is not seen (the live element shows none now).
 
 Referenced by: browser_service/agent/registration.py (find_unique_locator).
 Depends on: playwright page objects (duck-typed); playwright.async_api.Error (to tell an
@@ -49,7 +57,9 @@ _EVAL_JS = r"""([html, addr, live]) => {
       if (/^xpath=/i.test(s) || s.startsWith('//') || s.startsWith('(')) {
         const xp = /^xpath=/i.test(s) ? s.slice(6) : s;
         for (const r of roots) {
-          const it = (r.ownerDocument || r).evaluate(xp, r, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+          // Playwright's XPath engine scopes a leading '/' to a non-document root with a '.'.
+          const path = r.nodeType !== 9 && xp.startsWith('/') ? '.' + xp : xp;
+          const it = (r.ownerDocument || r).evaluate(path, r, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
           for (let i = 0; i < it.snapshotLength; i++) out.push(it.snapshotItem(i));
         }
       } else {
@@ -63,6 +73,16 @@ _EVAL_JS = r"""([html, addr, live]) => {
     const liveHits = run(document);
     if (liveHits.length !== 1 || liveHits[0] !== live) return 'unknown';
     if (live.tagName === 'NOSCRIPT') return 'unknown';
+    // Get Text returns innerText (what is shown); the comparison uses textContent. Text that is
+    // not shown (display:none, ...) makes the two differ: no mark.
+    const squash = (s) => (s || '').replace(/\s+/g, '').toLowerCase();
+    if (squash(live.innerText) !== squash(textOf(live))) return 'unknown';
+    // The kept page went through the HTML parser; the live DOM may hold nesting the parser never
+    // produces (JS-built). Parse the CURRENT page the same way: the address must find exactly one
+    // element there, with the live element's text, or the two sides are not comparable.
+    const cur = new DOMParser().parseFromString('<!DOCTYPE html>' + document.documentElement.outerHTML, 'text/html');
+    const curHits = run(cur);
+    if (curHits.length !== 1 || textOf(curHits[0]) !== textOf(live)) return 'unknown';
     const preHits = run(new DOMParser().parseFromString(html, 'text/html'));
     if (preHits.length === 0) return 'absent';
     if (preHits.length > 1) return 'ambiguous';

@@ -168,3 +168,19 @@ def test_no_id_shaped_entry_returns_none():
     index, entry = find_forceable_id_locator(locators)
     assert index is None
     assert entry is None
+
+
+def test_commit_drops_the_read_change_mark_when_the_locator_changes():
+    # changed_by_action was proven for the OLD address only (F1).
+    result = {"best_locator": "css=#old", "changed_by_action": "elem_1", "all_locators": []}
+    scored = [{"locator": "css=#new", "quality_score": 90, "stability": "stable"}]
+    commit_reranked_winner(result, scored)
+    assert result["best_locator"] == "css=#new"
+    assert "changed_by_action" not in result
+
+
+def test_commit_keeps_the_read_change_mark_when_the_locator_is_the_same():
+    result = {"best_locator": "css=#same", "changed_by_action": "elem_1", "all_locators": []}
+    scored = [{"locator": "css=#same", "quality_score": 90, "stability": "stable"}]
+    commit_reranked_winner(result, scored)
+    assert result["changed_by_action"] == "elem_1"

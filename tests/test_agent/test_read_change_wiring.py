@@ -28,7 +28,7 @@ from tests.test_agent.test_vision_escalation import FakeAgent, FakeBrowserSessio
 CLICK = {"id": "elem_1", "action": "click", "value": ""}
 READ = {"id": "elem_2", "action": "get_text", "value": ""}
 PARAMS = {"x": 500, "y": 300, "element_description": "the thing", "element_index": 7}
-LOCATORS = {"elem_1": "css=#a", "elem_2": "css=#r"}
+LOCATORS = {"elem_1": "css=#a", "elem_2": "css=#r", "elem_3": "css=#n", "elem_4": "css=#p"}
 INTERACTING = frozenset({"input", "type", "click", "submit", "select", "check", "uncheck"})
 
 
@@ -182,7 +182,9 @@ async def test_a_failing_snapshot_does_not_stop_the_action(caplog):
     interaction.assert_awaited()  # the click still ran
     read_changed.assert_not_awaited()  # nothing was kept to compare with
     assert all("changed_by_action" not in r.metadata for r in results)
-    assert len([r for r in caplog.records if "F1 read-change step skipped" in r.getMessage()]) == 1
+    skipped = [r for r in caplog.records if "F1 read-change step skipped" in r.getMessage()]
+    assert len(skipped) == 1
+    assert "RuntimeError" in skipped[0].getMessage()  # the exception type is named
 
 
 @pytest.mark.asyncio
@@ -200,6 +202,7 @@ async def test_a_failing_comparison_returns_the_read_normally(caplog):
     assert len(skipped) == 1
     assert skipped[0].levelno == logging.WARNING
     assert skipped[0].name == "browser_service.agent.registration"
+    assert "RuntimeError" in skipped[0].getMessage()  # the exception type is named
 
 
 @pytest.mark.asyncio
@@ -223,3 +226,40 @@ async def test_a_requery_of_the_performed_action_does_not_snapshot_again():
     read_changed.assert_awaited_once()
     assert read_changed.await_args.args[2] == "<html>1</html>"
     assert results[2].metadata["changed_by_action"] == "elem_1"
+
+
+FILL = {"id": "elem_1", "action": "input", "value": "shoes"}
+NEXT = {"id": "elem_3", "action": "click", "value": ""}
+PENDING = {"id": "elem_4", "action": "click", "value": ""}
+
+
+@pytest.mark.asyncio
+async def test_a_requery_after_a_later_unsnapshotted_action_is_not_compared():
+    # fill (1), read (2), click (3), click (4) still pending. The read is located after
+    # the fill ("same"). The click (3) keeps no page (no read remains), so the saved page
+    # must go too: the read located again after it compares with NOTHING.
+    results, snapshot, _, read_changed, _ = await _run(
+        [FILL, READ, NEXT, PENDING],
+        ["elem_1", "elem_2", "elem_3", "elem_2"],
+        changed_effect=["same", "changed"],
+    )
+
+    snapshot.assert_awaited_once()  # the fill's; nothing was awaited for elem_3
+    read_changed.assert_awaited_once()  # the first location only
+    assert "changed_by_action" not in results[1].metadata
+    assert "changed_by_action" not in results[3].metadata
+
+
+@pytest.mark.asyncio
+async def test_a_failed_snapshot_clears_the_saved_page():
+    # A snapshots; B's snapshot returns None (the page could not be read); the read after
+    # B must not be compared with the page from before A.
+    results, snapshot, _, read_changed, _ = await _run(
+        [CLICK, NEXT, READ],
+        ["elem_1", "elem_3", "elem_2"],
+        snapshot_effect=["<html>pre-A</html>", None],
+    )
+
+    assert snapshot.await_count == 2
+    read_changed.assert_not_awaited()
+    assert "changed_by_action" not in results[2].metadata

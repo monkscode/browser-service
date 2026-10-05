@@ -32,14 +32,24 @@ LOCATORS = {"elem_1": "css=#a", "elem_2": "css=#r"}
 INTERACTING = frozenset({"input", "type", "click", "submit", "select", "check", "uncheck"})
 
 
-async def _engine(**kwargs):
-    eid = kwargs["element_id"]
-    return {
-        "found": True,
-        "best_locator": LOCATORS[eid],
-        "validated": True,
-        "element_id": eid,
-    }
+def _make_engine(weak_first=()):
+    """A locator engine: found, validated; the FIRST answer for an id in
+    ``weak_first`` is weak (``validated: False``) so the D3 downgrade guard lets
+    a later strong re-query through to the F1 block."""
+    seen: dict = {}
+
+    async def _engine(**kwargs):
+        eid = kwargs["element_id"]
+        seen[eid] = seen.get(eid, 0) + 1
+        weak = eid in weak_first and seen[eid] == 1
+        return {
+            "found": True,
+            "best_locator": LOCATORS[eid],
+            "validated": not weak,
+            "element_id": eid,
+        }
+
+    return _engine
 
 
 async def _run(
@@ -51,6 +61,7 @@ async def _run(
     changed_effect=None,
     sessions=None,
     params_for=None,
+    weak_first=(),
 ):
     """Register the action, call it once per id in ``calls``.
 
@@ -77,7 +88,9 @@ async def _run(
     agent = FakeAgent()
     sessions = sessions or {}
     with (
-        patch("browser_service.agent.actions.find_unique_locator_action", new=_engine),
+        patch(
+            "browser_service.agent.actions.find_unique_locator_action", new=_make_engine(weak_first)
+        ),
         patch("browser_service.agent.registration._do_interaction", new=interaction),
         patch("browser_service.agent.registration.snapshot_html", new=snapshot),
         patch("browser_service.agent.registration.read_changed_since", new=read_changed),
@@ -191,15 +204,22 @@ async def test_a_failing_comparison_returns_the_read_normally(caplog):
 
 @pytest.mark.asyncio
 async def test_a_requery_of_the_performed_action_does_not_snapshot_again():
-    # elem_1 is found twice (a re-query after it was performed). _do_interaction's
-    # mock adds elem_1 to the performed set, as the real function does, so the
-    # second call sees it as performed.
+    # elem_1 is found twice (a re-query after it was performed). Its FIRST answer
+    # is weak, so the D3 downgrade guard does NOT short-circuit the second query:
+    # it reaches the F1 block, where only F1's own `not in _performed_actions`
+    # clause stops a second snapshot. _do_interaction's mock adds elem_1 to the
+    # performed set, as the real function does. The snapshot mock returns a
+    # DIFFERENT page per call, so a second snapshot would replace the kept one.
     results, snapshot, interaction, read_changed, _ = await _run(
-        [CLICK, READ], ["elem_1", "elem_1", "elem_2"]
+        [CLICK, READ],
+        ["elem_1", "elem_1", "elem_2"],
+        snapshot_effect=["<html>1</html>", "<html>2</html>"],
+        weak_first={"elem_1"},
     )
 
+    assert interaction.await_count == 3  # both elem_1 queries and the read got through
     snapshot.assert_awaited_once()
-    assert interaction.await_count >= 1
-    # the kept snapshot is still the one taken before the first (real) action
-    assert read_changed.await_args.args[2] == "<html>before</html>"
+    # the read compares against the page kept before the first (real) action
+    read_changed.assert_awaited_once()
+    assert read_changed.await_args.args[2] == "<html>1</html>"
     assert results[2].metadata["changed_by_action"] == "elem_1"

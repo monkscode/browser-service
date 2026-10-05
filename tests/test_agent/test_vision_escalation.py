@@ -68,6 +68,8 @@ def _fake_playwright():
     fake CDP-connected browser with one non-blank page."""
     fake_page = AsyncMock()
     fake_page.url = "https://example.com/products"
+    # F1: a snapshot that could not be read keeps the read-change step inert here.
+    fake_page.content = AsyncMock(return_value=None)
     ctx = MagicMock()
     ctx.pages = [fake_page]
     fake_browser = MagicMock()

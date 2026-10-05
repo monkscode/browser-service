@@ -10,11 +10,14 @@ today's behaviour): frame hops, engines other than css / id= / xpath= / nth=, an
 locator whose evaluation on the LIVE page does not find exactly Playwright's element.
 
 Referenced by: browser_service/agent/registration.py (find_unique_locator).
-Depends on: playwright page objects (duck-typed).
+Depends on: playwright page objects (duck-typed); playwright.async_api.Error (to tell an
+expected failure from a bug when logging).
 """
 
 import asyncio
 import logging
+
+from playwright.async_api import Error as PlaywrightError
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +26,13 @@ EVAL_TIMEOUT_S = 2.0
 
 _EVAL_JS = r"""([html, addr, live]) => {
   const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  // A parsed document has scripting off, so <noscript> children parse as elements; on the live page
+  // they are one raw-text node. Compare text with every <noscript> descendant removed on both sides.
+  const textOf = (el) => {
+    const c = el.cloneNode(true);
+    c.querySelectorAll('noscript').forEach((n) => n.remove());
+    return norm(c.textContent);
+  };
   const segs = addr.split(/\s>>\s(?!>)/);
   const run = (doc) => {
     let roots = [doc];
@@ -52,12 +62,22 @@ _EVAL_JS = r"""([html, addr, live]) => {
   try {
     const liveHits = run(document);
     if (liveHits.length !== 1 || liveHits[0] !== live) return 'unknown';
+    if (live.tagName === 'NOSCRIPT') return 'unknown';
     const preHits = run(new DOMParser().parseFromString(html, 'text/html'));
     if (preHits.length === 0) return 'absent';
     if (preHits.length > 1) return 'ambiguous';
-    return norm(preHits[0].textContent) !== norm(live.textContent) ? 'changed' : 'same';
+    if (preHits[0].tagName === 'NOSCRIPT') return 'unknown';
+    return textOf(preHits[0]) !== textOf(live) ? 'changed' : 'same';
   } catch (e) { return 'unknown'; }
 }"""
+
+
+def _log_skip(what: str, error: Exception) -> None:
+    """INFO for an expected failure (timeout, Playwright error); WARNING for anything else (a bug)."""
+    if isinstance(error, (TimeoutError, PlaywrightError)):  # Playwright's TimeoutError is an Error
+        logger.info(f"   read-change {what} skipped ({type(error).__name__})")
+    else:
+        logger.warning(f"   read-change {what} skipped ({type(error).__name__}: {error})")
 
 
 async def snapshot_html(page) -> str | None:
@@ -65,7 +85,7 @@ async def snapshot_html(page) -> str | None:
     try:
         return await asyncio.wait_for(page.content(), timeout=SNAPSHOT_TIMEOUT_S)
     except Exception as e:  # noqa: BLE001 — a snapshot must never break discovery
-        logger.info(f"   read-change snapshot skipped ({type(e).__name__})")
+        _log_skip("snapshot", e)
         return None
 
 
@@ -82,5 +102,5 @@ async def read_changed_since(page, locator: str, html: str | None) -> str:
         )
         return status if status in ("changed", "same", "absent", "ambiguous") else "unknown"
     except Exception as e:  # noqa: BLE001 — never break discovery
-        logger.info(f"   read-change check skipped ({type(e).__name__})")
+        _log_skip("check", e)
         return "unknown"

@@ -85,3 +85,23 @@ async def test_unsupported_engine_is_unknown(
 ):  # text= / :has-text cannot be evaluated on parsed HTML
     js = "document.querySelector('#grid span.name').textContent = 'Laptop A'"
     assert await _run(page, GRID_BEFORE, js, "span:has-text('Laptop A')") == "unknown"
+
+
+CARD_BEFORE = "<div id='card'><span>Phone A</span><noscript><img src='a.png'><b>fallback</b></noscript></div><p id='other'>x</p>"
+
+
+async def test_unchanged_element_with_noscript_is_same(
+    page,
+):  # DOMParser parses <noscript> children as elements
+    js = "document.getElementById('other').textContent = 'y'"
+    assert await _run(page, CARD_BEFORE, js, "id=card") == "same"
+
+
+async def test_changed_text_beside_noscript_is_changed(page):
+    js = "document.querySelector('#card span').textContent = 'Laptop A'"
+    assert await _run(page, CARD_BEFORE, js, "id=card") == "changed"
+
+
+async def test_a_noscript_element_itself_is_unknown(page):
+    js = "document.getElementById('other').textContent = 'y'"
+    assert await _run(page, CARD_BEFORE, js, "css=#card >> noscript") == "unknown"

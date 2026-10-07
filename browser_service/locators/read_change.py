@@ -10,7 +10,12 @@ engines other than css / id= / xpath= / nth=, any locator whose evaluation on th
 page does not find exactly Playwright's element, a live element whose shown text
 (innerText, what Get Text returns) is not its textContent (hidden text), and a locator
 that does not find that same element, once, when the CURRENT page is re-parsed the way
-the kept page was (JS-built nesting the HTML parser never produces).
+the kept page was (JS-built nesting the HTML parser never produces), and a form control:
+a live element, or a kept-page match, that is an <input> or <textarea>. Get Text returns
+the .value of those, which the kept HTML does not hold and a text comparison never sees,
+so their value is not comparable. (Behaviour change, intended: a <textarea> read that
+used to be marked "changed" from its text content now gets no mark; an <input> never
+had one, its text is empty.)
 
 Residuals, by design: (1) nesting the HTML parser never produces that exists only
 BEFORE the action (the action removes or re-renders it) and touches the address - the
@@ -26,13 +31,16 @@ read's own locator is evaluated on every kept page (T_i = its text there: one ma
 text, none -> absent, several -> ambiguous) and compared with its live text L, by the SAME
 engine as read_changed_since. came_back = some T_i == L and a LATER T_j != L (absent or
 ambiguous counts as different), i.e. the value returned to an earlier one, so a wait that stops
-at the first change of the read could stop on the in-between value. Fail-safe, each = True (the
-test gets no inserted lines = today's behaviour): a gap in the kept pages; a read that cannot
-be checked (empty locator, a frame hop, an engine other than css / id= / xpath= / nth=, a live
-element that is not exactly Playwright's, hidden text, a current page that re-parses to
-something else, a <noscript> target live or on a kept page); any error or timeout. No kept
-page -> False. The caller adds the cases it owns: a read flagged earlier in the workflow, a
-read in a frame, a re-ranked locator swap (tasks/workflow.py commit_reranked_winner).
+at the first change of the read could stop on the in-between value. The answer is one of
+CAME_BACK (a real one, on comparable pages), NOT_CAME_BACK, or UNCHECKED, the fail-safe (the
+test gets no inserted lines = today's behaviour; the caller sets the same `came_back` result
+key for CAME_BACK and UNCHECKED and tells them apart in the log): a gap in the kept pages; a
+read that cannot be checked (empty locator, a frame hop, an engine other than css / id= /
+xpath= / nth=, a live element that is not exactly Playwright's, hidden text, a form control,
+a current page that re-parses to something else, a <noscript> target live or on a kept
+page); any error or timeout. No kept page -> NOT_CAME_BACK. The caller adds the cases it
+owns: a read flagged earlier in the workflow, a read in a frame, a re-ranked locator swap
+(tasks/workflow.py commit_reranked_winner).
 
 Referenced by: browser_service/agent/registration.py (find_unique_locator).
 Depends on: playwright page objects (duck-typed); playwright.async_api.Error (to tell an
@@ -91,10 +99,13 @@ _ENGINE_JS = r"""
       return roots;
     };
   };
+  // Get Text returns .value for INPUT / TEXTAREA; the kept HTML does not hold a value and the
+  // comparison is of text, so a form control's value is never comparable.
+  const formControl = (el) => el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
   const liveUnknown = (run, live) => {
     const liveHits = run(document);
     if (liveHits.length !== 1 || liveHits[0] !== live) return true;
-    if (live.tagName === 'NOSCRIPT') return true;
+    if (live.tagName === 'NOSCRIPT' || formControl(live)) return true;
     // Get Text returns innerText (what is shown); the comparison uses textContent. Text that is
     // not shown (display:none, ...) makes the two differ: no mark.
     const squash = (s) => (s || '').replace(/\s+/g, '').toLowerCase();
@@ -122,7 +133,7 @@ _EVAL_JS = (
     const preHits = run(new DOMParser().parseFromString(html, 'text/html'));
     if (preHits.length === 0) return 'absent';
     if (preHits.length > 1) return 'ambiguous';
-    if (preHits[0].tagName === 'NOSCRIPT') return 'unknown';
+    if (preHits[0].tagName === 'NOSCRIPT' || formControl(preHits[0])) return 'unknown';
     return textOf(preHits[0]) !== textOf(live) ? 'changed' : 'same';
   } catch (e) { return 'unknown'; }
 }"""
@@ -144,7 +155,7 @@ _EVAL_ALL_JS = (
         const preHits = run(new DOMParser().parseFromString(html, 'text/html'));
         if (preHits.length === 0) return 'absent';
         if (preHits.length > 1) return 'ambiguous';
-        if (preHits[0].tagName === 'NOSCRIPT') return 'unknown';
+        if (preHits[0].tagName === 'NOSCRIPT' || formControl(preHits[0])) return 'unknown';
         return textOf(preHits[0]) !== liveText ? 'changed' : 'same';
       } catch (e) { return 'unknown'; }
     });
@@ -189,45 +200,53 @@ async def read_changed_since(page, locator: str, html: str | None) -> str:
 
 _PAGE_STATUSES = ("same", "changed", "absent", "ambiguous")
 
+# The three answers of the came-back check. The caller sets the SAME result key for CAME_BACK and
+# UNCHECKED (NLRF reads only `came_back`) and tells them apart in the log.
+CAME_BACK = "came_back"  # a real one: comparable pages, the value returned to an earlier one
+NOT_CAME_BACK = "not_came_back"  # comparable pages (or none kept), it did not
+UNCHECKED = "unchecked"  # could not be checked: the fail-safe
 
-def came_back_from_statuses(statuses: list[str]) -> bool:
+
+def came_back_from_statuses(statuses: list[str]) -> str:
     """The came-back formula over one status per kept page, oldest first.
 
     "same" = the read's text on that page equals its live text; "changed" / "absent" /
-    "ambiguous" = it differs there. True when some page is "same" and a LATER page differs.
-    A status outside those four (the engine's "unknown": not comparable) is fail-safe True."""
+    "ambiguous" = it differs there. CAME_BACK when some page is "same" and a LATER page
+    differs, else NOT_CAME_BACK. A status outside those four (the engine's "unknown": not
+    comparable) anywhere in the list makes the whole answer UNCHECKED."""
     if any(s not in _PAGE_STATUSES for s in statuses):
-        return True
+        return UNCHECKED
     seen_same = False
     for status in statuses:
         if status == "same":
             seen_same = True
         elif seen_same:
-            return True
-    return False
+            return CAME_BACK
+    return NOT_CAME_BACK
 
 
-async def read_came_back(page, locator: str, htmls: list[str | None]) -> bool:
-    """Did the read's value come back to an earlier value? (one `page.evaluate` for all pages)
+async def read_came_back(page, locator: str, htmls: list[str | None]) -> str:
+    """CAME_BACK | NOT_CAME_BACK | UNCHECKED: did the read's value come back to an earlier value?
 
-    `htmls` = the page kept before every action bs performed, in order; None = a gap (an action
-    was performed and no page was kept). No kept page -> False. Anything that cannot be checked
-    (a gap, an empty or framed locator, a live side the engine cannot compare, any error or a
-    timeout) -> True, the fail-safe: NLRF then gives the test no inserted lines."""
+    One `page.evaluate` for all pages. `htmls` = the page kept before every action bs performed,
+    in order; None = a gap (an action was performed and no page was kept). No kept page ->
+    NOT_CAME_BACK. Anything that cannot be checked (a gap, an empty or framed locator, a live
+    side the engine cannot compare, any error or a timeout) -> UNCHECKED, the fail-safe: the
+    caller flags the read like a real came-back and NLRF gives the test no inserted lines."""
     if not htmls:
-        return False
+        return NOT_CAME_BACK
     if any(not h for h in htmls) or not locator or ">>>" in locator:
-        return True
+        return UNCHECKED
     try:
         handle = await page.locator(locator).first.element_handle(timeout=1000)
         if handle is None:
-            return True
+            return UNCHECKED
         statuses = await asyncio.wait_for(
             page.evaluate(_EVAL_ALL_JS, [htmls, locator, handle]), timeout=EVAL_TIMEOUT_S
         )
         if not isinstance(statuses, list) or len(statuses) != len(htmls):
-            return True
+            return UNCHECKED
         return came_back_from_statuses(statuses)
     except Exception as e:  # noqa: BLE001 — never break discovery
         _log_skip("came-back check", e)
-        return True
+        return UNCHECKED

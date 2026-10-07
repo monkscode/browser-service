@@ -8,6 +8,8 @@ undoing the locator engine's ordering. rerank_sort_key is the shared
 verdict both sides read.
 """
 
+import logging
+
 from browser_service.locators.stability import STABLE
 from browser_service.tasks.workflow import (
     commit_reranked_winner,
@@ -208,3 +210,21 @@ def test_commit_keeps_an_existing_came_back_flag_when_the_locator_is_the_same():
     scored = [{"locator": "css=#same", "quality_score": 90, "stability": "stable"}]
     commit_reranked_winner(result, scored)
     assert result["came_back"] is True
+
+
+def test_commit_logs_the_unchecked_signal_once_when_it_flags_a_swap(caplog):
+    # a swap is a fail-safe flag, not a real came-back: its log line says so (R16)
+    result = {"best_locator": "css=#old", "all_locators": []}
+    scored = [{"locator": "css=#new", "quality_score": 90, "stability": "stable"}]
+    with caplog.at_level(logging.INFO, logger="browser_service.tasks.workflow"):
+        commit_reranked_winner(result, scored)
+    lines = [r.getMessage() for r in caplog.records if "read-came-back" in r.getMessage()]
+    assert len(lines) == 1 and "(signal: read-came-back-unchecked)" in lines[0]
+
+
+def test_commit_logs_no_came_back_signal_when_the_locator_is_the_same(caplog):
+    result = {"best_locator": "css=#same", "all_locators": []}
+    scored = [{"locator": "css=#same", "quality_score": 90, "stability": "stable"}]
+    with caplog.at_level(logging.INFO, logger="browser_service.tasks.workflow"):
+        commit_reranked_winner(result, scored)
+    assert not [r for r in caplog.records if "read-came-back" in r.getMessage()]

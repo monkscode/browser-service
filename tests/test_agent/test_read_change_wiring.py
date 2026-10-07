@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from browser_service.agent.registration import register_custom_actions
+from browser_service.locators.read_change import CAME_BACK, NOT_CAME_BACK, UNCHECKED
 from tests.test_agent.test_interaction_frame_wiring import APP_FRAME, CHECKBOX
 from tests.test_agent.test_interaction_frame_wiring import (
     FakeBrowserSession as FrameBrowserSession,
@@ -63,7 +64,7 @@ async def _run(
     params_for=None,
     weak_first=(),
     status_for=None,
-    came_back=False,
+    came_back=NOT_CAME_BACK,
     came_back_effect=None,
 ):
     """Register the action, call it once per id in ``calls``.
@@ -328,12 +329,19 @@ async def test_an_action_that_fails_automation_still_saves_its_page():
 
 
 # --- came_back (R16): every located read is checked against ALL the pages kept so far ----------
+# read_came_back answers CAME_BACK / NOT_CAME_BACK / UNCHECKED; the result key is the same for the
+# first and the last, and the log line tells them apart.
 
-SIGNAL = "(signal: read-came-back)"
+REAL = "(signal: read-came-back)"
+UNCHECKED_SIGNAL = "(signal: read-came-back-unchecked)"
+
+
+def _signals(caplog):
+    return [r.getMessage() for r in caplog.records if "signal: read-came-back" in r.getMessage()]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("answer", [True, False])
+@pytest.mark.parametrize("answer", [CAME_BACK, UNCHECKED, NOT_CAME_BACK])
 async def test_a_read_is_checked_against_the_kept_page(answer, caplog):
     with caplog.at_level(logging.INFO, logger="browser_service.agent.registration"):
         results, _, _, _, manager = await _run(
@@ -344,10 +352,14 @@ async def test_a_read_is_checked_against_the_kept_page(answer, caplog):
     args = manager.came_back_mock.await_args.args
     assert args[1] == "css=#r"  # the READ's own locator
     assert args[2] == ["<html>before</html>"]
-    signals = [r for r in caplog.records if SIGNAL in r.getMessage()]
-    if answer:
+    signals = _signals(caplog)
+    if answer == CAME_BACK:
         assert results[1].metadata["came_back"] is True
-        assert len(signals) == 1 and "elem_2" in signals[0].getMessage()
+        assert len(signals) == 1 and "elem_2" in signals[0] and signals[0].endswith(REAL)
+    elif answer == UNCHECKED:
+        assert results[1].metadata["came_back"] is True  # the same key as a real one
+        assert len(signals) == 1 and "elem_2" in signals[0]
+        assert signals[0].endswith(UNCHECKED_SIGNAL) and "could not be checked" in signals[0]
     else:
         assert "came_back" not in results[1].metadata
         assert signals == []
@@ -370,7 +382,9 @@ async def test_two_actions_then_a_read_hand_over_both_pages_in_order():
 async def test_a_read_before_any_action_is_not_checked_for_came_back():
     first_read = {"id": "elem_1", "action": "get_text", "value": ""}
     later_click = {"id": "elem_2", "action": "click", "value": ""}
-    results, _, _, _, manager = await _run([first_read, later_click], ["elem_1"], came_back=True)
+    results, _, _, _, manager = await _run(
+        [first_read, later_click], ["elem_1"], came_back=CAME_BACK
+    )
 
     manager.came_back_mock.assert_not_awaited()
     assert "came_back" not in results[0].metadata
@@ -457,11 +471,15 @@ async def test_a_failing_came_back_check_is_flagged_with_one_warning(caplog):
     assert len(warnings) == 1
     assert "came-back check skipped" in warnings[0].getMessage()
     assert "RuntimeError" in warnings[0].getMessage() and "boom" in warnings[0].getMessage()
+    signals = _signals(caplog)
+    assert len(signals) == 1 and signals[0].endswith(UNCHECKED_SIGNAL)  # not a real came-back
 
 
 @pytest.mark.asyncio
 async def test_the_check_does_not_change_the_changed_by_action_mark():
-    results, _, _, read_changed, _ = await _run([CLICK, READ], ["elem_1", "elem_2"], came_back=True)
+    results, _, _, read_changed, _ = await _run(
+        [CLICK, READ], ["elem_1", "elem_2"], came_back=CAME_BACK
+    )
 
     read_changed.assert_awaited_once()
     assert results[1].metadata["changed_by_action"] == "elem_1"
@@ -469,18 +487,24 @@ async def test_the_check_does_not_change_the_changed_by_action_mark():
 
 
 @pytest.mark.asyncio
-async def test_a_read_flagged_once_stays_flagged_when_it_is_located_again():
+async def test_a_read_flagged_once_stays_flagged_when_it_is_located_again(caplog):
     # the second location REPLACES the first result in the workflow's results, so the flag
-    # must persist in the per-workflow state even when the second computation says False.
-    results, _, _, _, _ = await _run(
-        [CLICK, READ],
-        ["elem_1", "elem_2", "elem_2"],
-        came_back_effect=[True, False],
-        weak_first={"elem_2"},
-    )
+    # must persist in the per-workflow state even when the second computation says "no".
+    with caplog.at_level(logging.INFO, logger="browser_service.agent.registration"):
+        results, _, _, _, manager = await _run(
+            [CLICK, READ],
+            ["elem_1", "elem_2", "elem_2"],
+            came_back_effect=[CAME_BACK, NOT_CAME_BACK],
+            weak_first={"elem_2"},
+        )
 
     assert results[1].metadata["came_back"] is True
     assert results[2].metadata["came_back"] is True
+    assert manager.came_back_mock.await_count == 1  # not recomputed
+    signals = _signals(caplog)
+    assert len(signals) == 2
+    assert signals[0].endswith(REAL)
+    assert signals[1].endswith(UNCHECKED_SIGNAL)  # "flagged earlier" is a fail-safe reason
 
 
 @pytest.mark.asyncio
@@ -488,7 +512,7 @@ async def test_an_unflagged_read_is_checked_again_when_it_is_located_again():
     results, _, _, _, manager = await _run(
         [CLICK, READ],
         ["elem_1", "elem_2", "elem_2"],
-        came_back_effect=[False, True],
+        came_back_effect=[NOT_CAME_BACK, CAME_BACK],
         weak_first={"elem_2"},
     )
 
@@ -498,13 +522,16 @@ async def test_an_unflagged_read_is_checked_again_when_it_is_located_again():
 
 
 @pytest.mark.asyncio
-async def test_a_read_inside_an_iframe_is_flagged_without_the_check():
-    results, _, _, _, manager = await _run(
-        [CLICK, READ],
-        ["elem_1", "elem_2"],
-        sessions={"elem_2": FrameBrowserSession({7: APP_FRAME, 12: CHECKBOX})},
-        params_for={"elem_2": {"x": 70, "y": 230, "element_index": 12}},
-    )
+async def test_a_read_inside_an_iframe_is_flagged_without_the_check(caplog):
+    with caplog.at_level(logging.INFO, logger="browser_service.agent.registration"):
+        results, _, _, _, manager = await _run(
+            [CLICK, READ],
+            ["elem_1", "elem_2"],
+            sessions={"elem_2": FrameBrowserSession({7: APP_FRAME, 12: CHECKBOX})},
+            params_for={"elem_2": {"x": 70, "y": 230, "element_index": 12}},
+        )
 
     manager.came_back_mock.assert_not_awaited()
     assert results[1].metadata["came_back"] is True
+    signals = _signals(caplog)
+    assert len(signals) == 1 and signals[0].endswith(UNCHECKED_SIGNAL)

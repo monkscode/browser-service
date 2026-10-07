@@ -74,6 +74,10 @@ def commit_reranked_winner(result: dict, scored_locators: list[dict]) -> None:
     if winner["locator"] != result.get("best_locator"):
         result.pop("changed_by_action", None)
         result["came_back"] = True
+        logger.info(
+            "   ↩️ re-ranked locator swap: the value cannot be checked against the earlier "
+            "pages — treated as came back (signal: read-came-back-unchecked)"
+        )
     result["best_locator"] = winner["locator"]
     result["stability"] = winner.get("stability", STABLE)
     result["all_locators"] = scored_locators

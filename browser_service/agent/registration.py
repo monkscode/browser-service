@@ -38,7 +38,14 @@ from typing import Optional
 
 from browser_service.locators.action_fit import READ_ACTIONS
 from browser_service.locators.frame_locator import strip_frame
-from browser_service.locators.read_change import read_came_back, read_changed_since, snapshot_html
+from browser_service.locators.read_change import (
+    CAME_BACK,
+    NOT_CAME_BACK,
+    UNCHECKED,
+    read_came_back,
+    read_changed_since,
+    snapshot_html,
+)
 from browser_service.locators.stability import (
     STABLE,
     is_dynamic_text,
@@ -1902,27 +1909,35 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                     if _f1_spec_action in READ_ACTIONS:
                         try:
                             if params.element_id in _came_back_flagged:
-                                _came_back = True
+                                _came_back = UNCHECKED  # flagged earlier: not recomputed
                             elif not _kept_pages:
-                                _came_back = False
+                                _came_back = NOT_CAME_BACK
                             elif iframe_context:
-                                _came_back = True  # a read in a frame is not checked
+                                _came_back = UNCHECKED  # a read in a frame is not checked
                             else:
                                 _came_back = await read_came_back(
                                     active_page, best_locator, list(_kept_pages)
                                 )
                         except Exception as _cb_err:  # noqa: BLE001 — never break discovery
-                            _came_back = True
+                            _came_back = UNCHECKED
                             logger.warning(
                                 f"   F1 came-back check skipped ({type(_cb_err).__name__}): {_cb_err}"
                             )
-                        if _came_back:
+                        if _came_back != NOT_CAME_BACK:
+                            # the same key for a real came-back and a fail-safe one; the log tells them apart
                             result["came_back"] = True
                             _came_back_flagged.add(params.element_id)
-                            logger.info(
-                                f"   ↩️ {params.element_id}: its value came back to an earlier "
-                                f"value (signal: read-came-back)"
-                            )
+                            if _came_back == CAME_BACK:
+                                logger.info(
+                                    f"   ↩️ {params.element_id}: its value came back to an earlier "
+                                    f"value (signal: read-came-back)"
+                                )
+                            else:
+                                logger.info(
+                                    f"   ↩️ {params.element_id}: its value could not be checked "
+                                    f"against the earlier pages — treated as came back "
+                                    f"(signal: read-came-back-unchecked)"
+                                )
 
                     # Reached only on locator-find success — best_locator is non-None by construction here.
                     # Unpack 4-tuple — action and value come from _do_interaction directly so this block

@@ -814,6 +814,97 @@ class TestReranking:
         assert result["best_locator"] == "id=search"
         assert result["all_locators"][0]["locator"] == "id=search"
 
+    # F1: a swap flags came_back only on an element the test READS. The action reaches
+    # commit_reranked_winner from the workflow's own elements list, at both call sites.
+
+    @staticmethod
+    def _swap_by_reranker(harness, action):
+        """elem_1 swaps xpath -> id in the re-ranker (both candidates unique + valid)."""
+        arm(
+            harness,
+            [
+                FakeStep(
+                    [
+                        FakeActionResult(
+                            locator_metadata(
+                                "elem_1",
+                                "xpath=//div[3]/input",
+                                all_locators=[
+                                    loc("xpath=//div[3]/input", "xpath"),
+                                    loc("id=search", "id"),
+                                ],
+                            )
+                        )
+                    ]
+                )
+            ],
+        )
+        run_workflow(
+            harness, elements=[{"id": "elem_1", "description": "the box", "action": action}]
+        )
+        result = harness.updates[-1][1]["results"]["results"][0]
+        assert result["best_locator"] == "id=search"  # the swap really happened
+        return result
+
+    @staticmethod
+    def _swap_by_forced_id(harness, action):
+        """elem_1 swaps xpath -> id in the priority-violation forcer: no candidate is
+        unique, so the re-ranker skips it, and the element's own id then forces the swap."""
+        md = locator_metadata(
+            "elem_1",
+            "xpath=//div[3]/input",
+            all_locators=[
+                loc("xpath=//div[3]/input", "xpath", unique=False),
+                loc("id=search", "id", unique=False),
+            ],
+        )
+        md["element_info"] = {"id": "search"}
+        arm(harness, [FakeStep([FakeActionResult(md)])])
+        run_workflow(
+            harness, elements=[{"id": "elem_1", "description": "the box", "action": action}]
+        )
+        result = harness.updates[-1][1]["results"]["results"][0]
+        assert result["best_locator"] == "id=search"  # the swap really happened
+        return result
+
+    def test_reranker_swap_on_a_click_element_carries_no_came_back(self, workflow_harness):
+        assert "came_back" not in self._swap_by_reranker(workflow_harness, "click")
+
+    def test_reranker_swap_on_a_read_element_flags_came_back(self, workflow_harness):
+        assert self._swap_by_reranker(workflow_harness, "get_text")["came_back"] is True
+
+    def test_forced_id_swap_on_a_click_element_carries_no_came_back(self, workflow_harness):
+        assert "came_back" not in self._swap_by_forced_id(workflow_harness, "click")
+
+    def test_forced_id_swap_on_a_read_element_flags_came_back(self, workflow_harness):
+        assert self._swap_by_forced_id(workflow_harness, "get_text")["came_back"] is True
+
+    def test_swap_on_an_element_without_an_action_is_still_flagged(self, workflow_harness):
+        # a spec with no action key (or no spec at all) -> the fail-safe flag, as before
+        arm(
+            workflow_harness,
+            [
+                FakeStep(
+                    [
+                        FakeActionResult(
+                            locator_metadata(
+                                "elem_1",
+                                "xpath=//div[3]/input",
+                                all_locators=[
+                                    loc("xpath=//div[3]/input", "xpath"),
+                                    loc("id=search", "id"),
+                                ],
+                            )
+                        )
+                    ]
+                )
+            ],
+        )
+        run_workflow(workflow_harness)  # default element: no "action" key
+        result = workflow_harness.updates[-1][1]["results"]["results"][0]
+        assert result["best_locator"] == "id=search"
+        assert result["came_back"] is True
+
 
 class TestAgentConfiguration:
     """Tests for how the Agent and session are constructed."""

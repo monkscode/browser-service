@@ -39,8 +39,8 @@ read that cannot be checked (empty locator, a frame hop, an engine other than cs
 xpath= / nth=, a live element that is not exactly Playwright's, hidden text, a form control,
 a current page that re-parses to something else, a <noscript> target live or on a kept
 page); any error or timeout. No kept page -> NOT_CAME_BACK. The caller adds the cases it
-owns: a read flagged earlier in the workflow, a read in a frame, a re-ranked locator swap
-(tasks/workflow.py commit_reranked_winner).
+owns: a read flagged earlier in the workflow, a read in a frame, a re-ranked locator swap of
+a READ element or of an element whose action is unknown (tasks/workflow.py commit_reranked_winner).
 
 Referenced by: browser_service/agent/registration.py (find_unique_locator).
 Depends on: playwright page objects (duck-typed); playwright.async_api.Error (to tell an

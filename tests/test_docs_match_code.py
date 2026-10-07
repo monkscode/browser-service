@@ -237,14 +237,29 @@ def test_readme_public_api_block_matches_dunder_all():
 def _actions_accepted_by_dispatcher() -> set[str]:
     """The dispatcher's canonical accept-list.
 
-    ``registration.py`` guards with ``if action not in (...)`` and rejects
-    anything else, so that single tuple is the whole supported action set —
+    ``registration.py`` guards with ``if action not in <accept-list>`` (a literal
+    tuple, or the module-level ``_PERFORMED_ACTIONS`` constant) and rejects
+    anything else, so that single list is the whole supported action set —
     every ``elif`` further down is a subset of it.
     """
     source = (REPO_ROOT / "browser_service" / "agent" / "registration.py").read_text(
         encoding="utf-8"
     )
     tree = ast.parse(source)
+
+    # The accept-list may be a module-level ``NAME = frozenset({...})`` constant.
+    constants: dict[str, ast.expr] = {}
+    for stmt in tree.body:
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and isinstance(stmt.value, ast.Call)
+            and isinstance(stmt.value.func, ast.Name)
+            and stmt.value.func.id == "frozenset"
+            and len(stmt.value.args) == 1
+        ):
+            constants[stmt.targets[0].id] = stmt.value.args[0]
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Compare) or len(node.ops) != 1:
@@ -254,7 +269,9 @@ def _actions_accepted_by_dispatcher() -> set[str]:
         if not (isinstance(node.left, ast.Name) and node.left.id == "action"):
             continue
         right = node.comparators[0]
-        if isinstance(right, (ast.Tuple, ast.List)) and all(
+        if isinstance(right, ast.Name):
+            right = constants.get(right.id, right)
+        if isinstance(right, (ast.Tuple, ast.List, ast.Set)) and all(
             isinstance(e, ast.Constant) for e in right.elts
         ):
             return {e.value for e in right.elts}

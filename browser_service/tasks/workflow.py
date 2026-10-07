@@ -20,6 +20,7 @@ import structlog
 logger = logging.getLogger(__name__)
 from typing import Any, Dict, List, Optional
 
+from browser_service.locators.action_fit import READ_ACTIONS
 from browser_service.locators.stability import (
     STABLE,
     score_stability,
@@ -55,7 +56,9 @@ def find_forceable_id_locator(all_locators: list[dict]) -> tuple:
     return None, None
 
 
-def commit_reranked_winner(result: dict, scored_locators: list[dict]) -> None:
+def commit_reranked_winner(
+    result: dict, scored_locators: list[dict], action: str | None = None
+) -> None:
     """Point the top-level result fields at the reranked winner.
 
     ``best_locator``, ``stability`` and ``all_locators`` describe the SAME
@@ -64,8 +67,24 @@ def commit_reranked_winner(result: dict, scored_locators: list[dict]) -> None:
     volatile/positional locator with the old tier (E1) — the emitted payload
     then disagrees with ``all_locators[0]``. Assigning all three here makes
     that drift unrepresentable.
+
+    A swapped locator also invalidates F1's read-change facts, which were proven for the
+    OLD address only: ``changed_by_action`` is dropped, and for a READ element ``came_back``
+    is set (the came-back check was made for the old address — the fail-safe that gives the
+    test no inserted lines). ``action`` is the element's spec action: the came-back check
+    exists only for reads (``READ_ACTIONS``), so a swap on any other action leaves
+    ``came_back`` as it is and logs nothing; ``None`` (the caller does not know the action)
+    keeps the fail-safe, so an element of unknown action is flagged.
     """
     winner = scored_locators[0]
+    if winner["locator"] != result.get("best_locator"):
+        result.pop("changed_by_action", None)
+        if action is None or action in READ_ACTIONS:
+            result["came_back"] = True
+            logger.info(
+                "   ↩️ re-ranked locator swap: the value cannot be checked against the earlier "
+                "pages — treated as came back (signal: read-came-back-unchecked)"
+            )
     result["best_locator"] = winner["locator"]
     result["stability"] = winner.get("stability", STABLE)
     result["all_locators"] = scored_locators
@@ -1919,6 +1938,9 @@ def process_workflow_task(
 
             logger.info("🔄 Re-ranking locators by quality score...")
             re_ranked_count = 0
+            # element id -> its spec action, built once for both commit_reranked_winner calls
+            # (a missing spec or action reads as None: the swap is then flagged, the fail-safe)
+            action_by_id = {e.get("id"): e.get("action") for e in elements}
 
             for result in results_list:
                 if not result.get("found", False):
@@ -2017,7 +2039,9 @@ def process_workflow_task(
                     logger.info(f"      NEW: {new_best} (score: {new_score})")
                     re_ranked_count += 1
 
-                commit_reranked_winner(result, scored_locators)
+                commit_reranked_winner(
+                    result, scored_locators, action_by_id.get(result.get("element_id"))
+                )
 
             logger.info(
                 f"✅ Re-ranking complete: {re_ranked_count}/{len(results_list)} elements upgraded"
@@ -2104,7 +2128,9 @@ def process_workflow_task(
                             # displaced non-id best's stability behind would
                             # mislabel the now-stable ID locator (same drift
                             # commit_reranked_winner prevents in the re-ranker).
-                            commit_reranked_winner(result, all_locators)
+                            commit_reranked_winner(
+                                result, all_locators, action_by_id.get(result.get("element_id"))
+                            )
 
                             logger.info(f"   ✅ Corrected: {elem_id} now uses ID locator")
                         else:

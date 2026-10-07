@@ -57,6 +57,8 @@ class FakeAgent:
 def _fake_playwright():
     fake_page = AsyncMock()
     fake_page.url = "https://example.org/login"
+    # F1: a snapshot that could not be read keeps the read-change step inert here.
+    fake_page.content = AsyncMock(return_value=None)
     ctx = MagicMock()
     ctx.pages = [fake_page]
     fake_browser = MagicMock()

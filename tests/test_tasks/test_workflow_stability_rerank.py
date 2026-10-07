@@ -8,6 +8,12 @@ undoing the locator engine's ordering. rerank_sort_key is the shared
 verdict both sides read.
 """
 
+import logging
+
+import pytest
+
+from browser_service.agent.registration import _PERFORMED_ACTIONS
+from browser_service.locators.action_fit import READ_ACTIONS
 from browser_service.locators.stability import STABLE
 from browser_service.tasks.workflow import (
     commit_reranked_winner,
@@ -168,3 +174,137 @@ def test_no_id_shaped_entry_returns_none():
     index, entry = find_forceable_id_locator(locators)
     assert index is None
     assert entry is None
+
+
+def test_commit_drops_the_read_change_mark_when_the_locator_changes():
+    # changed_by_action was proven for the OLD address only (F1).
+    result = {"best_locator": "css=#old", "changed_by_action": "elem_1", "all_locators": []}
+    scored = [{"locator": "css=#new", "quality_score": 90, "stability": "stable"}]
+    commit_reranked_winner(result, scored)
+    assert result["best_locator"] == "css=#new"
+    assert "changed_by_action" not in result
+
+
+def test_commit_keeps_the_read_change_mark_when_the_locator_is_the_same():
+    result = {"best_locator": "css=#same", "changed_by_action": "elem_1", "all_locators": []}
+    scored = [{"locator": "css=#same", "quality_score": 90, "stability": "stable"}]
+    commit_reranked_winner(result, scored)
+    assert result["changed_by_action"] == "elem_1"
+
+
+def test_commit_flags_came_back_when_the_locator_changes():
+    # the came-back check was made for the OLD address only (R16): with no action given
+    # (the caller does not know it), any swapped element is flagged, whatever its action kind.
+    result = {"best_locator": "css=#old", "all_locators": []}
+    scored = [{"locator": "css=#new", "quality_score": 90, "stability": "stable"}]
+    commit_reranked_winner(result, scored)
+    assert result["best_locator"] == "css=#new"
+    assert result["came_back"] is True
+
+
+def test_commit_adds_no_came_back_key_when_the_locator_is_the_same():
+    result = {"best_locator": "css=#same", "all_locators": []}
+    scored = [{"locator": "css=#same", "quality_score": 90, "stability": "stable"}]
+    commit_reranked_winner(result, scored)
+    assert "came_back" not in result
+
+
+def test_commit_keeps_an_existing_came_back_flag_when_the_locator_is_the_same():
+    result = {"best_locator": "css=#same", "came_back": True, "all_locators": []}
+    scored = [{"locator": "css=#same", "quality_score": 90, "stability": "stable"}]
+    commit_reranked_winner(result, scored)
+    assert result["came_back"] is True
+
+
+def test_commit_logs_the_unchecked_signal_once_when_it_flags_a_swap(caplog):
+    # a swap is a fail-safe flag, not a real came-back: its log line says so (R16)
+    result = {"best_locator": "css=#old", "all_locators": []}
+    scored = [{"locator": "css=#new", "quality_score": 90, "stability": "stable"}]
+    with caplog.at_level(logging.INFO, logger="browser_service.tasks.workflow"):
+        commit_reranked_winner(result, scored)
+    lines = [r.getMessage() for r in caplog.records if "read-came-back" in r.getMessage()]
+    assert len(lines) == 1 and "(signal: read-came-back-unchecked)" in lines[0]
+
+
+def test_commit_logs_no_came_back_signal_when_the_locator_is_the_same(caplog):
+    result = {"best_locator": "css=#same", "all_locators": []}
+    scored = [{"locator": "css=#same", "quality_score": 90, "stability": "stable"}]
+    with caplog.at_level(logging.INFO, logger="browser_service.tasks.workflow"):
+        commit_reranked_winner(result, scored)
+    assert not [r for r in caplog.records if "read-came-back" in r.getMessage()]
+
+
+# ---------------------------------------------------------------------------
+# The came-back flag on a swap is only for an element the test READS (or whose
+# action the caller does not know): the came-back check exists only for reads, so
+# a swap on a clicked / typed element invalidates nothing.
+# ---------------------------------------------------------------------------
+
+
+def _swap_case():
+    result = {
+        "best_locator": "css=#old",
+        "stability": "positional",
+        "changed_by_action": "elem_1",
+        "all_locators": [],
+    }
+    scored = [{"locator": "css=#new", "quality_score": 90, "stability": "stable"}]
+    return result, scored
+
+
+def _came_back_lines(caplog):
+    return [r.getMessage() for r in caplog.records if "read-came-back" in r.getMessage()]
+
+
+@pytest.mark.parametrize("action", sorted(_PERFORMED_ACTIONS))
+def test_swap_on_a_performed_action_element_sets_no_came_back(action, caplog):
+    result, scored = _swap_case()
+    with caplog.at_level(logging.INFO, logger="browser_service.tasks.workflow"):
+        commit_reranked_winner(result, scored, action)
+    assert "came_back" not in result
+    assert _came_back_lines(caplog) == []
+    # everything else a swap does is unchanged
+    assert "changed_by_action" not in result
+    assert result["best_locator"] == "css=#new"
+    assert result["stability"] == "stable"
+    assert result["all_locators"] is scored
+
+
+@pytest.mark.parametrize("action", sorted(READ_ACTIONS))
+def test_swap_on_a_read_element_flags_came_back_and_logs_once(action, caplog):
+    assert READ_ACTIONS == {"get_text", "get_attribute"}
+    result, scored = _swap_case()
+    with caplog.at_level(logging.INFO, logger="browser_service.tasks.workflow"):
+        commit_reranked_winner(result, scored, action)
+    assert result["came_back"] is True
+    lines = _came_back_lines(caplog)
+    assert len(lines) == 1 and "(signal: read-came-back-unchecked)" in lines[0]
+    assert "changed_by_action" not in result
+    assert result["best_locator"] == "css=#new"
+
+
+def test_swap_with_an_unknown_action_is_flagged_and_logged(caplog):
+    result, scored = _swap_case()
+    with caplog.at_level(logging.INFO, logger="browser_service.tasks.workflow"):
+        commit_reranked_winner(result, scored, None)
+    assert result["came_back"] is True
+    assert len(_came_back_lines(caplog)) == 1
+
+
+def test_swap_on_a_click_element_keeps_a_came_back_flag_already_set(caplog):
+    result, scored = _swap_case()
+    result["came_back"] = True
+    with caplog.at_level(logging.INFO, logger="browser_service.tasks.workflow"):
+        commit_reranked_winner(result, scored, "click")
+    assert result["came_back"] is True
+    assert _came_back_lines(caplog) == []
+
+
+@pytest.mark.parametrize("action", ["click", "get_text", None])
+def test_same_locator_adds_nothing_whatever_the_action(action, caplog):
+    result = {"best_locator": "css=#same", "all_locators": []}
+    scored = [{"locator": "css=#same", "quality_score": 90, "stability": "stable"}]
+    with caplog.at_level(logging.INFO, logger="browser_service.tasks.workflow"):
+        commit_reranked_winner(result, scored, action)
+    assert "came_back" not in result
+    assert _came_back_lines(caplog) == []

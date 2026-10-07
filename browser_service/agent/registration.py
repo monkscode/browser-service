@@ -38,7 +38,7 @@ from typing import Optional
 
 from browser_service.locators.action_fit import READ_ACTIONS
 from browser_service.locators.frame_locator import strip_frame
-from browser_service.locators.read_change import read_changed_since, snapshot_html
+from browser_service.locators.read_change import read_came_back, read_changed_since, snapshot_html
 from browser_service.locators.stability import (
     STABLE,
     is_dynamic_text,
@@ -1116,6 +1116,11 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
         # {"element_id": ..., "html": ...}. A later read compares its OWN locator
         # against it (read_change.read_changed_since).
         _last_action_snapshot: dict = {"element_id": None, "html": None}
+        # F1 (came back): the page before EVERY action bs performed, in order (None = an action
+        # was performed and no page was kept), and the reads flagged so far. A re-query of a
+        # read REPLACES its earlier result, so a flag must live here, not only in the result.
+        _kept_pages: list = []
+        _came_back_flagged: set = set()
 
         # ========================================
         # PER-RUN PLAYWRIGHT CACHE (Change A — Day 04)
@@ -1836,6 +1841,15 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
 
                     # F1: snapshot before an action / mark a read that the last action changed.
                     _f1_pending = None  # (element_id, html) to keep once the action is performed
+                    _f1_spec_action = _element_specs.get(params.element_id, {}).get(
+                        "action", "get_text"
+                    )
+                    # bs will attempt this action (the same test _do_interaction applies first)
+                    _f1_acts = (
+                        _f1_spec_action in _PERFORMED_ACTIONS
+                        and params.element_id not in _performed_actions
+                    )
+                    _f1_html = None  # the page taken before the action, when one was
                     try:
                         _f1_action = _element_specs.get(params.element_id, {}).get(
                             "action", "get_text"
@@ -1871,6 +1885,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                 for eid, spec in _element_specs.items()
                             )
                             _html = await snapshot_html(active_page) if _read_remains else None
+                            _f1_html = _html
                             _f1_pending = (
                                 params.element_id if _html is not None else None,
                                 _html,
@@ -1881,6 +1896,33 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         logger.warning(
                             f"   F1 read-change step skipped ({type(_f1_err).__name__}): {_f1_err}"
                         )
+
+                    # F1 (came back): does this read's value return to an earlier one? Its own
+                    # try block: a failure flags the read (the fail-safe) and never breaks discovery.
+                    if _f1_spec_action in READ_ACTIONS:
+                        try:
+                            if params.element_id in _came_back_flagged:
+                                _came_back = True
+                            elif not _kept_pages:
+                                _came_back = False
+                            elif iframe_context:
+                                _came_back = True  # a read in a frame is not checked
+                            else:
+                                _came_back = await read_came_back(
+                                    active_page, best_locator, list(_kept_pages)
+                                )
+                        except Exception as _cb_err:  # noqa: BLE001 — never break discovery
+                            _came_back = True
+                            logger.warning(
+                                f"   F1 came-back check skipped ({type(_cb_err).__name__}): {_cb_err}"
+                            )
+                        if _came_back:
+                            result["came_back"] = True
+                            _came_back_flagged.add(params.element_id)
+                            logger.info(
+                                f"   ↩️ {params.element_id}: its value came back to an earlier "
+                                f"value (signal: read-came-back)"
+                            )
 
                     # Reached only on locator-find success — best_locator is non-None by construction here.
                     # Unpack 4-tuple — action and value come from _do_interaction directly so this block
@@ -1899,6 +1941,8 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         iframe_context=iframe_context,
                     )
                     result["interaction_status"] = interaction_status
+                    if _f1_acts and interaction_status != "not_applicable":
+                        _kept_pages.append(_f1_html)  # None = a gap: performed, no page kept
                     if _f1_pending is not None and interaction_status != "not_applicable":
                         try:  # F1 must never break discovery
                             _last_action_snapshot.update(

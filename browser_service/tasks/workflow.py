@@ -64,11 +64,16 @@ def commit_reranked_winner(result: dict, scored_locators: list[dict]) -> None:
     volatile/positional locator with the old tier (E1) — the emitted payload
     then disagrees with ``all_locators[0]``. Assigning all three here makes
     that drift unrepresentable.
+
+    A swapped locator also invalidates F1's read-change facts, which were proven for the
+    OLD address only: ``changed_by_action`` is dropped, and ``came_back`` is set (the
+    came-back check was made for the old address; the result carries no action kind, so
+    any swapped element is flagged — the fail-safe that gives the test no inserted lines).
     """
     winner = scored_locators[0]
     if winner["locator"] != result.get("best_locator"):
-        # F1's changed_by_action was proven for the old address only.
         result.pop("changed_by_action", None)
+        result["came_back"] = True
     result["best_locator"] = winner["locator"]
     result["stability"] = winner.get("stability", STABLE)
     result["all_locators"] = scored_locators

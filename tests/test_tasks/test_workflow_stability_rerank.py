@@ -184,3 +184,27 @@ def test_commit_keeps_the_read_change_mark_when_the_locator_is_the_same():
     scored = [{"locator": "css=#same", "quality_score": 90, "stability": "stable"}]
     commit_reranked_winner(result, scored)
     assert result["changed_by_action"] == "elem_1"
+
+
+def test_commit_flags_came_back_when_the_locator_changes():
+    # the came-back check was made for the OLD address only (R16): any swapped element is
+    # flagged, whatever its action kind (the result carries none).
+    result = {"best_locator": "css=#old", "all_locators": []}
+    scored = [{"locator": "css=#new", "quality_score": 90, "stability": "stable"}]
+    commit_reranked_winner(result, scored)
+    assert result["best_locator"] == "css=#new"
+    assert result["came_back"] is True
+
+
+def test_commit_adds_no_came_back_key_when_the_locator_is_the_same():
+    result = {"best_locator": "css=#same", "all_locators": []}
+    scored = [{"locator": "css=#same", "quality_score": 90, "stability": "stable"}]
+    commit_reranked_winner(result, scored)
+    assert "came_back" not in result
+
+
+def test_commit_keeps_an_existing_came_back_flag_when_the_locator_is_the_same():
+    result = {"best_locator": "css=#same", "came_back": True, "all_locators": []}
+    scored = [{"locator": "css=#same", "quality_score": 90, "stability": "stable"}]
+    commit_reranked_winner(result, scored)
+    assert result["came_back"] is True

@@ -6,7 +6,11 @@ locator, evaluated on the HTML kept before an action, showed other text than it 
 import pytest
 from playwright.async_api import async_playwright
 
-from browser_service.locators.read_change import read_changed_since, snapshot_html
+from browser_service.locators.read_change import (
+    read_came_back,
+    read_changed_since,
+    snapshot_html,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -217,3 +221,94 @@ async def test_only_the_live_identity_guard_decides_a_shadow_last_match(page):
     html = await snapshot_html(page)
     await page.evaluate("document.querySelector('body > span.s').textContent = 'A'")
     assert await read_changed_since(page, "css=span.s >> nth=-1", html) == "unknown"
+
+
+# --- came_back (R16): the read's live text equals its text on an earlier kept page, and a later
+# kept page differs -------------------------------------------------------------------------------
+
+
+async def _came_back(page, kept_docs, live_doc, locator):
+    """Keep one page per document in ``kept_docs`` (in order), then show ``live_doc`` live."""
+    htmls = []
+    for doc in kept_docs:
+        await page.set_content(doc)
+        htmls.append(await snapshot_html(page))
+    await page.set_content(live_doc)
+    return await read_came_back(page, locator, htmls)
+
+
+def _cart(n):
+    return f"<span id='cart'>{n}</span><p id='first'>Samsung galaxy s6</p>"
+
+
+async def test_add_then_remove_came_back(page):  # cart 0, 1; live 0
+    assert await _came_back(page, [_cart(0), _cart(1)], _cart(0), "id=cart") is True
+
+
+async def test_add_alone_did_not_come_back(page):  # cart 0; live 1
+    assert await _came_back(page, [_cart(0)], _cart(1), "id=cart") is False
+
+
+async def test_type_then_search_button_did_not_come_back(page):
+    popular = "<ul id='res'><li>Popular item</li></ul>"
+    live = "<ul id='res'><li>Result for laptop</li></ul>"
+    assert await _came_back(page, [popular, popular], live, "css=#res >> li") is False
+
+
+async def test_z1_zero_one_zero_came_back(page):
+    assert await _came_back(page, [_cart(0), _cart(1), _cart(0)], _cart(0), "id=cart") is True
+
+
+async def test_z2_zero_one_live_one_did_not_come_back(page):
+    assert await _came_back(page, [_cart(0), _cart(1)], _cart(1), "id=cart") is False
+
+
+async def test_absent_before_did_not_come_back(page):
+    assert await _came_back(page, ["<p>nothing</p>"], "<p id='msg'>Welcome</p>", "id=msg") is False
+
+
+async def test_absent_after_a_match_came_back(page):  # [0, absent]; live 0
+    gone = "<p>nothing</p>"
+    assert await _came_back(page, [_cart(0), gone], _cart(0), "id=cart") is True
+
+
+async def test_a_text_locator_is_not_comparable_so_came_back(page):
+    assert await _came_back(page, [_cart(0)], _cart(1), "text=1") is True
+
+
+async def test_an_xpath_locator_is_evaluated(page):
+    xp = "xpath=//span[@id='cart']"
+    assert await _came_back(page, [_cart(0), _cart(1)], _cart(0), xp) is True
+    assert await _came_back(page, [_cart(0)], _cart(1), xp) is False
+
+
+async def test_a_gap_in_the_kept_pages_came_back(page):
+    await page.set_content(_cart(1))
+    assert await read_came_back(page, "id=cart", [None]) is True
+
+
+async def test_a_noscript_kept_match_came_back(page):
+    # The kept page's match is a <noscript> element (not comparable); the live match is a <p>.
+    kept = "<noscript id='n'>hi</noscript>"
+    live = "<p id='n'>hi</p>"
+    assert await _came_back(page, [_cart(0), kept], live, "id=n") is True
+    # a <noscript> element on the live side is not comparable either
+    assert await _came_back(page, [kept], kept, "id=n") is True
+    # a <noscript> INSIDE the target is ignored on both sides: comparable, text unchanged
+    inside = "<div id='y'>A<noscript><b>x</b></noscript></div>"
+    assert await _came_back(page, [inside], inside, "id=y") is False
+
+
+async def test_hidden_live_text_came_back(page):  # Get Text reads innerText, not textContent
+    before = "<div id='card'><span>Phone A</span><span id='h' style='display:none'>0</span></div>"
+    assert await _came_back(page, [before], before, "id=card") is True
+
+
+async def test_read_came_back_answers_like_read_changed_since_on_one_page(page):
+    # one engine: a one-page list is "came back" only when the read's text matches then and the
+    # LATER page differs, so a single page can never be True while the engine says comparable.
+    await page.set_content(_cart(0))
+    html = await snapshot_html(page)
+    await page.set_content(_cart(1))
+    assert await read_changed_since(page, "id=cart", html) == "changed"
+    assert await read_came_back(page, "id=cart", [html]) is False

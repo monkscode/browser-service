@@ -63,11 +63,14 @@ async def _run(
     params_for=None,
     weak_first=(),
     status_for=None,
+    came_back=False,
+    came_back_effect=None,
 ):
     """Register the action, call it once per id in ``calls``.
 
     Returns (results, snapshot_mock, interaction_mock, changed_mock, manager).
-    ``manager`` records snapshot_html / _do_interaction calls in ONE order.
+    ``manager`` records snapshot_html / _do_interaction calls in ONE order; its
+    ``came_back_mock`` attribute is the patched ``read_came_back``.
     ``sessions`` maps an element id to the browser session used for that call.
     """
     specs = {e["id"]: e for e in elements}
@@ -85,9 +88,11 @@ async def _run(
     snapshot = AsyncMock(return_value="<html>before</html>", side_effect=snapshot_effect)
     interaction = AsyncMock(side_effect=_interaction)
     read_changed = AsyncMock(return_value=changed, side_effect=changed_effect)
+    read_came_back = AsyncMock(return_value=came_back, side_effect=came_back_effect)
     manager = MagicMock()
     manager.attach_mock(snapshot, "snapshot")
     manager.attach_mock(interaction, "interaction")
+    manager.came_back_mock = read_came_back
 
     agent = FakeAgent()
     sessions = sessions or {}
@@ -98,6 +103,7 @@ async def _run(
         patch("browser_service.agent.registration._do_interaction", new=interaction),
         patch("browser_service.agent.registration.snapshot_html", new=snapshot),
         patch("browser_service.agent.registration.read_changed_since", new=read_changed),
+        patch("browser_service.agent.registration.read_came_back", new=read_came_back),
         patch("playwright.async_api.async_playwright", new=_fake_playwright()),
     ):
         assert register_custom_actions(agent, elements=elements) is True
@@ -319,3 +325,186 @@ async def test_an_action_that_fails_automation_still_saves_its_page():
     read_changed.assert_awaited_once()
     assert read_changed.await_args.args[2] == "<html>page-B</html>"
     assert results[2].metadata["changed_by_action"] == "elem_3"
+
+
+# --- came_back (R16): every located read is checked against ALL the pages kept so far ----------
+
+SIGNAL = "(signal: read-came-back)"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", [True, False])
+async def test_a_read_is_checked_against_the_kept_page(answer, caplog):
+    with caplog.at_level(logging.INFO, logger="browser_service.agent.registration"):
+        results, _, _, _, manager = await _run(
+            [CLICK, READ], ["elem_1", "elem_2"], came_back=answer
+        )
+
+    manager.came_back_mock.assert_awaited_once()
+    args = manager.came_back_mock.await_args.args
+    assert args[1] == "css=#r"  # the READ's own locator
+    assert args[2] == ["<html>before</html>"]
+    signals = [r for r in caplog.records if SIGNAL in r.getMessage()]
+    if answer:
+        assert results[1].metadata["came_back"] is True
+        assert len(signals) == 1 and "elem_2" in signals[0].getMessage()
+    else:
+        assert "came_back" not in results[1].metadata
+        assert signals == []
+    assert "came_back" not in results[0].metadata  # an action is never checked
+
+
+@pytest.mark.asyncio
+async def test_two_actions_then_a_read_hand_over_both_pages_in_order():
+    results, _, _, _, manager = await _run(
+        [CLICK, NEXT, READ],
+        ["elem_1", "elem_3", "elem_2"],
+        snapshot_effect=["<html>A</html>", "<html>B</html>"],
+    )
+
+    manager.came_back_mock.assert_awaited_once()
+    assert manager.came_back_mock.await_args.args[2] == ["<html>A</html>", "<html>B</html>"]
+
+
+@pytest.mark.asyncio
+async def test_a_read_before_any_action_is_not_checked_for_came_back():
+    first_read = {"id": "elem_1", "action": "get_text", "value": ""}
+    later_click = {"id": "elem_2", "action": "click", "value": ""}
+    results, _, _, _, manager = await _run([first_read, later_click], ["elem_1"], came_back=True)
+
+    manager.came_back_mock.assert_not_awaited()
+    assert "came_back" not in results[0].metadata
+
+
+@pytest.mark.asyncio
+async def test_an_action_that_performs_nothing_keeps_no_page_for_came_back():
+    results, snapshot, _, _, manager = await _run(
+        [CLICK, EMPTY_INPUT, READ],
+        ["elem_1", "elem_3", "elem_2"],
+        snapshot_effect=["<html>page-A</html>", "<html>page-B</html>"],
+        status_for={"elem_3": "not_applicable"},
+    )
+
+    assert snapshot.await_count == 2  # B's page was captured, then not kept
+    assert manager.came_back_mock.await_args.args[2] == ["<html>page-A</html>"]
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_that_returned_none_is_a_gap_in_the_list():
+    _, _, _, _, manager = await _run(
+        [CLICK, NEXT, READ],
+        ["elem_1", "elem_3", "elem_2"],
+        snapshot_effect=["<html>pre-A</html>", None],
+    )
+
+    assert manager.came_back_mock.await_args.args[2] == ["<html>pre-A</html>", None]
+
+
+@pytest.mark.asyncio
+async def test_a_raising_snapshot_is_a_gap_when_the_action_is_still_performed():
+    _, _, interaction, _, manager = await _run(
+        [CLICK, NEXT, READ],
+        ["elem_1", "elem_3", "elem_2"],
+        snapshot_effect=["<html>pre-A</html>", RuntimeError("boom")],
+    )
+
+    assert interaction.await_count == 3  # the second action still ran
+    assert manager.came_back_mock.await_args.args[2] == ["<html>pre-A</html>", None]
+
+
+@pytest.mark.asyncio
+async def test_an_action_after_the_last_read_is_a_gap_for_a_re_queried_read():
+    # fill (page kept), read, click (no read remains: no page), click pending, read again.
+    _, _, _, _, manager = await _run(
+        [FILL, READ, NEXT, PENDING],
+        ["elem_1", "elem_2", "elem_3", "elem_2"],
+        snapshot_effect=["<html>fill</html>"],
+        weak_first={"elem_2"},
+    )
+
+    first, second = manager.came_back_mock.await_args_list
+    assert first.args[2] == ["<html>fill</html>"]
+    assert second.args[2] == ["<html>fill</html>", None]
+
+
+@pytest.mark.asyncio
+async def test_a_requery_of_the_performed_action_keeps_no_second_page():
+    _, _, _, _, manager = await _run(
+        [CLICK, READ],
+        ["elem_1", "elem_1", "elem_2"],
+        snapshot_effect=["<html>1</html>", "<html>2</html>"],
+        weak_first={"elem_1"},
+    )
+
+    assert manager.came_back_mock.await_args.args[2] == ["<html>1</html>"]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_came_back_check_is_flagged_with_one_warning(caplog):
+    with caplog.at_level(logging.INFO, logger="browser_service.agent.registration"):
+        results, _, _, _, manager = await _run(
+            [CLICK, READ], ["elem_1", "elem_2"], came_back_effect=RuntimeError("boom")
+        )
+
+    manager.came_back_mock.assert_awaited_once()
+    assert results[1].metadata["came_back"] is True  # fail-safe
+    assert results[1].metadata["best_locator"] == "css=#r"  # the result is still returned
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "F1" in r.getMessage()  # not the fake page's noise
+    ]
+    assert len(warnings) == 1
+    assert "came-back check skipped" in warnings[0].getMessage()
+    assert "RuntimeError" in warnings[0].getMessage() and "boom" in warnings[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_the_check_does_not_change_the_changed_by_action_mark():
+    results, _, _, read_changed, _ = await _run([CLICK, READ], ["elem_1", "elem_2"], came_back=True)
+
+    read_changed.assert_awaited_once()
+    assert results[1].metadata["changed_by_action"] == "elem_1"
+    assert results[1].metadata["came_back"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_read_flagged_once_stays_flagged_when_it_is_located_again():
+    # the second location REPLACES the first result in the workflow's results, so the flag
+    # must persist in the per-workflow state even when the second computation says False.
+    results, _, _, _, _ = await _run(
+        [CLICK, READ],
+        ["elem_1", "elem_2", "elem_2"],
+        came_back_effect=[True, False],
+        weak_first={"elem_2"},
+    )
+
+    assert results[1].metadata["came_back"] is True
+    assert results[2].metadata["came_back"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_unflagged_read_is_checked_again_when_it_is_located_again():
+    results, _, _, _, manager = await _run(
+        [CLICK, READ],
+        ["elem_1", "elem_2", "elem_2"],
+        came_back_effect=[False, True],
+        weak_first={"elem_2"},
+    )
+
+    assert manager.came_back_mock.await_count == 2
+    assert "came_back" not in results[1].metadata
+    assert results[2].metadata["came_back"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_read_inside_an_iframe_is_flagged_without_the_check():
+    results, _, _, _, manager = await _run(
+        [CLICK, READ],
+        ["elem_1", "elem_2"],
+        sessions={"elem_2": FrameBrowserSession({7: APP_FRAME, 12: CHECKBOX})},
+        params_for={"elem_2": {"x": 70, "y": 230, "element_index": 12}},
+    )
+
+    manager.came_back_mock.assert_not_awaited()
+    assert results[1].metadata["came_back"] is True

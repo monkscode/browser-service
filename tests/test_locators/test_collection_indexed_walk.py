@@ -54,6 +54,7 @@ async def test_no_text_link_inside_card_ships_the_item_list(page, indexed_xpath)
         DESCRIPTION,
         None,
         page=page,
+        is_collection=True,
     )
     assert result is not None
     assert result["best_locator"] == "ol > li"
@@ -72,6 +73,7 @@ async def test_no_text_indexed_item_itself_ships_the_item_list(page):
         DESCRIPTION,
         None,
         page=page,
+        is_collection=True,
     )
     assert result is not None
     assert result["best_locator"] == "ol > li"
@@ -98,6 +100,7 @@ async def test_one_item_list_keeps_todays_answer():
                 DESCRIPTION,
                 None,
                 page=one,
+                is_collection=True,
             )
             assert result is not None
             assert result.get("element_type") != "collection"
@@ -126,6 +129,7 @@ async def test_text_hint_never_reaches_the_indexed_walk(page):
             search_context=page,
             iframe_context=None,
             confirmed_coords=None,
+            is_collection=True,
         )
     walk.assert_not_awaited()
     assert result is not None
@@ -155,6 +159,7 @@ async def test_walk_runs_inside_a_frame():
                 search_context=frame,
                 iframe_context="#books",
                 confirmed_coords=None,
+                is_collection=True,
             )
             assert result is not None
             assert result["best_locator"] == "ol > li"
@@ -162,3 +167,21 @@ async def test_walk_runs_inside_a_frame():
             assert ">>>" not in result["best_locator"]
         finally:
             await browser.close()
+
+
+async def test_unflagged_single_link_keeps_todays_answer(page):
+    """A one-element request ("the title link of the first book in the list of books") reaches the collection
+    handler through the description words and the DOM probe, but the agent never flagged it as a collection:
+    the walk must not run, or a Click on the answer would hit all 4 cards (strict mode)."""
+    result = await _generate_locators_from_element_data(
+        page,
+        {"tagName": "a", "className": "", "xpath": TITLE_LINK},
+        "elem_1",
+        "the title link of the first book in the list of books",
+        None,
+        page=page,
+    )
+    assert result is not None
+    assert result["best_locator"] != "ol > li"
+    assert result.get("element_type") != "collection"
+    assert await page.locator(result["best_locator"]).count() == 1

@@ -2868,6 +2868,9 @@ async def _generate_locators_from_element_data(
     page=None,  # Page-level reference for DOM probe (vs. search_context which can be frame_locator)
     row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
     action: Optional[str] = None,  # Step action (E2a); None = no fitness rule
+    is_collection: Optional[
+        bool
+    ] = None,  # Agent's explicit collection flag; gates the no-text walk (bs #33)
 ) -> Optional[dict]:
     """
     Generate and validate locators from element_data extracted from browser-use DOM.
@@ -3137,6 +3140,7 @@ async def _generate_locators_from_element_data(
             search_context=search_context,
             iframe_context=iframe_context,
             confirmed_coords=confirmed_coords,
+            is_collection=is_collection,
         )
         if collection_result is not None:
             _attach_classifier_metadata(
@@ -4168,6 +4172,7 @@ async def find_unique_locator_at_coordinates(
             page=page,  # Page-level for DOM probe (search_context may be frame_locator)
             row_anchor_text=row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
             action=action,  # E2a fitness rule; None when the flag is off
+            is_collection=is_collection,  # Gates the collection handler's no-text walk (bs #33)
         )
         if result:
             # Add approach metrics for pattern analysis

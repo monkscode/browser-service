@@ -58,6 +58,22 @@ class _Page:
         return _Counted(self._validate)
 
 
+class _CountingContext:
+    """A search context whose `locator(sel).count()` returns a fixed number, or raises."""
+
+    def __init__(self, count=1, raises=False):
+        self._count = count
+        self._raises = raises
+
+    def locator(self, _selector):
+        return self
+
+    async def count(self):
+        if self._raises:
+            raise RuntimeError("page closed")
+        return self._count
+
+
 def _type_info():
     return SimpleNamespace(confidence="low", signals=["desc:collection(+1)"], framework="list-item")
 
@@ -113,7 +129,7 @@ class TestFindCollectionFromIndexedElement:
 
 class TestFindLocatorNoTextFallback:
     @staticmethod
-    async def _call(element_data, expected_text=None):
+    async def _call(element_data, expected_text=None, search_context=None, is_collection=True):
         return await find_locator(
             page=None,
             element_data=element_data,
@@ -121,9 +137,10 @@ class TestFindLocatorNoTextFallback:
             element_id="elem_2",
             element_description="all book product items in the main product grid",
             expected_text=expected_text,
-            search_context=object(),
+            search_context=search_context or object(),
             iframe_context=None,
             confirmed_coords=None,
+            is_collection=is_collection,
         )
 
     @pytest.mark.asyncio
@@ -200,6 +217,64 @@ class TestFindLocatorNoTextFallback:
         ):
             result = await self._call(
                 {"tagName": "a", "className": "", "xpath": "x"}, expected_text="A Light"
+            )
+        walk.assert_not_awaited()
+        assert result is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("flag", [None, False])
+    async def test_an_unflagged_request_never_reaches_the_walk(self, flag):
+        with patch(
+            "browser_service.locators.handlers.collection._find_collection_from_indexed_element",
+            new=AsyncMock(),
+        ) as walk:
+            result = await self._call(
+                {"tagName": "a", "className": "", "xpath": "x"}, is_collection=flag
+            )
+        walk.assert_not_awaited()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_a_single_match_class_locator_falls_back_to_the_walk(self):
+        walked = {
+            "locator": "ol > li",
+            "count": 20,
+            "row_class": None,
+            "tag": "li",
+            "source": "indexed_element_walk",
+        }
+        with (
+            patch(
+                "browser_service.locators.handlers.collection._find_collection_locator",
+                new=AsyncMock(return_value=".product-row"),
+            ),
+            patch(
+                "browser_service.locators.handlers.collection._find_collection_from_indexed_element",
+                new=AsyncMock(return_value=walked),
+            ) as walk,
+        ):
+            result = await self._call(
+                {"tagName": "a", "className": "product-row", "xpath": "x"},
+                search_context=_CountingContext(1),
+            )
+        walk.assert_awaited_once()
+        assert result["best_locator"] == "ol > li"
+
+    @pytest.mark.asyncio
+    async def test_a_count_error_never_walks(self):
+        with (
+            patch(
+                "browser_service.locators.handlers.collection._find_collection_locator",
+                new=AsyncMock(return_value=".product-row"),
+            ),
+            patch(
+                "browser_service.locators.handlers.collection._find_collection_from_indexed_element",
+                new=AsyncMock(),
+            ) as walk,
+        ):
+            result = await self._call(
+                {"tagName": "a", "className": "product-row", "xpath": "x"},
+                search_context=_CountingContext(raises=True),
             )
         walk.assert_not_awaited()
         assert result is None

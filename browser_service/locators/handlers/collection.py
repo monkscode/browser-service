@@ -563,13 +563,19 @@ async def _no_text_indexed_walk(
     element_id: str,
     element_description: str,
     expected_text: Optional[str],
+    is_collection: Optional[bool],
 ) -> Optional[dict]:
     """The handler's last resort when the request gives NO text and the class route found nothing (bs #33).
 
-    Returns a collection result built like the text walk's, or None. A request WITH expected_text gets None at
-    once — exactly what the class route's exits returned before.
+    Returns a collection result built like the text walk's, or None. Runs only when the agent flagged the
+    request as a collection (`is_collection is True`, the test STEP 0.5 uses). One-element requests reach this
+    handler without the flag — through the classifier's description words ("list of", "items", "all ") and the
+    DOM probe (any li/tr ancestor) — e.g. "the title link of the first book in the list of books": walking
+    from that link would ship `ol > li` (all cards) and a Click would fail strict mode. An unflagged request
+    therefore gets None at once, no call and no log line — byte for byte what it got before #33. A request WITH
+    expected_text gets None at once too — exactly what the class route's exits returned before.
     """
-    if expected_text:
+    if is_collection is not True or expected_text:
         return None
     walk = await _find_collection_from_indexed_element(search_context, element_data)
     if not walk or walk.get("count", 0) <= 1:
@@ -615,10 +621,14 @@ async def find_locator(
     search_context,
     iframe_context: Optional[str],
     confirmed_coords: Optional[tuple],
+    is_collection: Optional[bool] = None,
 ) -> Optional[dict]:
     """
     Collection handler entry point — dispatched from smart_locator when
     classifier returns primary_type="collection".
+
+    `is_collection` is the agent's explicit flag; only True lets the no-text
+    walk from the indexed element run (bs #33).
 
     Tries text-traversal first (uses expected_text as a beacon to find the
     real row container — robust when element_data is from a wrong outer
@@ -691,7 +701,13 @@ async def find_locator(
     if not collection_class:
         logger.info("collection.no_class_extracted")
         return await _no_text_indexed_walk(
-            search_context, element_data, type_info, element_id, element_description, expected_text
+            search_context,
+            element_data,
+            type_info,
+            element_id,
+            element_description,
+            expected_text,
+            is_collection,
         )
 
     logger.info("collection.class_from_element_data", collection_class=collection_class)
@@ -701,7 +717,13 @@ async def find_locator(
     )
     if not collection_locator:
         return await _no_text_indexed_walk(
-            search_context, element_data, type_info, element_id, element_description, expected_text
+            search_context,
+            element_data,
+            type_info,
+            element_id,
+            element_description,
+            expected_text,
+            is_collection,
         )
 
     try:
@@ -712,7 +734,13 @@ async def find_locator(
 
     if count <= 1:
         return await _no_text_indexed_walk(
-            search_context, element_data, type_info, element_id, element_description, expected_text
+            search_context,
+            element_data,
+            type_info,
+            element_id,
+            element_description,
+            expected_text,
+            is_collection,
         )
 
     # Validate that matched elements contain expected_text.

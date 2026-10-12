@@ -1004,10 +1004,12 @@ async def _upgrade_to_row_anchor(
 
     Returns:
         ``{'locator': composite}`` on success;
-        ``{'ambiguous': True}`` when the anchor genuinely matches
-        several elements — several rows, or several non-nested controls
-        (Option 1: caller falls through to existing behavior and flags
-        the payload ``row_anchor_ambiguous`` — demote, never delete);
+        ``{'ambiguous': True, 'composite': chain}`` when the anchor
+        genuinely matches several elements — several rows, or several
+        non-nested controls (Option 1: caller falls through to existing
+        behavior and flags the payload ``row_anchor_ambiguous`` — demote,
+        never delete; ``chain`` is the row-scoped chain that matched
+        several, so the caller can address its own pick inside it);
         ``None`` when the upgrade does not apply.
     """
     anchor = (row_anchor_text or "").strip()
@@ -1058,7 +1060,7 @@ async def _upgrade_to_row_anchor(
                         f"{count} elements via {container}-scoped chain — "
                         f"falling through (flagged)"
                     )
-                    return {"ambiguous": True}
+                    return {"ambiguous": True, "composite": composite}
 
         # Exactly one match — when vision coordinates are available,
         # require them to land on it: a unique match in a DIFFERENT row
@@ -1126,6 +1128,42 @@ async def _collapse_containment_chain(search_context, selector: str) -> Optional
         f"the outermost → '{collapsed}'"
     )
     return collapsed
+
+
+async def _address_pick_in_row_chain(
+    search_context, chain: str, pick_locator: str
+) -> Optional[str]:
+    """
+    Address an already-picked element inside the row-scoped chain it sits in.
+
+    An ambiguous row anchor (two tables both holding a "Smith" row) leaves
+    the text route with a page-wide index such as ``text="edit" >> nth=0`` —
+    the Nth edit link on the page, whatever rows come before it. When that
+    SAME element is one of the chain's matches, ``{chain} >> nth=i`` names it
+    by its position among the anchored rows only, so it follows the anchor
+    row when other rows are added, removed or reordered.
+
+    ``i`` counts ALL of the chain's matches, hidden ones included, so the
+    address resolves to the element ``pick_locator`` did. This never chooses
+    an element: it only re-addresses the one already picked.
+
+    Returns None — leaving the caller's locator as it was — when the pick is
+    not exactly one element, is not among the chain's matches, or anything
+    fails or answers something unexpected. Never raises.
+    """
+    try:
+        handle = await search_context.locator(pick_locator).element_handle(timeout=1000)
+        if handle is None:
+            return None
+        index = await search_context.locator(chain).evaluate_all(
+            "(els, t) => els.indexOf(t)", handle
+        )
+    except Exception as e:
+        logger.debug(f"   In-rows address probe failed for {pick_locator!r} in {chain!r}: {e}")
+        return None
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        return None
+    return f"{chain} >> nth={index}"
 
 
 def _classify_result_stability(
@@ -1468,6 +1506,21 @@ async def _find_element_by_expected_text(
                 # Try to disambiguate using coordinates if available
                 if x is not None and y is not None:
                     result = await _disambiguate_by_coordinates(page, selector, x, y)
+                    if result and row_ambiguous and row and row.get("composite"):
+                        # The anchor never moves the pick: re-running the
+                        # coordinate pick on the chain shipped Smith's link
+                        # for a pointer on Bach's (its closest-within-100-px
+                        # layer). Only address the element already picked.
+                        _in_rows = await _address_pick_in_row_chain(
+                            page, row["composite"], result["locator"]
+                        )
+                        if _in_rows:
+                            result = {**result, "locator": _in_rows}
+                            logger.info(
+                                f"   📌 ROW ANCHOR KEPT: ambiguous anchor, the picked element "
+                                f"addressed inside its own rows → '{_in_rows}' "
+                                f"(signal: row-anchor-indexed-in-rows)"
+                            )
                     if result:
                         _misfit = await check_action_fit(
                             page, result["locator"], action, expected_text

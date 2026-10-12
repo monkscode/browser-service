@@ -228,3 +228,65 @@ class TestCandidateAnchorReject:
         )
         assert result["found"] is True
         assert result["all_locators"][0]["type"] == "candidate"
+
+
+class WitnessLocator(FakeLocator):
+    """FakeLocator that also answers the anchor-carrying read.
+
+    ``evaluate(js, arg, timeout=...)`` is the read of the element a candidate
+    lands on: it returns the preset ``carries`` value. A call without an
+    argument is the resolved-element read and gets the parent's dict.
+    """
+
+    def __init__(self, count: int, carries, text: str = "", box: dict = None):
+        super().__init__(count, text=text, box=box)
+        self._carries = carries
+
+    async def evaluate(self, js: str, arg=None, timeout=None):
+        if arg is not None:
+            return self._carries
+        return await super().evaluate(js)
+
+
+class TestRowScopeWitness:
+    """A candidate that names the anchor only as its row scope survives the
+    reject when the element it lands on provably does not carry the anchor
+    (bs #45). Any other answer keeps today's reject."""
+
+    CANDIDATE = f"tr:has-text('{ANCHOR}') a[title='Edit']"
+
+    def _page(self, carries) -> FakePage:
+        return FakePage({self.CANDIDATE: WitnessLocator(1, carries, text="Edit", box=EDIT_BOX)})
+
+    @pytest.mark.asyncio
+    async def test_scope_only_candidate_survives_the_reject(self, caplog):
+        with caplog.at_level(logging.INFO):
+            result = await _call(
+                self._page(False), candidate_locator=self.CANDIDATE, expected_text="Edit"
+            )
+        assert result["found"] is True
+        assert result["best_locator"] == self.CANDIDATE
+        assert result["all_locators"][0]["type"] == "candidate"
+        assert "row-anchor-scope-not-target" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_carrying_element_keeps_the_reject(self, caplog):
+        with caplog.at_level(logging.INFO):
+            result = await _call(
+                self._page(True), candidate_locator=self.CANDIDATE, expected_text="Edit"
+            )
+        assert "row-anchor-rejects-candidate" in caplog.text
+        assert "row-anchor-scope-not-target" not in caplog.text
+        if result.get("found"):
+            assert result["all_locators"][0]["type"] != "candidate"
+
+    @pytest.mark.asyncio
+    async def test_unexpected_answer_keeps_the_reject(self, caplog):
+        with caplog.at_level(logging.INFO):
+            result = await _call(
+                self._page("no"), candidate_locator=self.CANDIDATE, expected_text="Edit"
+            )
+        assert "row-anchor-rejects-candidate" in caplog.text
+        assert "row-anchor-scope-not-target" not in caplog.text
+        if result.get("found"):
+            assert result["all_locators"][0]["type"] != "candidate"

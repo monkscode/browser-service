@@ -125,6 +125,53 @@ async def _read_resolved_element(
     return resolved if isinstance(resolved, dict) else None
 
 
+# Same bound, same reasoning as _RESOLVED_READ_TIMEOUT_MS: the read below runs
+# right after count()==1, so it is ~2ms unless the node vanishes in between.
+# Expiring is "unknown", which keeps today's reject.
+_CARRIES_ANCHOR_JS = """(el, anchor) => {
+    const norm = (s) => String(s).replace(/\\s+/g, ' ').trim().toLowerCase();
+    const wanted = norm(anchor);
+    if (!wanted) return null;
+    const data = [el.textContent];
+    for (const name of ['title', 'aria-label', 'placeholder']) {
+        data.push(el.getAttribute(name));
+    }
+    if (typeof el.value === 'string') data.push(el.value);
+    return data.some((d) => d !== null && d !== undefined && norm(d).includes(wanted));
+}"""
+
+
+async def _resolved_element_carries_anchor(
+    search_root,
+    locator: str,
+    row_anchor_text: Optional[str],
+    timeout_ms: int = _RESOLVED_READ_TIMEOUT_MS,
+) -> Optional[bool]:
+    """Does the ONE element ``locator`` resolves to carry the row anchor itself?
+
+    True: the anchor datum is in the element's whole ``textContent``, or its
+    ``title`` / ``aria-label`` / ``placeholder`` attribute, or its ``value``
+    when that is a string. Compared as a whitespace-normalised, lower-cased
+    substring, both sides normalised the same way inside the page. No text is
+    cut, so a long row whose anchor lies far in still reads True.
+
+    False: it provably does not. None: unknown — an empty anchor, an evaluate
+    that raised (several matches, no match, timeout, detached node), or any
+    answer that is not a real ``true`` / ``false``. Never raises; callers
+    treat None as "keep today's behaviour".
+    """
+    if not str(row_anchor_text or "").strip():
+        return None
+    try:
+        carries = await search_root.locator(locator).evaluate(
+            _CARRIES_ANCHOR_JS, row_anchor_text, timeout=timeout_ms
+        )
+    except Exception as e:
+        logger.debug(f"   Could not read whether '{locator}' carries the row anchor: {e}")
+        return None
+    return carries if isinstance(carries, bool) else None
+
+
 async def _stamp_resolved_tag(
     result: Dict[str, Any],
     search_root,
@@ -745,6 +792,12 @@ async def find_unique_locator_action(
                         # control. Reject into the cascade (which row-scopes
                         # correctly) — the semantic check can't stand in when
                         # expected_text is absent.
+                        # The string test below cannot tell the anchor cell from a
+                        # control that merely sits in the anchor's row (bench q04,
+                        # bs #45: `tr:has-text('Smith') a:has-text('edit')` was
+                        # rejected and `text="edit" >> nth=0` shipped). So the reject
+                        # stands only when the element the candidate lands on itself
+                        # carries the anchor; a provable "no" withdraws it.
                         from browser_service.locators import candidate_targets_row_anchor
 
                         _anchor_norm = " ".join(str(row_anchor_text or "").split())
@@ -761,6 +814,18 @@ async def find_unique_locator_action(
                             and _elem_text_norm != _anchor_norm
                             and candidate_targets_row_anchor(playwright_locator, row_anchor_text)
                         )
+                        if _anchor_reject:
+                            _carries = await _resolved_element_carries_anchor(
+                                search_root, playwright_locator, row_anchor_text
+                            )
+                            if _carries is False:
+                                logger.info(
+                                    f"   ↪ ROW-ANCHOR REJECT WITHDRAWN: '{playwright_locator}' "
+                                    f"names the anchor '{row_anchor_text}' only as its row "
+                                    f"scope — the element it resolves to does not carry it "
+                                    f"(signal: row-anchor-scope-not-target)"
+                                )
+                                _anchor_reject = False
                         if _anchor_reject:
                             logger.info(
                                 f"   ⛔ ROW-ANCHOR CANDIDATE REJECT: '{playwright_locator}' "

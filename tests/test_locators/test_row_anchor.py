@@ -117,7 +117,8 @@ class LenientFakeContext(FakeSearchContext):
 
 ANCHOR = "64625"
 EDIT = '[title="Edit"]'
-TR_COMPOSITE = f'tr:has-text("{ANCHOR}") >> {EDIT}'
+TR_ROWS = f'tr:has-text("{ANCHOR}")'
+TR_COMPOSITE = f"{TR_ROWS} >> {EDIT}"
 LI_COMPOSITE = f'li:has-text("{ANCHOR}") >> {EDIT}'
 TR_VISIBLE = f"{TR_COMPOSITE} >> visible=true"
 TR_COLLAPSED = f"{TR_VISIBLE} >> nth=0"
@@ -142,7 +143,7 @@ class TestUpgradeToRowAnchor:
             }
         )
         result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR)
-        assert result == {"ambiguous": True, "composite": TR_COMPOSITE}
+        assert result == {"ambiguous": True, "composite": TR_COMPOSITE, "rows": TR_ROWS}
 
     async def test_hidden_duplicate_row_rescued_by_visible(self):
         """A hidden template row (modal grid copy) also matching the
@@ -255,7 +256,7 @@ class TestContainmentCollapse:
             }
         )
         result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR)
-        assert result == {"ambiguous": True, "composite": TR_COMPOSITE}
+        assert result == {"ambiguous": True, "composite": TR_COMPOSITE, "rows": TR_ROWS}
 
     async def test_two_rows_of_nested_pairs_stay_ambiguous(self):
         """Anchor matching two rows stays ambiguous even when each row
@@ -267,7 +268,7 @@ class TestContainmentCollapse:
             }
         )
         result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR)
-        assert result == {"ambiguous": True, "composite": TR_COMPOSITE}
+        assert result == {"ambiguous": True, "composite": TR_COMPOSITE, "rows": TR_ROWS}
 
     async def test_hidden_template_duplicate_still_collapses(self):
         """Both ASTPP patterns at once: a hidden template row duplicates
@@ -292,7 +293,7 @@ class TestContainmentCollapse:
             }
         )
         result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR)
-        assert result == {"ambiguous": True, "composite": TR_COMPOSITE}
+        assert result == {"ambiguous": True, "composite": TR_COMPOSITE, "rows": TR_ROWS}
 
     async def test_collapse_probe_error_stays_ambiguous(self):
         """DOM probe failure is not evidence of nesting — keep today's
@@ -309,7 +310,7 @@ class TestContainmentCollapse:
             }
         )
         result = await _upgrade_to_row_anchor(ctx, EDIT, ANCHOR)
-        assert result == {"ambiguous": True, "composite": TR_COMPOSITE}
+        assert result == {"ambiguous": True, "composite": TR_COMPOSITE, "rows": TR_ROWS}
 
     async def test_collapsed_composite_identity_rejects_wrong_element(self):
         """The A5 identity check still guards the collapsed composite:
@@ -377,48 +378,106 @@ class TestAddressPickInRowChain:
     among ALL the chain's matches, or None (unknown = today's locator)."""
 
     async def test_pick_among_the_chain_matches_is_addressed_by_position(self):
-        ctx = FakeSearchContext({PICK: _PickLocator(), TR_COMPOSITE: _PickLocator(index=2)})
-        assert await _address_pick_in_row_chain(ctx, TR_COMPOSITE, PICK) == (
+        ctx = FakeSearchContext(
+            {
+                PICK: _PickLocator(),
+                TR_ROWS: _PickLocator(index=False),
+                TR_COMPOSITE: _PickLocator(index=2),
+            }
+        )
+        assert await _address_pick_in_row_chain(ctx, TR_ROWS, TR_COMPOSITE, PICK) == (
             f"{TR_COMPOSITE} >> nth=2"
         )
 
     async def test_pick_outside_the_chain_is_none(self):
-        ctx = FakeSearchContext({PICK: _PickLocator(), TR_COMPOSITE: _PickLocator(index=-1)})
-        assert await _address_pick_in_row_chain(ctx, TR_COMPOSITE, PICK) is None
+        ctx = FakeSearchContext(
+            {
+                PICK: _PickLocator(),
+                TR_ROWS: _PickLocator(index=False),
+                TR_COMPOSITE: _PickLocator(index=-1),
+            }
+        )
+        assert await _address_pick_in_row_chain(ctx, TR_ROWS, TR_COMPOSITE, PICK) is None
 
     async def test_answer_that_is_not_an_index_is_none(self):
         for answer in (None, "2", 2.0, True):
             ctx = FakeSearchContext(
-                {PICK: _PickLocator(), TR_COMPOSITE: _PickLocator(index=answer)}
+                {
+                    PICK: _PickLocator(),
+                    TR_ROWS: _PickLocator(index=False),
+                    TR_COMPOSITE: _PickLocator(index=answer),
+                }
             )
-            assert await _address_pick_in_row_chain(ctx, TR_COMPOSITE, PICK) is None, answer
+            assert await _address_pick_in_row_chain(ctx, TR_ROWS, TR_COMPOSITE, PICK) is None, (
+                answer
+            )
 
     async def test_missing_handle_is_none(self):
         ctx = FakeSearchContext(
-            {PICK: _PickLocator(handle=None), TR_COMPOSITE: _PickLocator(index=2)}
+            {
+                PICK: _PickLocator(handle=None),
+                TR_ROWS: _PickLocator(index=False),
+                TR_COMPOSITE: _PickLocator(index=2),
+            }
         )
-        assert await _address_pick_in_row_chain(ctx, TR_COMPOSITE, PICK) is None
+        assert await _address_pick_in_row_chain(ctx, TR_ROWS, TR_COMPOSITE, PICK) is None
 
     async def test_element_handle_that_raises_is_none(self):
         ctx = FakeSearchContext(
             {
                 PICK: _PickLocator(handle_error=RuntimeError("strict mode violation")),
+                TR_ROWS: _PickLocator(index=False),
                 TR_COMPOSITE: _PickLocator(index=2),
             }
         )
-        assert await _address_pick_in_row_chain(ctx, TR_COMPOSITE, PICK) is None
+        assert await _address_pick_in_row_chain(ctx, TR_ROWS, TR_COMPOSITE, PICK) is None
 
     async def test_evaluate_all_that_raises_is_none(self):
         class Exploding(_PickLocator):
             async def evaluate_all(self, js: str, arg=None):
                 raise RuntimeError("Execution context was destroyed")
 
-        ctx = FakeSearchContext({PICK: _PickLocator(), TR_COMPOSITE: Exploding()})
-        assert await _address_pick_in_row_chain(ctx, TR_COMPOSITE, PICK) is None
+        ctx = FakeSearchContext(
+            {PICK: _PickLocator(), TR_ROWS: _PickLocator(index=False), TR_COMPOSITE: Exploding()}
+        )
+        assert await _address_pick_in_row_chain(ctx, TR_ROWS, TR_COMPOSITE, PICK) is None
 
     async def test_context_without_element_handle_is_none(self):
-        ctx = FakeSearchContext({PICK: FakeLocator(1), TR_COMPOSITE: FakeLocator(2)})
-        assert await _address_pick_in_row_chain(ctx, TR_COMPOSITE, PICK) is None
+        ctx = FakeSearchContext(
+            {PICK: FakeLocator(1), TR_ROWS: _PickLocator(index=False), TR_COMPOSITE: FakeLocator(2)}
+        )
+        assert await _address_pick_in_row_chain(ctx, TR_ROWS, TR_COMPOSITE, PICK) is None
+
+    async def test_rows_that_nest_inside_each_other_is_none(self):
+        ctx = FakeSearchContext(
+            {
+                PICK: _PickLocator(),
+                TR_ROWS: _PickLocator(index=True),
+                TR_COMPOSITE: _PickLocator(index=2),
+            }
+        )
+        assert await _address_pick_in_row_chain(ctx, TR_ROWS, TR_COMPOSITE, PICK) is None
+
+    async def test_nesting_answer_that_is_not_false_is_none(self):
+        ctx = FakeSearchContext(
+            {
+                PICK: _PickLocator(),
+                TR_ROWS: _PickLocator(index=None),
+                TR_COMPOSITE: _PickLocator(index=2),
+            }
+        )
+        assert await _address_pick_in_row_chain(ctx, TR_ROWS, TR_COMPOSITE, PICK) is None
+
+    async def test_nesting_read_that_raises_is_none_and_the_chain_is_never_asked(self):
+        class Exploding(_PickLocator):
+            async def evaluate_all(self, js: str, arg=None):
+                raise RuntimeError("Execution context was destroyed")
+
+        ctx = FakeSearchContext(
+            {PICK: _PickLocator(), TR_ROWS: Exploding(), TR_COMPOSITE: _PickLocator(index=2)}
+        )
+        assert await _address_pick_in_row_chain(ctx, TR_ROWS, TR_COMPOSITE, PICK) is None
+        assert TR_COMPOSITE not in ctx.probed
 
 
 class TestElementDataRowAnchor:

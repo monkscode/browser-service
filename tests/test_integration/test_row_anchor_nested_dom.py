@@ -100,7 +100,11 @@ class TestNestedTitleCollapseRealDom:
         html = grid_html(["55516", "155516", "61001"])
         async with _page(html) as page:
             result = await _upgrade_to_row_anchor(page, EDIT, "55516")
-            assert result == {"ambiguous": True, "composite": f'tr:has-text("55516") >> {EDIT}'}
+            assert result == {
+                "ambiguous": True,
+                "composite": f'tr:has-text("55516") >> {EDIT}',
+                "rows": 'tr:has-text("55516")',
+            }
 
     async def test_second_separate_control_in_row_stays_ambiguous(self):
         """A second non-nested Edit control in the anchor row breaks the
@@ -114,7 +118,11 @@ class TestNestedTitleCollapseRealDom:
         html = grid_html(["55514", "55515"], extra_rows=extra)
         async with _page(html) as page:
             result = await _upgrade_to_row_anchor(page, EDIT, "55516")
-            assert result == {"ambiguous": True, "composite": f'tr:has-text("55516") >> {EDIT}'}
+            assert result == {
+                "ambiguous": True,
+                "composite": f'tr:has-text("55516") >> {EDIT}',
+                "rows": 'tr:has-text("55516")',
+            }
 
     async def test_hidden_template_row_still_collapses(self):
         """Both ASTPP patterns at once: a display:none duplicate of the

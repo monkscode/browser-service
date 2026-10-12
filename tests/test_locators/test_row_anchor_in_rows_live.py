@@ -1,6 +1,6 @@
 """
 An ambiguous row-anchor pick is addressed inside its anchored rows
-(browser-service #34, #45; bench query q04), real Chromium.
+(browser-service #45; bench query q04), real Chromium.
 
 The story: "the 'edit' link in the row containing 'Smith' in the first table"
 on a page whose two tables both hold a Smith row. With no candidate, the text
@@ -40,7 +40,8 @@ SMITH_DUE = "#table1 tbody tr:has(td:text-is('Smith')) td:nth-child(4)"
 DESC = "the 'edit' link in the row containing 'Smith' in the first table (action: click)"
 DUE_DESC = "the Due cell in the row containing 'Smith' in the first table (action: get_text)"
 LANDS_JS = "e => e.closest('tr').cells[0].textContent.trim() + '|' + e.closest('table').id"
-CHAIN = 'tr:has-text("Smith") >> text="edit"'
+ROWS = 'tr:has-text("Smith")'
+CHAIN = f'{ROWS} >> text="edit"'
 
 # browser-use-style element_data for the INDEXED element.
 INDEXED_DATA_JS = """(el) => {
@@ -222,20 +223,20 @@ class TestAddressPickInRowChainLive:
 
     async def test_table_two_smith_is_the_second_chain_match(self, page):
         await _open(page)
-        got = await _address_pick_in_row_chain(page, CHAIN, 'text="edit" >> nth=4')
+        got = await _address_pick_in_row_chain(page, ROWS, CHAIN, 'text="edit" >> nth=4')
         assert got == f"{CHAIN} >> nth=1"
 
     async def test_a_pick_outside_the_chain_is_none(self, page):
         await _open(page)
-        assert await _address_pick_in_row_chain(page, CHAIN, 'text="edit" >> nth=1') is None
+        assert await _address_pick_in_row_chain(page, ROWS, CHAIN, 'text="edit" >> nth=1') is None
 
     async def test_a_pick_that_resolves_to_many_elements_is_none(self, page):
         await _open(page)
-        assert await _address_pick_in_row_chain(page, CHAIN, 'text="edit"') is None
+        assert await _address_pick_in_row_chain(page, ROWS, CHAIN, 'text="edit"') is None
 
     async def test_a_pick_that_resolves_to_nothing_is_none(self, page):
         await _open(page)
-        assert await _address_pick_in_row_chain(page, CHAIN, 'text="nope"') is None
+        assert await _address_pick_in_row_chain(page, ROWS, CHAIN, 'text="nope"') is None
 
     async def test_a_hidden_match_still_counts_so_the_address_is_the_same_element(self, page):
         await _open(page)
@@ -244,7 +245,7 @@ class TestAddressPickInRowChainLive:
             "() => { document.querySelector('#table1 tbody').rows[0].style.display = 'none'; }"
         )
         handle = await page.locator(pick).element_handle()
-        got = await _address_pick_in_row_chain(page, CHAIN, pick)
+        got = await _address_pick_in_row_chain(page, ROWS, CHAIN, pick)
         assert got is not None
         assert await page.locator(got).evaluate("(e, o) => e === o", handle) is True
 
@@ -252,5 +253,50 @@ class TestAddressPickInRowChainLive:
         await page.goto(_file_url("row_anchor_two_tables_frame.html"), wait_until="load")
         root = page.frame_locator(FRAME)
         await root.locator("#table1").wait_for()
-        got = await _address_pick_in_row_chain(root, CHAIN, 'text="edit" >> nth=4')
+        got = await _address_pick_in_row_chain(root, ROWS, CHAIN, 'text="edit" >> nth=4')
         assert got == f"{CHAIN} >> nth=1"
+
+
+WRAP_IN_LAYOUT_TABLE_JS = """() => {
+    const table = document.createElement('table');
+    table.id = 'layout';
+    const cell = table.createTBody().insertRow().insertCell();
+    while (document.body.firstChild) cell.appendChild(document.body.firstChild);
+    document.body.appendChild(table);
+}"""
+
+
+async def _open_in_layout_table(page):
+    """The fixture wrapped in an old-style layout table, so the layout row
+    also matches ``tr:has-text("Smith")`` and the anchored rows nest."""
+    await _open(page)
+    await page.evaluate(WRAP_IN_LAYOUT_TABLE_JS)
+
+
+class TestAnchoredRowsThatNestKeepTodaysLocator:
+    """A layout table around the data makes the chain match all 8 edit links
+    and scope nothing, so today's page-wide index stays, byte for byte."""
+
+    async def test_the_chain_matches_every_edit_link(self, page):
+        await _open_in_layout_table(page)
+        assert await page.locator(CHAIN).count() == 8
+
+    async def test_pointer_on_another_row_keeps_the_page_wide_index(self, page, caplog):
+        await _open_in_layout_table(page)
+        with caplog.at_level(logging.INFO):
+            out = await _click_call(page, BACH_EDIT)
+        assert out["best_locator"] == 'text="edit" >> nth=1'
+        assert out["row_anchor_ambiguous"] is True
+        assert SIGNAL not in caplog.text
+
+    async def test_pointer_on_the_smith_link_keeps_the_page_wide_index(self, page, caplog):
+        await _open_in_layout_table(page)
+        with caplog.at_level(logging.INFO):
+            out = await _click_call(page, SMITH_EDIT)
+        assert out["best_locator"] == 'text="edit" >> nth=0'
+        assert SIGNAL not in caplog.text
+
+    async def test_the_helper_answers_none(self, page):
+        await _open_in_layout_table(page)
+        got = await _address_pick_in_row_chain(page, ROWS, CHAIN, 'text="edit" >> nth=4')
+        assert got is None

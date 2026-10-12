@@ -1004,12 +1004,13 @@ async def _upgrade_to_row_anchor(
 
     Returns:
         ``{'locator': composite}`` on success;
-        ``{'ambiguous': True, 'composite': chain}`` when the anchor
-        genuinely matches several elements — several rows, or several
+        ``{'ambiguous': True, 'composite': chain, 'rows': rows}`` when the
+        anchor genuinely matches several elements — several rows, or several
         non-nested controls (Option 1: caller falls through to existing
         behavior and flags the payload ``row_anchor_ambiguous`` — demote,
         never delete; ``chain`` is the row-scoped chain that matched
-        several, so the caller can address its own pick inside it);
+        several and ``rows`` is its row selector, so the caller can address
+        its own pick inside it);
         ``None`` when the upgrade does not apply.
     """
     anchor = (row_anchor_text or "").strip()
@@ -1025,7 +1026,8 @@ async def _upgrade_to_row_anchor(
     escaped = anchor.replace("\\", "\\\\").replace('"', '\\"')
 
     for container in ("tr", "li"):
-        composite = f'{container}:has-text("{escaped}") >> {locator}'
+        rows = f'{container}:has-text("{escaped}")'
+        composite = f"{rows} >> {locator}"
         try:
             count = await search_context.locator(composite).count()
         except Exception as e:
@@ -1060,7 +1062,7 @@ async def _upgrade_to_row_anchor(
                         f"{count} elements via {container}-scoped chain — "
                         f"falling through (flagged)"
                     )
-                    return {"ambiguous": True, "composite": composite}
+                    return {"ambiguous": True, "composite": composite, "rows": rows}
 
         # Exactly one match — when vision coordinates are available,
         # require them to land on it: a unique match in a DIFFERENT row
@@ -1130,8 +1132,13 @@ async def _collapse_containment_chain(search_context, selector: str) -> Optional
     return collapsed
 
 
+# True when any anchored row contains another (a layout table around the data,
+# nested lists): the chain then scopes nothing, so it must not address a pick.
+_ANCHOR_ROWS_NEST_JS = "els => els.some(a => els.some(b => a !== b && a.contains(b)))"
+
+
 async def _address_pick_in_row_chain(
-    search_context, chain: str, pick_locator: str
+    search_context, rows: str, chain: str, pick_locator: str
 ) -> Optional[str]:
     """
     Address an already-picked element inside the row-scoped chain it sits in.
@@ -1140,18 +1147,29 @@ async def _address_pick_in_row_chain(
     the text route with a page-wide index such as ``text="edit" >> nth=0`` —
     the Nth edit link on the page, whatever rows come before it. When that
     SAME element is one of the chain's matches, ``{chain} >> nth=i`` names it
-    by its position among the anchored rows only, so it follows the anchor
-    row when other rows are added, removed or reordered.
+    by its position among the matches of the anchored rows
+    (``{container}:has-text(anchor)``), so it follows the anchor row when
+    other rows are added, removed or reordered, as long as those rows do not
+    themselves match the anchor text.
+
+    ``has-text`` is a case-insensitive substring: a row reading "Goldsmith" or
+    "jsmith@..." also counts, and such a row added above the anchor row
+    shifts the index. When anchored rows nest inside each other (a layout
+    table around the data, nested lists) the chain scopes nothing, so this
+    returns None and the caller keeps today's locator.
 
     ``i`` counts ALL of the chain's matches, hidden ones included, so the
     address resolves to the element ``pick_locator`` did. This never chooses
     an element: it only re-addresses the one already picked.
 
-    Returns None — leaving the caller's locator as it was — when the pick is
-    not exactly one element, is not among the chain's matches, or anything
-    fails or answers something unexpected. Never raises.
+    Returns None — leaving the caller's locator as it was — when the anchored
+    rows nest, the pick is not exactly one element, is not among the chain's
+    matches, or anything fails or answers something unexpected. Never raises.
     """
     try:
+        nested = await search_context.locator(rows).evaluate_all(_ANCHOR_ROWS_NEST_JS)
+        if nested is not False:
+            return None
         handle = await search_context.locator(pick_locator).element_handle(timeout=1000)
         if handle is None:
             return None
@@ -1506,13 +1524,19 @@ async def _find_element_by_expected_text(
                 # Try to disambiguate using coordinates if available
                 if x is not None and y is not None:
                     result = await _disambiguate_by_coordinates(page, selector, x, y)
-                    if result and row_ambiguous and row and row.get("composite"):
+                    if (
+                        result
+                        and row_ambiguous
+                        and row
+                        and row.get("composite")
+                        and row.get("rows")
+                    ):
                         # The anchor never moves the pick: re-running the
                         # coordinate pick on the chain shipped Smith's link
                         # for a pointer on Bach's (its closest-within-100-px
                         # layer). Only address the element already picked.
                         _in_rows = await _address_pick_in_row_chain(
-                            page, row["composite"], result["locator"]
+                            page, row["rows"], row["composite"], result["locator"]
                         )
                         if _in_rows:
                             result = {**result, "locator": _in_rows}

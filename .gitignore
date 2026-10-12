@@ -151,3 +151,6 @@ CLAUDE.md
 .agents/workflows/development-workflow.md
 tasks/lessons.md
 chroma_db/chroma.sqlite3
+
+# graphify knowledge graph (generated)
+graphify-out/

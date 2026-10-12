@@ -13,6 +13,7 @@ Public functions:
     _extract_collection_class(element_data) -> Optional[str]
     _find_collection_locator(page, element_data, collection_class) -> Optional[str]   (async)
     _find_collection_by_text_traversal(page, expected_text) -> Optional[dict]          (async)
+    _find_collection_from_indexed_element(page, element_data) -> Optional[dict]       (async)
 
 Referenced by:
     - browser_service.locators.smart_locator (dispatcher routes
@@ -312,6 +313,166 @@ async def _resolve_beacon(page, needle: str, truncated: bool, text: str):
     return None
 
 
+# The walk both beacons start: climb to the first ancestor that repeats among its siblings and describe it.
+# Semantic class matching is per hyphen/underscore SEGMENT — the old substring regex made 'flex-grow-1' a row
+# container ("g-r-o-w"). Framework layout classes (row, col-*, flex utilities …) are never emitted and never count
+# toward sibling similarity (A4). `includeSelf` lets the start element itself be the row: the text beacon is a node
+# INSIDE a row and is called without it (unchanged); the indexed element can be the item (bs #33).
+_WALK_TO_COLLECTION_JS = """
+    (el, includeSelf) => {
+        const isLayoutClass = (cls) => {
+            const c = cls.toLowerCase();
+            return ['row', 'rows', 'container', 'grid', 'flex', 'wrapper'].includes(c) ||
+                /^col(-|$)/.test(c) ||
+                /^(flex|align|justify|order|offset)-/.test(c) ||
+                /^[a-z]{1,2}-/.test(c);
+        };
+        const SEMANTIC = ['row', 'tr', 'item', 'record', 'entry', 'card', 'group'];
+        const hasSemanticSegment = (cls) =>
+            cls.toLowerCase().split(/[-_]/).some(seg => SEMANTIC.includes(seg));
+        const cssSafe = (s) => /^[A-Za-z][A-Za-z0-9_-]*$/.test(s);
+
+        let current = el;
+        let first = includeSelf === true;
+        while (current && current.parentElement) {
+            if (first) {
+                first = false;
+            } else {
+                current = current.parentElement;
+            }
+            const tag = current.tagName.toLowerCase();
+            if (tag === 'body' || tag === 'html') break;
+            const className = (typeof current.className === 'string' ? current.className : '') || '';
+            const classes = className.split(/\\s+/).filter(c => c.length > 0);
+            const role = current.getAttribute('role') || '';
+
+            const structural = tag === 'tr' || tag === 'li' ||
+                role === 'row' || role === 'listitem';
+            if (!structural && !classes.some(hasSemanticSegment)) continue;
+
+            // A non-structural element with nothing but layout
+            // classes has no semantic anchor - not a data row.
+            const meaningful = classes.filter(c => !isLayoutClass(c));
+            if (!structural && meaningful.length === 0) continue;
+
+            const parent = current.parentElement;
+            if (!parent) continue;
+
+            // Collection = >1 siblings sharing the row's meaningful
+            // class set. Same tag alone is not enough - a lone
+            // styled banner next to unrelated same-tag panels is
+            // not a collection.
+            const similar = Array.from(parent.children).filter(s =>
+                s.tagName === current.tagName &&
+                meaningful.every(c => s.classList.contains(c))
+            );
+            if (similar.length <= 1) continue;
+
+            // Emitted class: semantic first, then any meaningful
+            // class long enough to be a component name.
+            const bestClass =
+                meaningful.find(c => hasSemanticSegment(c) && cssSafe(c)) ||
+                meaningful.find(c => c.length > 5 && cssSafe(c)) ||
+                null;
+
+            // Scope anchor: the row's own parent (id > class > tag).
+            let parentAnchor = null;
+            const ptag = parent.tagName.toLowerCase();
+            if (parent.id && cssSafe(parent.id)) {
+                parentAnchor = '#' + parent.id;
+            } else {
+                const pcn = (typeof parent.className === 'string' ? parent.className : '') || '';
+                const parentClass = pcn.split(/\\s+/).filter(c => c.length > 0)
+                    .find(c => !isLayoutClass(c) && cssSafe(c));
+                parentAnchor = parentClass ? '.' + parentClass :
+                    (ptag !== 'body' && ptag !== 'html' ? ptag : null);
+            }
+
+            return {
+                tag: tag,
+                className: bestClass,
+                allClasses: className,
+                parentAnchor: parentAnchor,
+                siblingCount: similar.length,
+                role: role,
+                parentTag: ptag
+            };
+        }
+        return null;
+    }
+"""
+
+
+async def _walk_to_collection(
+    page, start, include_self: bool = False, source: str = "text_traversal"
+) -> Optional[dict]:
+    """Walk up from `start` (a locator for ONE element) to the repeating row/item container.
+
+    Returns {'locator', 'count', 'row_class', 'tag', 'source'} for a locator scoped to the row's own parent that
+    matches at least one element on `page`, or None. The text beacon calls it without `include_self` — the same
+    one-argument evaluate as before. Exceptions propagate: each caller owns its handling.
+    """
+    if include_self:
+        row_info = await start.evaluate(_WALK_TO_COLLECTION_JS, True)
+    else:
+        row_info = await start.evaluate(_WALK_TO_COLLECTION_JS)
+
+    if row_info:
+        logger.info(
+            "collection.row_container_found",
+            tag=row_info["tag"],
+            cls=row_info.get("className") or "",
+        )
+        logger.info("collection.sibling_count", count=row_info["siblingCount"])
+
+        # Generate collection locator, scoped to the row's own parent —
+        # never a bare page-global class (A4: `.row` matched every grid
+        # row on the page, chrome included).
+        tag = row_info.get("tag", "")
+        best_class = row_info.get("className")
+        anchor = row_info.get("parentAnchor")
+
+        if best_class:
+            suffix = f"{tag}.{best_class}"
+        elif tag in ("tr", "li"):
+            suffix = tag
+        elif row_info.get("role") == "row":
+            suffix = '[role="row"]'
+        else:
+            logger.info("collection.indeterminate_locator", row_info=str(row_info))
+            return None
+
+        if anchor:
+            locator = f"{anchor} > {suffix}"
+        elif best_class or row_info.get("role") == "row":
+            locator = suffix
+        elif tag == "tr":
+            locator = "tbody tr"
+        else:  # tag == 'li'
+            locator = "ul li, ol li"
+
+        # Validate the locator
+        try:
+            count = await page.locator(locator).count()
+            if count >= 1:
+                logger.info("collection.traversal_locator_validated", locator=locator, count=count)
+                return {
+                    "locator": locator,
+                    "count": count,
+                    "row_class": row_info.get("className"),
+                    "tag": row_info.get("tag"),
+                    "source": source,
+                }
+            else:
+                logger.info("collection.locator_zero_matches", locator=locator)
+        except Exception as e:
+            logger.info("collection.traversal_validation_failed", error=str(e))
+    else:
+        logger.info("collection.traversal_no_row_container")
+
+    return None
+
+
 async def _find_collection_by_text_traversal(page, expected_text: str) -> Optional[dict]:
     """
     Find collection (table rows, list items) by using expected_text as a beacon.
@@ -356,150 +517,98 @@ async def _find_collection_by_text_traversal(page, expected_text: str) -> Option
             logger.info("collection.text_not_found", text=text)
             return None
 
-        # Step 2: Traverse UP to find the row container using JavaScript.
-        # Semantic class matching is per hyphen/underscore SEGMENT — the old
-        # substring regex made 'flex-grow-1' a row container ("g-r-o-w").
-        # Framework layout classes (row, col-*, flex utilities …) are never
-        # emitted and never count toward sibling similarity (A4).
-        row_info = await text_locator.evaluate("""
-            (el) => {
-                const isLayoutClass = (cls) => {
-                    const c = cls.toLowerCase();
-                    return ['row', 'rows', 'container', 'grid', 'flex', 'wrapper'].includes(c) ||
-                        /^col(-|$)/.test(c) ||
-                        /^(flex|align|justify|order|offset)-/.test(c) ||
-                        /^[a-z]{1,2}-/.test(c);
-                };
-                const SEMANTIC = ['row', 'tr', 'item', 'record', 'entry', 'card', 'group'];
-                const hasSemanticSegment = (cls) =>
-                    cls.toLowerCase().split(/[-_]/).some(seg => SEMANTIC.includes(seg));
-                const cssSafe = (s) => /^[A-Za-z][A-Za-z0-9_-]*$/.test(s);
-
-                let current = el;
-                while (current && current.parentElement) {
-                    current = current.parentElement;
-                    const tag = current.tagName.toLowerCase();
-                    if (tag === 'body' || tag === 'html') break;
-                    const className = (typeof current.className === 'string' ? current.className : '') || '';
-                    const classes = className.split(/\\s+/).filter(c => c.length > 0);
-                    const role = current.getAttribute('role') || '';
-
-                    const structural = tag === 'tr' || tag === 'li' ||
-                        role === 'row' || role === 'listitem';
-                    if (!structural && !classes.some(hasSemanticSegment)) continue;
-
-                    // A non-structural element with nothing but layout
-                    // classes has no semantic anchor - not a data row.
-                    const meaningful = classes.filter(c => !isLayoutClass(c));
-                    if (!structural && meaningful.length === 0) continue;
-
-                    const parent = current.parentElement;
-                    if (!parent) continue;
-
-                    // Collection = >1 siblings sharing the row's meaningful
-                    // class set. Same tag alone is not enough - a lone
-                    // styled banner next to unrelated same-tag panels is
-                    // not a collection.
-                    const similar = Array.from(parent.children).filter(s =>
-                        s.tagName === current.tagName &&
-                        meaningful.every(c => s.classList.contains(c))
-                    );
-                    if (similar.length <= 1) continue;
-
-                    // Emitted class: semantic first, then any meaningful
-                    // class long enough to be a component name.
-                    const bestClass =
-                        meaningful.find(c => hasSemanticSegment(c) && cssSafe(c)) ||
-                        meaningful.find(c => c.length > 5 && cssSafe(c)) ||
-                        null;
-
-                    // Scope anchor: the row's own parent (id > class > tag).
-                    let parentAnchor = null;
-                    const ptag = parent.tagName.toLowerCase();
-                    if (parent.id && cssSafe(parent.id)) {
-                        parentAnchor = '#' + parent.id;
-                    } else {
-                        const pcn = (typeof parent.className === 'string' ? parent.className : '') || '';
-                        const parentClass = pcn.split(/\\s+/).filter(c => c.length > 0)
-                            .find(c => !isLayoutClass(c) && cssSafe(c));
-                        parentAnchor = parentClass ? '.' + parentClass :
-                            (ptag !== 'body' && ptag !== 'html' ? ptag : null);
-                    }
-
-                    return {
-                        tag: tag,
-                        className: bestClass,
-                        allClasses: className,
-                        parentAnchor: parentAnchor,
-                        siblingCount: similar.length,
-                        role: role,
-                        parentTag: ptag
-                    };
-                }
-                return null;
-            }
-        """)
-
-        if row_info:
-            logger.info(
-                "collection.row_container_found",
-                tag=row_info["tag"],
-                cls=row_info.get("className") or "",
-            )
-            logger.info("collection.sibling_count", count=row_info["siblingCount"])
-
-            # Generate collection locator, scoped to the row's own parent —
-            # never a bare page-global class (A4: `.row` matched every grid
-            # row on the page, chrome included).
-            tag = row_info.get("tag", "")
-            best_class = row_info.get("className")
-            anchor = row_info.get("parentAnchor")
-
-            if best_class:
-                suffix = f"{tag}.{best_class}"
-            elif tag in ("tr", "li"):
-                suffix = tag
-            elif row_info.get("role") == "row":
-                suffix = '[role="row"]'
-            else:
-                logger.info("collection.indeterminate_locator", row_info=str(row_info))
-                return None
-
-            if anchor:
-                locator = f"{anchor} > {suffix}"
-            elif best_class or row_info.get("role") == "row":
-                locator = suffix
-            elif tag == "tr":
-                locator = "tbody tr"
-            else:  # tag == 'li'
-                locator = "ul li, ol li"
-
-            # Validate the locator
-            try:
-                count = await page.locator(locator).count()
-                if count >= 1:
-                    logger.info(
-                        "collection.traversal_locator_validated", locator=locator, count=count
-                    )
-                    return {
-                        "locator": locator,
-                        "count": count,
-                        "row_class": row_info.get("className"),
-                        "tag": row_info.get("tag"),
-                        "source": "text_traversal",
-                    }
-                else:
-                    logger.info("collection.locator_zero_matches", locator=locator)
-            except Exception as e:
-                logger.info("collection.traversal_validation_failed", error=str(e))
-        else:
-            logger.info("collection.traversal_no_row_container")
-
-        return None
+        # Step 2: Traverse UP to the row container (_walk_to_collection; the beacon itself excluded).
+        return await _walk_to_collection(page, text_locator)
 
     except Exception as e:
         logger.warning("collection.text_traversal_failed", error=str(e))
         return None
+
+
+async def _find_collection_from_indexed_element(page, element_data: dict) -> Optional[dict]:
+    """Find the collection the INDEXED element belongs to — the walk with no text beacon (bs #33).
+
+    A collection request without expected_text skipped the text walk; an indexed element without a usable class
+    (books.toscrape's image or title link inside each card) then fell through to the generic xpath shortener,
+    which keeps the shortest suffix matching ONE element (`//li[1]/article/div[1]/a`): a count step read 1 of 20.
+    Started from the indexed element itself, the same walk finds the repeating item (`ol > li`).
+
+    The stored xpath must resolve to exactly one element in `page` (a frame context included). No xpath, 0 or
+    several matches (a shadow root or an svg path resolves to 0), or any error returns None — the caller then
+    keeps today's path.
+    """
+    xpath = (element_data or {}).get("xpath") or ""
+    if not xpath:
+        return None
+    if not xpath.startswith("/"):
+        xpath = "/" + xpath
+    try:
+        start = page.locator(f"xpath={xpath}")
+        matches = await start.count()
+        if matches != 1:
+            logger.info("collection.indexed_walk_skipped", matches=matches)
+            return None
+        return await _walk_to_collection(
+            page, start, include_self=True, source="indexed_element_walk"
+        )
+    except Exception as e:
+        logger.warning("collection.indexed_walk_failed", error=str(e))
+        return None
+
+
+async def _no_text_indexed_walk(
+    search_context,
+    element_data: dict,
+    type_info: "ElementTypeInfo",
+    element_id: str,
+    element_description: str,
+    expected_text: Optional[str],
+    is_collection: Optional[bool],
+) -> Optional[dict]:
+    """The handler's last resort when the request gives NO text and the class route found nothing (bs #33).
+
+    Returns a collection result built like the text walk's, or None. Runs only when the agent flagged the
+    request as a collection (`is_collection is True`, the test STEP 0.5 uses). One-element requests reach this
+    handler without the flag — through the classifier's description words ("list of", "items", "all ") and the
+    DOM probe (any li/tr ancestor) — e.g. "the title link of the first book in the list of books": walking
+    from that link would ship `ol > li` (all cards) and a Click would fail strict mode. An unflagged request
+    therefore gets None at once, no call and no log line — byte for byte what it got before #33. A request WITH
+    expected_text gets None at once too — exactly what the class route's exits returned before.
+    """
+    if is_collection is not True or expected_text:
+        return None
+    walk = await _find_collection_from_indexed_element(search_context, element_data)
+    if not walk or walk.get("count", 0) <= 1:
+        logger.info("collection.indexed_walk_miss")
+        return None
+    collection_locator = walk["locator"]
+    count = walk["count"]
+    logger.info("collection.locator_found_indexed_walk", locator=collection_locator, count=count)
+    result = build_locator_result(
+        element_id=element_id,
+        description=element_description,
+        best_locator=collection_locator,
+        element_type="collection",
+        strategy_name="Indexed-element walk collection locator",
+        classifier_confidence=type_info.confidence,
+        classifier_signals=type_info.signals,
+        unique=False,
+        count=count,
+        all_locator_extra={"quality_score": 90},
+        validation_summary_extra={
+            "multi_element": True,
+            "collection_count": count,
+        },
+        quality_score=90,
+        element_info={
+            "tagName": walk.get("tag", ""),
+            "className": walk.get("row_class", ""),
+            "collection_class": walk.get("row_class", ""),
+            "source": "indexed_element_walk",
+        },
+    )
+    result["count"] = count
+    return result
 
 
 async def find_locator(
@@ -512,10 +621,14 @@ async def find_locator(
     search_context,
     iframe_context: Optional[str],
     confirmed_coords: Optional[tuple],
+    is_collection: Optional[bool] = None,
 ) -> Optional[dict]:
     """
     Collection handler entry point — dispatched from smart_locator when
     classifier returns primary_type="collection".
+
+    `is_collection` is the agent's explicit flag; only True lets the no-text
+    walk from the indexed element run (bs #33).
 
     Tries text-traversal first (uses expected_text as a beacon to find the
     real row container — robust when element_data is from a wrong outer
@@ -587,7 +700,15 @@ async def find_locator(
     collection_class = _extract_collection_class(element_data)
     if not collection_class:
         logger.info("collection.no_class_extracted")
-        return None
+        return await _no_text_indexed_walk(
+            search_context,
+            element_data,
+            type_info,
+            element_id,
+            element_description,
+            expected_text,
+            is_collection,
+        )
 
     logger.info("collection.class_from_element_data", collection_class=collection_class)
 
@@ -595,7 +716,15 @@ async def find_locator(
         search_context, element_data, collection_class
     )
     if not collection_locator:
-        return None
+        return await _no_text_indexed_walk(
+            search_context,
+            element_data,
+            type_info,
+            element_id,
+            element_description,
+            expected_text,
+            is_collection,
+        )
 
     try:
         count = await search_context.locator(collection_locator).count()
@@ -604,7 +733,15 @@ async def find_locator(
         return None
 
     if count <= 1:
-        return None
+        return await _no_text_indexed_walk(
+            search_context,
+            element_data,
+            type_info,
+            element_id,
+            element_description,
+            expected_text,
+            is_collection,
+        )
 
     # Validate that matched elements contain expected_text.
     if expected_text:

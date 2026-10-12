@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>books card links</title></head>
+<body>
+<!-- bs #33: books.toscrape.com's real card. A collection request ("all book items") with NO expected text, where
+     the agent indexed a LINK inside the first card - the image link (no class, no text) or the title link. The
+     class route finds nothing and the generic xpath shortener used to ship //li[1]/article/div[1]/a (1 of 20).
+     The sidebar category list makes a page-global `li` count the wrong thing. The element paths match the live
+     page, so the stored xpaths in the tests are the live ones. -->
+<div class="container-fluid page">
+  <div class="page_inner">
+    <div class="row">
+      <aside class="sidebar col-sm-4 col-md-3">
+        <div class="side_categories">
+          <ul class="nav nav-list">
+            <li><a href="#">Books</a>
+              <ul>
+                <li><a href="#">Travel</a></li>
+                <li><a href="#">Mystery</a></li>
+                <li><a href="#">Historical Fiction</a></li>
+              </ul>
+            </li>
+          </ul>
+        </div>
+      </aside>
+      <div class="col-sm-8 col-md-9">
+        <section>
+          <div class="alert alert-warning" role="alert"><strong>Warning!</strong> This is a demo website.</div>
+          <div>
+            <ol class="row">
+              <li class="col-xs-6 col-sm-4 col-md-3 col-lg-3"><article class="product_pod"><div class="image_container"><a href="c/1"><img src="data:," alt="A Light in the Attic" class="thumbnail"></a></div><p class="star-rating Three"></p><h3><a href="c/1" title="A Light in the Attic">A Light in the ...</a></h3><div class="product_price"><p class="price_color">&pound;51.77</p><p class="instock availability">In stock</p><form><button type="submit" class="btn btn-primary btn-block">Add to basket</button></form></div></article></li>
+              <li class="col-xs-6 col-sm-4 col-md-3 col-lg-3"><article class="product_pod"><div class="image_container"><a href="c/2"><img src="data:," alt="Tipping the Velvet" class="thumbnail"></a></div><p class="star-rating One"></p><h3><a href="c/2" title="Tipping the Velvet">Tipping the Velvet</a></h3><div class="product_price"><p class="price_color">&pound;53.74</p><p class="instock availability">In stock</p><form><button type="submit" class="btn btn-primary btn-block">Add to basket</button></form></div></article></li>
+              <li class="col-xs-6 col-sm-4 col-md-3 col-lg-3"><article class="product_pod"><div class="image_container"><a href="c/3"><img src="data:," alt="Soumission" class="thumbnail"></a></div><p class="star-rating One"></p><h3><a href="c/3" title="Soumission">Soumission</a></h3><div class="product_price"><p class="price_color">&pound;50.10</p><p class="instock availability">In stock</p><form><button type="submit" class="btn btn-primary btn-block">Add to basket</button></form></div></article></li>
+              <li class="col-xs-6 col-sm-4 col-md-3 col-lg-3"><article class="product_pod"><div class="image_container"><a href="c/4"><img src="data:," alt="Sharp Objects" class="thumbnail"></a></div><p class="star-rating Four"></p><h3><a href="c/4" title="Sharp Objects">Sharp Objects</a></h3><div class="product_price"><p class="price_color">&pound;47.82</p><p class="instock availability">In stock</p><form><button type="submit" class="btn btn-primary btn-block">Add to basket</button></form></div></article></li>
+            </ol>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -133,7 +133,7 @@ _CARRIES_ANCHOR_JS = """(el, anchor) => {
     const wanted = norm(anchor);
     if (!wanted) return null;
     const data = [el.textContent];
-    for (const name of ['title', 'aria-label', 'placeholder']) {
+    for (const name of ['title', 'aria-label', 'placeholder', 'alt']) {
         data.push(el.getAttribute(name));
     }
     if (typeof el.value === 'string') data.push(el.value);
@@ -150,7 +150,7 @@ async def _resolved_element_carries_anchor(
     """Does the ONE element ``locator`` resolves to carry the row anchor itself?
 
     True: the anchor datum is in the element's whole ``textContent``, or its
-    ``title`` / ``aria-label`` / ``placeholder`` attribute, or its ``value``
+    ``title`` / ``aria-label`` / ``placeholder`` / ``alt`` attribute, or its ``value``
     when that is a string. Compared as a whitespace-normalised, lower-cased
     substring, both sides normalised the same way inside the page. No text is
     cut, so a long row whose anchor lies far in still reads True.

@@ -198,6 +198,20 @@ class TestRowScopedCandidateIsKept:
         assert landed == "Smith|table1"
 
 
+class TestKeptCandidateStillFacesTheLaterChecks:
+    """Withdrawing the anchor reject must not skip the identity and text checks."""
+
+    async def test_kept_candidate_still_meets_the_later_checks(self, page, caplog):
+        await _open(page)
+        candidate = "#table1 tbody tr:has-text('Smith') a[href='#delete']"
+        with caplog.at_level(logging.INFO):
+            out = await _call(page, SMITH_EDIT, candidate, expected_text="edit", action="click")
+        assert "row-anchor-scope-not-target" in caplog.text
+        assert out["best_locator"] != candidate
+        assert await page.locator(out["best_locator"]).evaluate(LANDS_JS) == "Smith|table1"
+        assert await page.locator(out["best_locator"]).get_attribute("href") == "#edit"
+
+
 class TestRejectStillStandsWhereTheElementCarriesTheAnchor:
     """Guards: green before and after the fix. The fix may only withdraw a
     reject when the landed element provably does not carry the anchor."""
@@ -277,7 +291,7 @@ class TestCarriesAnchorRead:
         locator = "#table1 td:text-is('jsmith@gmail.com')"
         assert await self._helper()(page, locator, "Smith") is True
 
-    @pytest.mark.parametrize("attribute", ["title", "aria-label", "placeholder"])
+    @pytest.mark.parametrize("attribute", ["title", "aria-label", "placeholder", "alt"])
     async def test_attribute_carries_it(self, page, attribute):
         await _open(page)
         await page.locator(BACH_EDIT).evaluate(

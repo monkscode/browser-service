@@ -277,6 +277,7 @@ class TestRowScopeWitness:
             )
         assert "row-anchor-rejects-candidate" in caplog.text
         assert "row-anchor-scope-not-target" not in caplog.text
+        assert result.get("best_locator") != self.CANDIDATE
         if result.get("found"):
             assert result["all_locators"][0]["type"] != "candidate"
 
@@ -288,5 +289,6 @@ class TestRowScopeWitness:
             )
         assert "row-anchor-rejects-candidate" in caplog.text
         assert "row-anchor-scope-not-target" not in caplog.text
+        assert result.get("best_locator") != self.CANDIDATE
         if result.get("found"):
             assert result["all_locators"][0]["type"] != "candidate"

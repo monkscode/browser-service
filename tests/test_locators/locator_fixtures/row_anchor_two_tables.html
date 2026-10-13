@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<!--
+  Reproduces the shape of the-internet's /tables page (browser-service #45,
+  bench query q04): two tables of four people each, the same six columns, and
+  an edit/delete link in the last cell of every row. Table 1's cells carry no
+  class, table 2's carry a class per column. "Smith" is an anchor datum that
+  appears in BOTH tables, so a locator for "the edit link in the row containing
+  Smith in the first table" has to be scoped to the row AND to the table, and
+  a candidate that names the anchor only as that row scope is correct.
+  No CSS and no script: the page is the markup alone.
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Data Tables</title></head>
+<body>
+<h3>Data Tables</h3>
+<table id="table1" class="tablesorter">
+  <thead>
+    <tr>
+      <th class="header"><span>Last Name</span></th>
+      <th class="header"><span>First Name</span></th>
+      <th class="header"><span>Email</span></th>
+      <th class="header"><span>Due</span></th>
+      <th class="header"><span>Web Site</span></th>
+      <th class="header"><span>Action</span></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Smith</td>
+      <td>John</td>
+      <td>jsmith@gmail.com</td>
+      <td>$50.00</td>
+      <td>http://www.jsmith.com</td>
+      <td><a href="#edit">edit</a> <a href="#delete">delete</a></td>
+    </tr>
+    <tr>
+      <td>Bach</td>
+      <td>Frank</td>
+      <td>fbach@yahoo.com</td>
+      <td>$51.00</td>
+      <td>http://www.frank.com</td>
+      <td><a href="#edit">edit</a> <a href="#delete">delete</a></td>
+    </tr>
+    <tr>
+      <td>Doe</td>
+      <td>Jason</td>
+      <td>jdoe@hotmail.com</td>
+      <td>$100.00</td>
+      <td>http://www.jdoe.com</td>
+      <td><a href="#edit">edit</a> <a href="#delete">delete</a></td>
+    </tr>
+    <tr>
+      <td>Conway</td>
+      <td>Tim</td>
+      <td>tconway@earthlink.net</td>
+      <td>$50.00</td>
+      <td>http://www.timconway.com</td>
+      <td><a href="#edit">edit</a> <a href="#delete">delete</a></td>
+    </tr>
+  </tbody>
+</table>
+<table id="table2" class="tablesorter">
+  <thead>
+    <tr>
+      <th class="header"><span>Last Name</span></th>
+      <th class="header"><span>First Name</span></th>
+      <th class="header"><span>Email</span></th>
+      <th class="header"><span>Due</span></th>
+      <th class="header"><span>Web Site</span></th>
+      <th class="header"><span>Action</span></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="last-name">Smith</td>
+      <td class="first-name">John</td>
+      <td class="email">jsmith@gmail.com</td>
+      <td class="dues">$50.00</td>
+      <td class="web-site">http://www.jsmith.com</td>
+      <td class="action"><a href="#edit">edit</a> <a href="#delete">delete</a></td>
+    </tr>
+    <tr>
+      <td class="last-name">Bach</td>
+      <td class="first-name">Frank</td>
+      <td class="email">fbach@yahoo.com</td>
+      <td class="dues">$51.00</td>
+      <td class="web-site">http://www.frank.com</td>
+      <td class="action"><a href="#edit">edit</a> <a href="#delete">delete</a></td>
+    </tr>
+    <tr>
+      <td class="last-name">Doe</td>
+      <td class="first-name">Jason</td>
+      <td class="email">jdoe@hotmail.com</td>
+      <td class="dues">$100.00</td>
+      <td class="web-site">http://www.jdoe.com</td>
+      <td class="action"><a href="#edit">edit</a> <a href="#delete">delete</a></td>
+    </tr>
+    <tr>
+      <td class="last-name">Conway</td>
+      <td class="first-name">Tim</td>
+      <td class="email">tconway@earthlink.net</td>
+      <td class="dues">$50.00</td>
+      <td class="web-site">http://www.timconway.com</td>
+      <td class="action"><a href="#edit">edit</a> <a href="#delete">delete</a></td>
+    </tr>
+  </tbody>
+</table>
+</body>
+</html>

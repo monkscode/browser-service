@@ -820,29 +820,33 @@ async def _do_interaction_playwright(
 
             # Tier 2: click-to-open — last resort for Tom Select, primary UI path for all others
             # (Select2, ARIA listbox, Bootstrap select, any custom dropdown).
+            option_selectors = [
+                ".ts-dropdown-content",
+                "[role='listbox']",
+                ".select2-results__options",
+                ".dropdown-menu",
+            ]
+            # Only a visible container can hold the option the click opened (#40).
+            visible_containers = ", ".join(f"{sel}:visible" for sel in option_selectors)
+            parent = loc.locator("..")
             dropdown_opened = False
             try:
+                # Counted before the click: the dropdown that opened is a container the click
+                # made visible — a container already showing is never taken for it.
+                visible_in_parent = await parent.locator(visible_containers).count()
+                visible_before = await root.locator(visible_containers).count()
                 await loc.click(timeout=3000)
                 dropdown_opened = True
 
-                # Adaptive wait: block until any dropdown container is actually visible.
+                # Wait for THIS dropdown's container, not the first one in the page (#40): one
+                # beside the control when its parent holds any, else anywhere (a portal).
                 # Let the wait raise on timeout — the outer except catches it and
                 # falls through to the final auto_failed return below.
-                container_selectors = (
-                    ".ts-dropdown-content, [role='listbox'], "
-                    ".select2-results__options, .dropdown-menu"
-                )
-                await root.locator(container_selectors).first.wait_for(
-                    state="visible", timeout=2000
-                )
-
-                parent = loc.locator("..")
-                option_selectors = [
-                    ".ts-dropdown-content",
-                    "[role='listbox']",
-                    ".select2-results__options",
-                    ".dropdown-menu",
-                ]
+                if await parent.locator(", ".join(option_selectors)).count():
+                    opened = parent.locator(visible_containers).nth(visible_in_parent)
+                else:
+                    opened = root.locator(visible_containers).nth(visible_before)
+                await opened.first.wait_for(state="visible", timeout=2000)
 
                 # Exact match — parent-scoped first to avoid multi-dropdown ambiguity,
                 # then root-wide as fallback. .first.click() directly — no count() check
@@ -851,7 +855,7 @@ async def _do_interaction_playwright(
                     for sel in option_selectors:
                         try:
                             await (
-                                scope.locator(sel)
+                                scope.locator(f"{sel}:visible")
                                 .get_by_text(value, exact=True)
                                 .first.click(timeout=1500)
                             )
@@ -868,7 +872,11 @@ async def _do_interaction_playwright(
                 for scope in [parent, root]:
                     for sel in option_selectors:
                         try:
-                            await scope.locator(sel).get_by_text(value).first.click(timeout=1500)
+                            await (
+                                scope.locator(f"{sel}:visible")
+                                .get_by_text(value)
+                                .first.click(timeout=1500)
+                            )
                             dropdown_opened = False
                             performed_actions.add(element_id)
                             return (

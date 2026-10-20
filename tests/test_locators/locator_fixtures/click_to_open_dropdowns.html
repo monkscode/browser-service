@@ -1,0 +1,147 @@
+<!doctype html>
+<!-- Fixture for the click-to-open tier of _do_interaction_playwright (browser-service #40).
+     ONE page; ?shape=<key> picks the body from the table below, so each test loads a fresh
+     document. Every option click pushes "<dropdown>:<option>" onto window.__picks and closes
+     its menu: a test reads which dropdown, if any, was really acted on. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>click-to-open dropdowns</title>
+<style>.dropdown-menu,.ts-dropdown{border:1px solid #999;width:200px} .opt{padding:2px}</style>
+<script>
+window.__picks = [];
+
+function pick(el, name, opt) {
+  window.__picks.push(name + ':' + opt);
+  var m = el.closest('[data-menu]');
+  if (m.dataset.rerender) m.remove(); else m.style.display = 'none';
+}
+function openMenu(trig, name) {
+  trig.getRootNode().getElementById(name + '-menu').style.display = 'block';
+}
+// A menu created on open (Select2-like), inside the trigger's parent or at the end of <body>.
+function createMenu(trig, name, opts, where, cls, tag) {
+  var r = trig.getRootNode();
+  var old = r.getElementById(name + '-menu');
+  if (old) old.remove();
+  var m = document.createElement(tag || 'div');
+  m.id = name + '-menu';
+  m.className = cls || 'dropdown-menu';
+  m.dataset.menu = '1';
+  m.dataset.rerender = '1';
+  opts.forEach(function (o) {
+    var d = document.createElement(tag === 'ul' ? 'li' : 'div');
+    d.className = 'opt';
+    d.textContent = o;
+    d.onclick = function () { pick(d, name, o); };
+    m.appendChild(d);
+  });
+  (where === 'body' ? document.body : trig.parentElement).appendChild(m);
+}
+
+var SZ = ['Small', 'Large'], CG = ['Green', 'Blue'], AB = ['Alpha', 'Beta'];
+
+function items(name, opts, tag) {
+  return opts.map(function (o) {
+    return "<" + tag + " class='opt' onclick=\"pick(this,'" + name + "','" + o + "')\">" + o + "</" + tag + ">";
+  }).join('');
+}
+// o: {cls, shown, role, tag}
+function menu(name, opts, o) {
+  o = o || {};
+  var tag = o.tag || 'div';
+  var role = o.role ? " role='" + o.role + "'" : '';
+  return "<" + tag + " id='" + name + "-menu' class='" + (o.cls || 'dropdown-menu') + "'" + role +
+    " data-menu='1' style='display:" + (o.shown ? 'block' : 'none') + "'>" +
+    items(name, opts, tag === 'ul' ? 'li' : 'div') + "</" + tag + ">";
+}
+// A trigger and its menu; portal = the menu goes to the end of <body>. Returns [body, tail].
+function box(name, opts, o) {
+  o = o || {};
+  var trig = "<div id='" + name + "-trigger' tabindex='0' " + (o.event || 'onclick') + "=\"openMenu(this,'" + name + "')\">Pick " + name + "</div>";
+  if (o.portal) return ["<div id='" + name + "-box'>" + trig + "</div>", menu(name, opts)];
+  return ["<div id='" + name + "-box'>" + trig + menu(name, opts) + "</div>", ""];
+}
+function page() {
+  var body = '', tail = '';
+  Array.prototype.forEach.call(arguments, function (p) { body += p[0]; tail += p[1]; });
+  return body + tail;
+}
+
+var NAV_HIDDEN = ["<nav><div id='nav-trigger'>Account</div>" + menu('nav', ['Profile', 'Logout']) + "</nav>", ''];
+var STOCK_VISIBLE = [menu('stock', SZ, {shown: true, role: 'listbox', cls: 'stock'}), ''];
+
+// Tom Select's own markup: the input names its listbox, the dropdown is a sibling of .ts-control.
+function tomSelect(n, opts) {
+  return ["<div class='ts-wrapper' id='" + n + "-wrap'><div class='ts-control'>" +
+    "<input id='" + n + "-ts-control' role='combobox' aria-controls='" + n + "-ts-dropdown' " +
+    "onclick=\"this.closest('.ts-wrapper').querySelector('.ts-dropdown').style.display='block'\"></div>" +
+    "<div class='ts-dropdown' style='display:none'><div role='listbox' id='" + n + "-ts-dropdown' " +
+    "class='ts-dropdown-content' data-menu='1'>" + items(n, opts, 'div') + "</div></div></div>", ''];
+}
+// Bootstrap: .dropdown > button + .dropdown-menu, the menu shown 300 ms after the click.
+function bsDropdown(name, opts) {
+  return ["<div class='dropdown'><button id='" + name + "-trigger' " +
+    "onclick=\"var t=this;setTimeout(function(){openMenu(t,'" + name + "')},300)\">Pick " + name + "</button>" +
+    menu(name, opts) + "</div>", ''];
+}
+
+var SHAPES = {
+  // a single dropdown, menu beside the trigger
+  'one': function () { return page(box('size', SZ)); },
+  // two dropdowns, each menu beside its own trigger
+  'two': function () { return page(box('colour', CG), box('size', SZ)); },
+  // from / to menus, both Alpha / Beta, at the end of <body>
+  'portal-same': function () { return page(box('from', AB, {portal: true}), box('to', AB, {portal: true})); },
+  // ONE parent holds both triggers and both menus, same options
+  'shared-parent': function () {
+    return page(["<div id='toolbar'>" +
+      "<div id='colour-trigger' onclick=\"openMenu(this,'colour')\">Pick colour</div>" + menu('colour', AB) +
+      "<div id='size-trigger' onclick=\"openMenu(this,'size')\">Pick size</div>" + menu('size', AB) + "</div>", '']);
+  },
+  'tom-select': function () { return page(tomSelect('ts1', AB), tomSelect('ts2', AB)); },
+  // a hidden navbar menu, then a Select2-like list created at <body> on open
+  'navbar-select2': function () {
+    return page(NAV_HIDDEN, ["<div id='country-box'><span id='country-trigger' class='select2-selection' " +
+      "onclick=\"createMenu(this,'country',['France','India'],'body','select2-results__options','ul')\">Pick</span></div>", '']);
+  },
+  // a hidden navbar menu, then a trigger whose click creates its menu inside its own parent
+  'created-in-parent': function () {
+    return page(NAV_HIDDEN, ["<div id='size-box'><div id='size-trigger' " +
+      "onclick=\"createMenu(this,'size',['Small','Large'])\">Pick size</div></div>", '']);
+  },
+  'delayed': function () { return page(bsDropdown('colour', CG), bsDropdown('size', SZ)); },
+  // a visible, unrelated .dropdown-menu before our dropdown
+  'unrelated-visible-before': function () {
+    return page([menu('nav', ['Home', 'About'], {shown: true}), ''], box('size', SZ));
+  },
+  // the trigger opens only on double-click; a visible same-text listbox elsewhere
+  'nothing-opens-listbox-after': function () { return page(box('size', SZ, {event: 'ondblclick'}), STOCK_VISIBLE); },
+  'nothing-opens-listbox-before': function () { return page(STOCK_VISIBLE, box('size', SZ, {event: 'ondblclick'})); },
+  // the click shows an unrelated hidden listbox (same texts); ours stays closed
+  'opens-other-near': function () {
+    return page(["<div id='size-box'><div id='size-trigger' " +
+      "onclick=\"document.getElementById('stock-menu').style.display='block'\">Pick size</div>" + menu('size', SZ) + "</div>", ''],
+      [menu('stock', SZ, {role: 'listbox', cls: 'stock'}), '']);
+  },
+  // ONE <form> holds the double-click trigger, its hidden menu and a visible same-text listbox
+  'wide-parent-nothing-opens': function () {
+    return page(["<form id='f'><div id='size-trigger' ondblclick=\"openMenu(this,'size')\">Pick size</div>" +
+      menu('size', SZ) + menu('stock', SZ, {shown: true, role: 'listbox', cls: 'stock'}) + "</form>", '']);
+  },
+  // the control IS a visible listbox; the click point is on its bottom padding
+  'always-visible-listbox': function () {
+    return page(["<div id='lb-box'><ul id='lb-menu' role='listbox' class='lb' data-menu='1' " +
+      "style='display:block;margin:0;padding:0 0 120px 0;width:200px;border:1px solid #999'>" +
+      items('lb', SZ, 'li') + "</ul></div>", '']);
+  }
+};
+
+document.addEventListener('DOMContentLoaded', function () {
+  var key = new URLSearchParams(location.search).get('shape');
+  if (SHAPES[key]) document.body.innerHTML = SHAPES[key]();
+});
+</script>
+</head>
+<body></body>
+</html>

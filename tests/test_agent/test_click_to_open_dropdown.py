@@ -74,6 +74,14 @@ MAIN_SHAPES = [
         None,
         id="nothing-opens-listbox-before",
     ),
+    pytest.param(
+        "portal-nothing-opens-listbox-before",
+        "#size-trigger",
+        "Large",
+        {},
+        None,
+        id="portal-nothing-opens-listbox-before",
+    ),
     pytest.param("opens-other-near", "#size-trigger", "Large", {}, None, id="opens-other-near"),
     pytest.param(
         "wide-parent-nothing-opens",
@@ -83,6 +91,7 @@ MAIN_SHAPES = [
         None,
         id="wide-parent-nothing-opens",
     ),
+    # Pins an ACCEPTED COST of the design (an honest failure where main selects), not the ideal.
     pytest.param(
         "always-visible-listbox", "#lb-menu", "Large", {}, None, id="always-visible-listbox"
     ),
@@ -100,6 +109,14 @@ FRAME_SHAPES = [
         {},
         None,
         id="nothing-opens-listbox-after",
+    ),
+    pytest.param(
+        "portal-nothing-opens-listbox-before",
+        "#size-trigger",
+        "Large",
+        {},
+        None,
+        id="portal-nothing-opens-listbox-before",
     ),
 ]
 
@@ -126,12 +143,14 @@ async def _select(page, root, locator: str, trigger: str, value: str, **kwargs):
     note, status = await _do_interaction_playwright(
         page, locator, "select", value, "elem_1", performed, **kwargs
     )
-    return note, status
+    return note, status, performed
 
 
-def _assert_outcome(picks, note, status, value, expected):
+def _assert_outcome(picks, note, status, performed, value, expected):
     assert picks == ([expected] if expected else []), note
     assert status == ("auto_ok" if expected else "auto_failed"), note
+    # performed_actions is added to only on success.
+    assert ("elem_1" in performed) == bool(expected), note
     if expected:
         # Which loop matched: exact when the value is the whole option text, else partial.
         loop = "exact" if value == expected.split(":")[1] else "partial"
@@ -144,10 +163,10 @@ async def test_main_page_select_acts_on_the_dropdown_the_click_opened(
 ):
     await page.goto(_file_url("click_to_open_dropdowns.html", shape), wait_until="load")
 
-    note, status = await _select(page, page, trigger, trigger, value, **flags)
+    note, status, performed = await _select(page, page, trigger, trigger, value, **flags)
 
     picks = await page.locator(":root").evaluate("() => window.__picks")
-    _assert_outcome(picks, note, status, value, expected)
+    _assert_outcome(picks, note, status, performed, value, expected)
 
 
 @pytest.mark.parametrize("shape, trigger, value, flags, expected", FRAME_SHAPES)
@@ -157,10 +176,10 @@ async def test_in_frame_select_acts_on_the_dropdown_the_click_opened(
     await page.goto(_file_url("click_to_open_dropdowns_frame.html", shape), wait_until="load")
     frame = page.frame_locator(FRAME)
 
-    note, status = await _select(
+    note, status, performed = await _select(
         page, frame, f"{FRAME} >>> {trigger}", trigger, value, iframe_context=FRAME, **flags
     )
 
     picks = await frame.locator(":root").evaluate("() => window.__picks")
-    _assert_outcome(picks, note, status, value, expected)
+    _assert_outcome(picks, note, status, performed, value, expected)
     assert await page.evaluate("() => window.__picks") == [], note

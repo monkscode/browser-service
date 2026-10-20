@@ -118,6 +118,10 @@ var SHAPES = {
   // the trigger opens only on double-click; a visible same-text listbox elsewhere
   'nothing-opens-listbox-after': function () { return page(box('size', SZ, {event: 'ondblclick'}), STOCK_VISIBLE); },
   'nothing-opens-listbox-before': function () { return page(STOCK_VISIBLE, box('size', SZ, {event: 'ondblclick'})); },
+  // a PORTAL target (menu at the end of <body>) that the click never opens; a visible same-text listbox before it
+  'portal-nothing-opens-listbox-before': function () {
+    return page(STOCK_VISIBLE, box('size', SZ, {event: 'ondblclick', portal: true}));
+  },
   // the click shows an unrelated hidden listbox (same texts); ours stays closed
   'opens-other-near': function () {
     return page(["<div id='size-box'><div id='size-trigger' " +

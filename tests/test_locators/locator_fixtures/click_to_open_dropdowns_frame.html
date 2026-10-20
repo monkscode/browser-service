@@ -1,0 +1,17 @@
+<!doctype html>
+<!-- Host page for click_to_open_dropdowns.html (browser-service #40): the same ?shape=<key> is
+     handed to the iframe. The host keeps its own window.__picks, which must stay empty. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>click-to-open dropdowns, in a frame</title>
+<script>window.__picks = [];</script>
+</head>
+<body>
+<h1>host</h1>
+<iframe id="app-frame" style="width:700px;height:500px"></iframe>
+<script>
+document.getElementById('app-frame').src = 'click_to_open_dropdowns.html' + location.search;
+</script>
+</body>
+</html>

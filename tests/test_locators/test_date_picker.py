@@ -28,6 +28,8 @@ Pinned here:
   4. Plumbing: "date-picker" in the custom action's element_type enum,
      "flatpickr" in framework_hint, system prompt lists in sync
      (including the Task E 'file-upload' gap).
+  5. Frames: a date picker inside an iframe is classified without the
+     top-document DOM probe (bs #39 item 1); other types still probe.
 
 Integration tests use real headless Chromium against
 locator_fixtures/date_picker.html (same conventions as
@@ -35,14 +37,18 @@ test_file_upload.py).
 """
 
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from playwright.async_api import async_playwright
 
+from browser_service.agent.actions import find_unique_locator_action
+from browser_service.locators import convert_to_playwright_locator, dom_probe
 from browser_service.locators.classifier import (
     classify_element_type,
     map_vision_hint,
 )
+from browser_service.locators.frame_locator import strip_frame
 
 FIXTURES_DIR = Path(__file__).parent / "locator_fixtures"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -335,6 +341,95 @@ class TestDatePickerDispatch:
         assert result is not None and result["found"]
         assert result["best_locator"] == "#dob"  # generic id path, unchanged
         assert result.get("datepicker_framework") in (None, "")
+
+
+def _file_url(name: str) -> str:
+    return (FIXTURES_DIR / name).resolve().as_uri()
+
+
+# The key set registration.py:_extract_dom_node_attributes builds, read from the element's own attributes.
+ELEMENT_DATA_JS = """(el) => {
+    const parts = [];
+    for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+        let i = 1;
+        for (let s = n.previousElementSibling; s; s = s.previousElementSibling) if (s.tagName === n.tagName) i++;
+        parts.unshift(n.tagName.toLowerCase() + '[' + i + ']');
+    }
+    const g = (k) => el.getAttribute(k) || "";
+    const p = el.parentElement;
+    return { tagName: el.tagName.toLowerCase(), id: g("id"), name: g("name"), className: g("class"),
+        ariaLabel: g("aria-label"), ariaInvalid: g("aria-invalid"), parentClassName: p ? (p.getAttribute("class") || "") : "",
+        placeholder: g("placeholder"), title: g("title"), href: g("href"), role: g("role"),
+        dataTestId: g("data-testid") || g("data-test"), dataTestAttr: "data-testid", type: g("type"), value: g("value"),
+        xpath: parts.join('/'), backendNodeId: null, textContent: (el.textContent || "").trim().slice(0, 80) };
+}"""
+
+FRAME = 'iframe[id="app-frame"]'
+TARGET = "#customer_cdr_from_date"
+DESCRIPTION = "the From Date field"
+
+
+async def _call(page, url, frame, target, description, action):
+    """One find_unique_locator_action call as the agent makes it: page-absolute centre, production-shaped data."""
+    await page.goto(url, wait_until="load")
+    root = page.frame_locator(frame) if frame else page
+    el = root.locator(target).first
+    box = await el.bounding_box()
+    data = await el.evaluate(ELEMENT_DATA_JS)
+    return await find_unique_locator_action(
+        x=box["x"] + box["width"] / 2,
+        y=box["y"] + box["height"] / 2,
+        element_id="elem_1",
+        element_description=description,
+        element_data=data,
+        page=page,
+        iframe_context=frame,
+        action=action,
+    )
+
+
+@pytest.mark.integration
+class TestDatePickerInFrame:
+    """bs #39 item 1: a frame's date picker skips the top-document probe; the classifier alone commits."""
+
+    async def test_framed_flatpickr_is_classified_without_the_probe(self, page):
+        out = await _call(
+            page, _file_url("date_picker_frame.html"), FRAME, TARGET, DESCRIPTION, "input"
+        )
+        assert out["found"] is True, out.get("error")
+        assert out["datepicker_framework"] == "flatpickr"
+        assert out["element_type"] == "date-picker"
+        assert not out.get("dropdown_framework")
+        assert out.get("select_id") is None
+        assert out["best_locator"] == 'iframe[id="app-frame"] >>> id=customer_cdr_from_date'
+        # as strong as the top-level answer for the re-registration downgrade guard (today: action_fit 'misfit')
+        assert out["validated"] is True
+        assert out.get("semantic_match") is not False
+        assert out.get("action_fit") != "misfit"
+        inner, _ = convert_to_playwright_locator(strip_frame(out["best_locator"], FRAME))
+        assert await page.frame_locator(FRAME).locator(inner).count() == 1
+        assert await page.locator(inner).count() == 0
+
+    async def test_top_level_flatpickr_is_unchanged(self, page):
+        out = await _call(page, _file_url("date_picker.html"), None, TARGET, DESCRIPTION, "input")
+        assert out["best_locator"] == "id=customer_cdr_from_date"
+        assert out["datepicker_framework"] == "flatpickr"
+        assert out["element_type"] == "date-picker"
+
+    async def test_framed_checkbox_still_runs_the_probe(self, page):
+        # d skips the probe for a frame's date picker ONLY; every other type in a frame still probes.
+        spy = AsyncMock(side_effect=dom_probe.probe_specialized_type)
+        with patch.object(dom_probe, "probe_specialized_type", spy):
+            out = await _call(
+                page,
+                _file_url("checkbox_gate_iframe_outer.html"),
+                'iframe[id="prefs-frame"]',
+                '[name="remember"]',
+                "the Remember me checkbox",
+                "click",
+            )
+        assert out["found"] is True, out.get("error")
+        assert [c.kwargs.get("suspected_type") for c in spy.await_args_list] == ["checkbox"]
 
 
 # ======================================================================

@@ -3087,7 +3087,13 @@ async def _generate_locators_from_element_data(
             probe_mode = "discovery"
 
     probe_result = None
-    if suspected_type and page is not None:
+    # A frame's date picker is classified from the element alone (bs #39 item 1): the probe runs on the TOP document,
+    # where the coordinates land on the <iframe>, and its container scan can confirm on a main-page flatpickr.
+    if (
+        suspected_type
+        and page is not None
+        and not (iframe_context and suspected_type == "date-picker")
+    ):
         from .dom_probe import probe_specialized_type
 
         probe_result = await probe_specialized_type(

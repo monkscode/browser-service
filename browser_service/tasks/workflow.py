@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 from typing import Any, Dict, List, Optional
 
 from browser_service.locators.action_fit import READ_ACTIONS
+from browser_service.locators.frame_locator import strip_frame
 from browser_service.locators.stability import (
     STABLE,
     score_stability,
@@ -2103,7 +2104,9 @@ def process_workflow_task(
                     # Determine if best_locator is an ID locator.
                     # Accepts both Playwright explicit format (id=value) and
                     # CSS hash format (#value) — both target the ID attribute.
-                    is_id_locator = best_locator.startswith("id=") or best_locator.startswith("#")
+                    is_id_locator = strip_frame(
+                        best_locator, result.get("iframe_context")
+                    ).startswith(("id=", "#"))
 
                     if not is_id_locator:
                         # PRIORITY VIOLATION DETECTED

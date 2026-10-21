@@ -29,6 +29,7 @@ Tests:
   - A success wins over a failure for the same element, in either order
   - A locator for an unrequested id does not stand in for a missing one
   - Re-ranking promotes the stable id locator over a volatile xpath
+  - The id-priority check reads a framed id locator as an id, not as a violation
   - max_steps scales with element count
   - Vision mode: 'auto' excludes the screenshot action, 'on' does not
   - Failed custom-action registration falls back to legacy prompts with vision
@@ -904,6 +905,60 @@ class TestReranking:
         result = workflow_harness.updates[-1][1]["results"]["results"][0]
         assert result["best_locator"] == "id=search"
         assert result["came_back"] is True
+
+
+class TestIdPriorityCheck:
+    """The id-priority check asks 'is the best locator an id' after stripping the frame hop."""
+
+    FRAME = 'iframe[id="app-frame"]'
+
+    @staticmethod
+    def _check(harness, caplog, md):
+        arm(harness, [FakeStep([FakeActionResult(md)])])
+        with caplog.at_level(logging.INFO):
+            run_workflow(
+                harness, elements=[{"id": "elem_1", "description": "x", "action": "click"}]
+            )
+        result = harness.updates[-1][1]["results"]["results"][0]
+        return result, [r.getMessage() for r in caplog.records]
+
+    def test_framed_id_best_is_an_id(self, workflow_harness, caplog):
+        best = f"{self.FRAME} >>> #search"
+        md = locator_metadata("elem_1", best, all_locators=[loc(best, "id")])
+        md["element_info"] = {"id": "search"}
+        md["iframe_context"] = self.FRAME
+
+        result, messages = self._check(workflow_harness, caplog, md)
+
+        assert not any("PRIORITY VIOLATION" in m or "CRITICAL" in m for m in messages)
+        assert any("Validation passed" in m for m in messages)
+        assert result["best_locator"] == best
+
+    def test_framed_xpath_best_with_an_id_still_logs_the_violation(self, workflow_harness, caplog):
+        best = f"{self.FRAME} >>> xpath=//div[3]/input"
+        md = locator_metadata("elem_1", best, all_locators=[loc(best, "xpath")])
+        md["element_info"] = {"id": "search"}
+        md["iframe_context"] = self.FRAME
+
+        _, messages = self._check(workflow_harness, caplog, md)
+
+        assert any("PRIORITY VIOLATION" in m for m in messages)
+
+    def test_top_level_text_best_holding_a_frame_separator_is_forced_to_the_id(
+        self, workflow_harness, caplog
+    ):
+        best = 'text="Go >>> #2"'
+        md = locator_metadata(
+            "elem_1",
+            best,
+            all_locators=[loc(best, "text", unique=False), loc("id=go2", "id", unique=False)],
+        )
+        md["element_info"] = {"id": "go2"}
+
+        result, messages = self._check(workflow_harness, caplog, md)
+
+        assert result["best_locator"] == "id=go2"
+        assert any("Forcing ID locator: id=go2" in m for m in messages)
 
 
 class TestAgentConfiguration:

@@ -399,10 +399,12 @@ class TestDatePickerInFrame:
         assert out["found"] is True, out.get("error")
         assert out["datepicker_framework"] == "flatpickr"
         assert out["element_type"] == "date-picker"
-        assert not out.get("dropdown_framework") and out.get("select_id") is None
+        assert not out.get("dropdown_framework")
+        assert out.get("select_id") is None
         assert out["best_locator"] == 'iframe[id="app-frame"] >>> id=customer_cdr_from_date'
         # as strong as the top-level answer for the re-registration downgrade guard (today: action_fit 'misfit')
-        assert out["validated"] is True and out.get("semantic_match") is not False
+        assert out["validated"] is True
+        assert out.get("semantic_match") is not False
         assert out.get("action_fit") != "misfit"
         inner, _ = convert_to_playwright_locator(strip_frame(out["best_locator"], FRAME))
         assert await page.frame_locator(FRAME).locator(inner).count() == 1

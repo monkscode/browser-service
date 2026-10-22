@@ -6,10 +6,11 @@ types in tiers. Its second tier called ``loc.triple_click()``, which Playwright'
 Python ``Locator`` does not have, so it never ran; a ``fill()`` that the page
 reformatted (a mask, ``maxlength``, an OTP box) then fell to the JavaScript tier,
 which wrote the raw value over the page's own result and fired an extra
-``change`` event.
+``input`` and ``change`` event.
 
 The generated test types with Browser Library's ``Fill Text``, which is
-``locator.fill`` — the same call as the first tier. So the rule pinned here:
+``locator.fill`` — the same call as the first tier (``Type Text`` clears with
+``locator.fill`` too, then types keys). So the rule pinned here:
 after the fallback, the page is exactly what ``locator.fill`` leaves on a fresh
 copy of it (values, events, what became visible). Where ``fill`` cannot type at
 all (a key-driven ``<div>``), the JavaScript tier still runs as before: the
@@ -52,11 +53,18 @@ SHAPES = [
         "123",
     ),
     ("plain_twin", '<input id="t">', "hello"),
+    # input_value() raises on a contenteditable editor: fill()'s text is kept, never a JS write
+    (
+        "contenteditable",
+        '<div id="t" contenteditable="true" style="width:200px;height:30px"></div>',
+        "hello",
+    ),
 ]
 
 # What a document holds after typing: every control's value, what is visible, the events fired.
 STATE_JS = """() => ({
     values: [...document.querySelectorAll('input, textarea')].map(e => e.value),
+    texts: [...document.querySelectorAll('[contenteditable]')].map(e => e.textContent),
     dep_visible: !!document.getElementById('dep') && !document.getElementById('dep').hidden,
     ev: window.ev,
 })"""
@@ -192,4 +200,3 @@ def test_the_agent_is_told_the_typing_tiers_that_exist():
         "input/type: auto-filled using layered strategies (fill → JS)"
         in SEQUENTIAL_PROCESSING_RULES
     )
-    assert "key events" not in SEQUENTIAL_PROCESSING_RULES

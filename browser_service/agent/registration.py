@@ -597,7 +597,7 @@ async def _do_interaction_playwright(
                 # Fall through to the generic input tiers — fail-open,
                 # same contract as the Tom Select JS tiers.
 
-            # Tier 1: fill() — fires input/change events
+            # Tier 1: fill() — fires an input event
             try:
                 await loc.fill(value, timeout=5000)
                 try:

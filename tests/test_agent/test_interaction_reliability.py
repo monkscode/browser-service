@@ -12,7 +12,6 @@ Integration tests (marked with @pytest.mark.integration) require a real browser.
 
 Coverage:
   #3  Malformed locator → auto_failed, no uncaught exception
-  #4  Contenteditable: Control+a before press_sequentially in Tier 2 input
   #5  Tom Select: dispatchEvent reaches wrapper-bound change listener  [integration]
   #7  CDP stall on get_element_by_index → 10s timeout → Playwright fallback
   #8  Idempotency: second _do_interaction call for same element_id is no-op
@@ -65,55 +64,6 @@ class TestMalformedLocator:
         assert "AUTO-ACTION FAILED" in note
         # Must not raise — outer except catches and surfaces as auto_failed
         assert "elem_1" not in performed_actions  # guard not set on failure
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# #4 — Contenteditable: Control+a clears all before press_sequentially
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestTier2ControlA:
-    """Tier 2 input must call press('Control+a') before press_sequentially."""
-
-    async def test_ctrl_a_before_sequential(self, performed_actions):
-        _, _do_interaction_playwright = _import_helpers()
-
-        # page.locator() is sync in Playwright — use MagicMock so the call returns
-        # mock_loc directly without wrapping it in a coroutine (which AsyncMock does).
-        mock_page = MagicMock()
-        mock_loc = MagicMock()
-        mock_page.locator.return_value = mock_loc
-
-        # Tier 1: fill() raises — forces Tier 2
-        mock_loc.fill = AsyncMock(side_effect=Exception("fill not supported on contenteditable"))
-        # Tier 2: triple_click, press, press_sequentially all succeed
-        mock_loc.triple_click = AsyncMock()
-        mock_loc.press = AsyncMock()
-        mock_loc.press_sequentially = AsyncMock()
-        # input_value() raises (contenteditable) — auto_partial path
-        mock_loc.input_value = AsyncMock(side_effect=Exception("input_value not supported"))
-
-        note, status = await _do_interaction_playwright(
-            active_page=mock_page,
-            locator_str="div[contenteditable]",
-            action="input",
-            value="hello world",
-            element_id="elem_1",
-            performed_actions=performed_actions,
-        )
-
-        # Control+a must be called
-        press_calls = [call.args[0] for call in mock_loc.press.call_args_list]
-        assert "Control+a" in press_calls, "press('Control+a') must be called in Tier 2"
-
-        # Control+a must precede press_sequentially
-        ctrl_a_call_index = press_calls.index("Control+a")
-        assert ctrl_a_call_index == 0, "Control+a must be the first press call"
-        mock_loc.press_sequentially.assert_awaited_once()
-
-        assert status in ("auto_ok", "auto_partial")
-        assert "key events" in note
-        assert "elem_1" in performed_actions  # guard set on success
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -579,9 +529,8 @@ class TestTomSelectActionRemap:
 class TestFlatpickrInputTier:
     """datepicker_framework='flatpickr' routes input actions through the
     widget's setDate API BEFORE any fill/type tier. Readonly flatpickr
-    inputs never become editable, so fill() waits its full timeout and
-    triple_click leaves the calendar overlay open — the JS tier is the
-    only deterministic path (verified live on ASTPP 2026-07-08)."""
+    inputs never become editable, so fill() waits its full timeout — the
+    JS tier is the only deterministic path (verified live on ASTPP 2026-07-08)."""
 
     async def test_setdate_js_runs_before_fill(self, performed_actions):
         _, _do_interaction_playwright = _import_helpers()

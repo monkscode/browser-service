@@ -1082,6 +1082,8 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                 _element_specs[_eid] = {
                     "action": _elem.get("action", "get_text"),
                     "value": _elem.get("value", "") or "",
+                    # #62: NLRF's own words for the step, logged beside the agent's pick.
+                    "description": _elem.get("description", "") or "",
                 }
         _expected_element_ids: set = set(_element_specs.keys())
         _total_expected: int = len(_expected_element_ids)
@@ -1370,6 +1372,16 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
             try:
                 logger.info("🎯 Custom action 'find_unique_locator' called by agent")
                 logger.info(f"   Element: {params.element_id} - {params.element_description}")
+                # #62: NLRF's step beside the agent's own description, so a wrong pick shows as two
+                # lines that disagree. Never the step's value: for a login it is the password.
+                _step = _element_specs.get(params.element_id)
+                if _step is None:
+                    logger.info("   Step (NLRF): not in the request")
+                else:
+                    logger.info(
+                        f"   Step (NLRF): {_step['description'] or '(no description)'} "
+                        f"(action: {_step['action']})"
+                    )
                 logger.info(f"   Coordinates: ({params.x}, {params.y})")
                 if params.expected_text:
                     logger.info(f'   Expected text: "{params.expected_text}"')

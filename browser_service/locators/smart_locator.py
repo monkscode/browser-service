@@ -12,7 +12,7 @@ import re
 from typing import Any, Optional
 
 from browser_service.locators.action_fit import check_action_fit
-from browser_service.locators.frame_locator import add_frame, apply_frame_to_result
+from browser_service.locators.frame_locator import add_frame, apply_frame_to_result, strip_frame
 from browser_service.locators.stability import (
     POSITIONAL,
     STABLE,
@@ -4073,6 +4073,21 @@ async def _validate_strategy_candidates(
     return validated_locators
 
 
+async def _returned_string_matches(
+    search_context, result: dict, iframe_context: Optional[str]
+) -> bool:
+    """The returned-string check (bs #53): the string a STEP 2.5 result hands on
+    must itself match exactly one element where the test applies it — or, for a
+    collection (``unique`` False), at least one, as a live list may grow between
+    the site's count and this one. An invalid selector matches nothing.
+    """
+    try:
+        count = await search_context.locator(strip_frame(result["locator"], iframe_context)).count()
+    except Exception:
+        return False
+    return count >= 1 if result.get("unique") is False else count == 1
+
+
 async def find_unique_locator_at_coordinates(
     page,
     x: float,
@@ -4672,6 +4687,16 @@ async def find_unique_locator_at_coordinates(
                 f"'{expected_text}' — rejecting the mismatched result "
                 f"(signal: accessibility-mismatch-rejected); falling back "
                 f"to coordinate-based approach"
+            )
+            accessibility_result = None
+
+    # bs #53: a 2.5 site can return a string other than the one it counted.
+    if accessibility_result and accessibility_result.get("locator"):
+        if not await _returned_string_matches(search_context, accessibility_result, iframe_context):
+            logger.info(
+                f"   ⛔ Accessibility fallback '{accessibility_result['locator']}' does not "
+                f"match the element(s) it reported — falling back to coordinate-based "
+                f"approach (signal: accessibility-string-unconfirmed)"
             )
             accessibility_result = None
 

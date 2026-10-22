@@ -18,6 +18,7 @@ lane). ``element_data`` is None so STEP 2.5 is reached.
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
 from browser_service.agent.actions import find_unique_locator_action
@@ -147,8 +148,9 @@ async def test_invalid_quote_string_is_dropped(page, in_frame):
         action="input",
     )
     # The precondition: the string STEP 2.5 builds for this name is not a valid selector.
-    with pytest.raises(Exception):
-        await _root(page, in_frame).locator('[aria-label="Say "hi""]').count()
+    invalid = _root(page, in_frame).locator('[aria-label="Say "hi""]')
+    with pytest.raises(PlaywrightError):
+        await invalid.count()
     assert await _is_target(page, out, t, in_frame)
 
 

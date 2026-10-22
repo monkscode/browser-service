@@ -562,8 +562,7 @@ async def _do_interaction_playwright(
 
             # Tier 0 (flatpickr): the widget's own API is the only
             # deterministic path — the input is readonly, so fill() below
-            # would wait its full timeout and triple_click would open the
-            # calendar overlay and leave it over the page. setDate parses
+            # would wait its full timeout. setDate parses
             # the value with the instance's own date format (lenient with
             # date-only values — verified live on ASTPP 2026-07-08).
             if datepicker_framework == "flatpickr":
@@ -598,7 +597,7 @@ async def _do_interaction_playwright(
                 # Fall through to the generic input tiers — fail-open,
                 # same contract as the Tom Select JS tiers.
 
-            # Tier 1: fill() — fires input/change events
+            # Tier 1: fill() — fires an input event
             try:
                 await loc.fill(value, timeout=5000)
                 try:
@@ -609,43 +608,17 @@ async def _do_interaction_playwright(
                             f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (fill, verified)",
                             "auto_ok",
                         )
-                    # Mismatch — fall through to Tier 2
+                    # the page reformatted the value (a mask, maxlength): the test's Fill Text gets the same
+                    performed_actions.add(element_id)
+                    return (
+                        f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (fill, field shows '{actual}')",
+                        "auto_partial",
+                    )
                 except Exception:
                     # input_value() unsupported (e.g. contenteditable) — accept fill result
                     performed_actions.add(element_id)
                     return (
                         f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (fill, unverified)",
-                        "auto_partial",
-                    )
-            except Exception:
-                pass
-
-            # Tier 2: triple_click + Control+a + press_sequentially — fires key events, better for reactive frameworks.
-            # Control+a after triple_click ensures full selection on contenteditable: triple_click selects
-            # only the clicked paragraph; Control+a selects all content across paragraphs. No-op on
-            # <input>/<textarea> where triple_click already selects everything.
-            try:
-                await loc.triple_click(timeout=3000)
-                await loc.press("Control+a")
-                await loc.press_sequentially(value, delay=20)
-                try:
-                    actual = await loc.input_value(timeout=2000)
-                    performed_actions.add(element_id)
-                    return (
-                        (
-                            f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (key events, verified)",
-                            "auto_ok",
-                        )
-                        if actual == value
-                        else (
-                            f"\n⚠️ AUTO-ACTION: Typed '{value}' but field shows '{actual}' (key events)",
-                            "auto_partial",
-                        )
-                    )
-                except Exception:
-                    performed_actions.add(element_id)
-                    return (
-                        f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (key events, unverified)",
                         "auto_partial",
                     )
             except Exception:

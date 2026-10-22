@@ -390,7 +390,7 @@ Process elements IN THE ORDER THEY ARE LISTED. For each element:
 4. find_unique_locator performs the interaction automatically — check the result:
 
    ACTION BEHAVIORS — interactions are performed automatically by find_unique_locator:
-   • input/type: auto-filled using layered strategies (fill → key events → JS). "✅" = succeeded.
+   • input/type: auto-filled using layered strategies (fill → JS). "✅" = succeeded.
    • click/submit: auto-clicked using layered strategies (click → force → JS). Page stability
      is awaited automatically after click/submit/select — multi-page flows are handled. "✅" = succeeded.
    • check: checkbox/radio checked using state-aware Playwright loc.check() — only acts if not

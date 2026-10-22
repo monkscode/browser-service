@@ -18,6 +18,14 @@ D2: accessible names are whitespace-normalized before locator
     construction (Playwright's role-engine name matching normalizes
     whitespace itself, so the normalized form matches whenever the raw
     form does — and newlines can never reach the .robot variable).
+
+bs #53 (returned-string check): STEP 2.5 counted one query and could
+    return another string. The string it hands on is now counted in the
+    search context — exactly 1 for a single element, at least 1 for a
+    collection — and dropped when it fails (signal:
+    accessibility-string-unconfirmed). So LenientPage names the strings
+    that are live on its fake page; the real-Chromium cases live in
+    test_returned_string_check.py.
 """
 
 import logging
@@ -115,8 +123,11 @@ class LenientLocator:
 class LenientPage:
     url = "https://sujal.astppbilling.org/"
 
+    def __init__(self, live: tuple[str, ...] = ()):
+        self.live = live
+
     def locator(self, selector: str):
-        return LenientLocator(0)
+        return LenientLocator(1 if selector in self.live else 0)
 
     async def evaluate(self, *args, **kwargs):
         return None
@@ -178,7 +189,7 @@ class TestD1MismatchReject:
                 expected_text="Sign In",
                 candidate_locator=None,
                 element_data=None,
-                page=LenientPage(),
+                page=LenientPage(live=(ok["locator"],)),
                 is_collection=False,
             )
         assert result["found"] is True
@@ -202,8 +213,91 @@ class TestD1MismatchReject:
                 expected_text=None,
                 candidate_locator=None,
                 element_data=None,
-                page=LenientPage(),
+                page=LenientPage(live=(dialog["locator"],)),
                 is_collection=False,
             )
         assert result["found"] is True
         assert result["best_locator"] == dialog["locator"]
+
+
+# ======================================================================
+# bs #53 — the string STEP 2.5 hands on must match where it is applied
+# ======================================================================
+
+
+class _CountCtx:
+    """search_context stand-in: records each selector; count() returns
+    the set value or raises it when it is an exception."""
+
+    def __init__(self, count):
+        self.count_value = count
+        self.seen = []
+
+    def locator(self, selector: str):
+        self.seen.append(selector)
+        return self
+
+    async def count(self):
+        if isinstance(self.count_value, Exception):
+            raise self.count_value
+        return self.count_value
+
+
+class TestReturnedStringCheck:
+    @pytest.mark.asyncio
+    async def test_unconfirmed_string_is_dropped(self, caplog):
+        """A partial-name role string the fallback counted under another
+        query matches nothing on the page — it must NOT be returned."""
+        dead = {
+            "locator": 'role=button[name="CSV"]',
+            "count": 1,
+            "unique": True,
+            "role": "button",
+            "accessible_name": "CSV",
+            "element_type": "button",
+            "strategy": "playwright_get_by_role_button_partial",
+        }
+        with patch(
+            "browser_service.locators.smart_locator._find_element_via_accessibility",
+            new=AsyncMock(return_value=dead),
+        ):
+            with caplog.at_level(logging.INFO):
+                result = await find_unique_locator_action(
+                    x=X,
+                    y=Y,
+                    element_id="elem_3",
+                    element_description="the export control",
+                    expected_text="CSV",
+                    candidate_locator=None,
+                    element_data=None,
+                    page=LenientPage(),
+                    is_collection=False,
+                )
+        assert "accessibility-string-unconfirmed" in caplog.text
+        assert result.get("best_locator") != dead["locator"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "locator,unique,frame,count,expected,seen",
+        [
+            ("role=x", True, None, 1, True, "role=x"),
+            ("role=x", True, None, 0, False, "role=x"),
+            ("role=x", True, None, 2, False, "role=x"),
+            ("role=x", True, None, Exception("invalid"), False, "role=x"),
+            ("role=x", False, None, 3, True, "role=x"),
+            ("role=x", False, None, 1, True, "role=x"),
+            ("role=x", False, None, 0, False, "role=x"),
+            ("role=x", False, None, Exception("invalid"), False, "role=x"),
+            ('iframe[id="f"] >>> role=x', True, 'iframe[id="f"]', 1, True, "role=x"),
+        ],
+    )
+    async def test_returned_string_matches(self, locator, unique, frame, count, expected, seen):
+        """Single element: exactly 1; collection (unique False): at least
+        1; an invalid selector: no match; the frame hop is stripped."""
+        # Imported here so the rest of the file still runs on code without it.
+        from browser_service.locators.smart_locator import _returned_string_matches
+
+        ctx = _CountCtx(count)
+        result = {"locator": locator, "unique": unique}
+        assert await _returned_string_matches(ctx, result, frame) is expected
+        assert ctx.seen == [seen]

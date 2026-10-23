@@ -225,8 +225,8 @@ class BrowserServiceConfig:
         self.headless = os.getenv("BROWSER_HEADLESS", "true").lower() == "true"
 
         # Agent vision mode (Task 28 A1-INLINE):
-        #   auto — vision-off; the screenshot attaches to the next LLM call only
-        #          when find_unique_locator fails validation (in-run escalation)
+        #   auto — vision-off until find_unique_locator first fails in a run; from then on
+        #          every LLM call of that run carries the screenshot (_keep_vision_on)
         #   on   — full vision on every step (escape hatch)
         # Any other value would silently fork bench vs production behavior, so
         # construction fails fast — same contract as ROBOT_LIBRARY above.

@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from browser_service.agent.registration import register_custom_actions
-from tests.test_agent.test_vision_escalation import FakeAgent, FakeBrowserSession, _fake_playwright
+from tests.test_agent.test_vision_escalation import (
+    FakeAgent,
+    FakeAgentWithSettings,
+    FakeBrowserSession,
+    _fake_playwright,
+)
 
 ELEMENTS = [
     {"id": "elem_1", "action": "get_text", "value": ""},
@@ -60,3 +65,23 @@ async def test_second_unconfirmed_is_not_found_and_says_do_not_retry():
 async def test_the_counter_is_per_element():
     first, other = await _run(["elem_1", "elem_2"])
     assert "point at the element itself" in other.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_first_unconfirmed_keeps_vision_on_for_the_run():
+    """The retry's re-point must be SEEN: the run's use_vision goes from 'auto' to True."""
+    agent = FakeAgentWithSettings("auto")
+    with (
+        patch(
+            "browser_service.agent.actions.find_unique_locator_action",
+            new=AsyncMock(return_value=UNCONFIRMED),
+        ),
+        patch("playwright.async_api.async_playwright", new=_fake_playwright()),
+    ):
+        assert register_custom_actions(agent, elements=ELEMENTS) is True
+        await agent.tools.registry.execute_action(
+            "find_unique_locator",
+            {**PARAMS, "element_id": "elem_1"},
+            browser_session=FakeBrowserSession(),
+        )
+    assert agent.settings.use_vision is True

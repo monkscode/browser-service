@@ -21,6 +21,7 @@ The registered handler is exercised through the real browser-use Tools registry
 locator engine and Playwright connection mocked — no browser, no LLM.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -230,3 +231,101 @@ class TestSchemaContract:
         ].param_model.model_fields["element_index"]
         assert "REQUIRED" in field.description
         assert "HIGHLY RECOMMENDED" not in field.description
+
+
+class FakeAgentWithSettings:
+    """A fake agent that carries browser-use's per-run settings (use_vision)."""
+
+    tools = None
+
+    def __init__(self, use_vision):
+        self.settings = SimpleNamespace(use_vision=use_vision)
+
+
+async def _invoke_many(agent, engine_results, element_index=42, browser_session=None):
+    """Register once on ``agent``, then run find_unique_locator once per engine result."""
+    session = browser_session if browser_session is not None else FakeBrowserSession()
+    params = {"x": 500, "y": 300, "element_id": "elem_1", "element_description": "submit button"}
+    if element_index is not None:
+        params["element_index"] = element_index
+    engine = AsyncMock(side_effect=list(engine_results))
+    with (
+        patch("browser_service.agent.actions.find_unique_locator_action", new=engine),
+        patch("playwright.async_api.async_playwright", new=_fake_playwright()),
+    ):
+        assert register_custom_actions(agent, elements=ELEMENTS) is True
+        return [
+            await agent.tools.registry.execute_action(
+                "find_unique_locator", params, browser_session=session
+            )
+            for _ in engine_results
+        ]
+
+
+ENGINE_SUCCESS = {
+    "found": True,
+    "best_locator": "id=submit",
+    "validated": True,
+    "count": 1,
+    "validation_method": "playwright",
+}
+STICKY_SIGNAL = "vision-sticky-on"
+
+
+class TestStickyVision:
+    """After the first failed locator step of a run, the run keeps the screenshot.
+
+    browser-use attaches an include_screenshot image to the ONE next call only; the agent
+    can spend that call on another action and then point blind again (the bs 1.0.50 deploy
+    probe, run 4). Flipping the run's settings.use_vision from 'auto' to True keeps every
+    later call sighted (browser-use reads it per step, agent/service.py:1138, 0.13.7).
+    """
+
+    @pytest.mark.asyncio
+    async def test_failure_with_index_turns_vision_on(self):
+        agent = FakeAgentWithSettings("auto")
+        await _invoke_many(agent, [ENGINE_FAILURE], element_index=42)
+        assert agent.settings.use_vision is True
+
+    @pytest.mark.asyncio
+    async def test_retry_without_index_turns_vision_on(self):
+        agent = FakeAgentWithSettings("auto")
+        await _invoke_many(agent, [ENGINE_FAILURE], element_index=None)
+        assert agent.settings.use_vision is True
+
+    @pytest.mark.asyncio
+    async def test_success_leaves_vision_auto(self):
+        agent = FakeAgentWithSettings("auto")
+        await _invoke_many(agent, [ENGINE_SUCCESS], element_index=None)
+        assert agent.settings.use_vision == "auto"
+
+    @pytest.mark.asyncio
+    async def test_dead_browser_leaves_vision_auto(self):
+        agent = FakeAgentWithSettings("auto")
+        await _invoke_many(
+            agent, [ENGINE_FAILURE], element_index=None, browser_session=FakeDeadBrowserSession()
+        )
+        assert agent.settings.use_vision == "auto"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("explicit", [True, False])
+    async def test_explicit_off_and_on_are_left_alone(self, explicit, caplog):
+        agent = FakeAgentWithSettings(explicit)
+        with caplog.at_level("INFO", logger="browser_service.agent.registration"):
+            await _invoke_many(agent, [ENGINE_FAILURE], element_index=42)
+        assert agent.settings.use_vision is explicit
+        assert STICKY_SIGNAL not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_signal_logged_once_per_run(self, caplog):
+        agent = FakeAgentWithSettings("auto")
+        with caplog.at_level("INFO", logger="browser_service.agent.registration"):
+            await _invoke_many(agent, [ENGINE_FAILURE, ENGINE_FAILURE], element_index=42)
+        assert caplog.text.count(STICKY_SIGNAL) == 1
+
+    @pytest.mark.asyncio
+    async def test_agent_without_settings_does_not_crash(self):
+        """Today's FakeAgent has no settings: the failure result is unchanged."""
+        result = await _invoke(ENGINE_FAILURE, element_index=42)
+        assert result.metadata.get("include_screenshot") is True
+        assert result.is_done is not True

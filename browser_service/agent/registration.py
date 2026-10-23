@@ -262,6 +262,26 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
     return None, None
 
 
+def _keep_vision_on(agent) -> bool:
+    """After a failed locator step, keep the screenshot on for the rest of this run.
+
+    In 'auto' mode browser-use attaches an include_screenshot image to the ONE next call
+    only; the agent can spend that call on another action and point blind again. It reads
+    settings.use_vision on every step (agent/service.py:1138, 0.13.7), so flipping 'auto'
+    to True keeps every later call sighted. An explicit True / False is left alone.
+    Returns True only when it flipped.
+    """
+    settings = getattr(agent, "settings", None)
+    if settings is None or getattr(settings, "use_vision", None) != "auto":
+        return False
+    settings.use_vision = True
+    logger.info(
+        "👁️ Vision kept on for the rest of this run after a failed locator step "
+        "(signal: vision-sticky-on)"
+    )
+    return True
+
+
 def _find_smallest_containing_element(selector_map, coords, viewport_area, skip_tag=None):
     """
     Find the selector_map element with the smallest bounding box containing coords.
@@ -2114,6 +2134,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                                 f"🔄 READ ADDRESS RETRY for {params.element_id}: {_read_unconfirmed} "
                                 f"(signal: read-address-retry)"
                             )
+                            _keep_vision_on(agent)
                             action_result = ActionResult(
                                 extracted_content=retry_msg,
                                 error=retry_msg,
@@ -2174,6 +2195,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         # locator. metadata is observability-only in browser-use
                         # (read for include_screenshot, never sent to the model),
                         # so carrying it costs nothing.
+                        _keep_vision_on(agent)
                         action_result = ActionResult(
                             extracted_content=retry_msg,
                             error=retry_msg,
@@ -2181,6 +2203,7 @@ def register_custom_actions(agent, page=None, elements=None) -> bool:
                         )
                     else:
                         # element_index WAS provided but still failed
+                        _keep_vision_on(agent)
                         action_result = ActionResult(
                             error=(
                                 f"FAILED: Could not find unique locator for {params.element_id}. "

@@ -2,10 +2,11 @@
 Unit tests for the A1-INLINE vision escalation hook (Task 28) in
 browser_service.agent.registration — the registered find_unique_locator action.
 
-Purpose: With use_vision='auto' the agent runs vision-off; browser-use 0.12.6
-         attaches the current screenshot to the NEXT LLM call only when an
-         ActionResult carries metadata={'include_screenshot': True}
-         (message_manager/service.py:444-464, verified live 2026-07-17).
+Purpose: With use_vision='auto' the agent runs vision-off; browser-use (0.13.7,
+         message_manager/service.py:448-469) attaches the current screenshot to the
+         NEXT LLM call when an ActionResult carries metadata={'include_screenshot': True},
+         and on a failure the handler also keeps vision on for the rest of the run
+         (_keep_vision_on — TestStickyVision, TestTheRun4Shape).
          These tests pin the trigger contract:
            - BOTH validation-failure ActionResults carry the escalation metadata
            - failure messages tell the model to re-examine the attached screenshot
@@ -296,15 +297,17 @@ class TestStickyVision:
     @pytest.mark.asyncio
     async def test_success_leaves_vision_auto(self):
         agent = FakeAgentWithSettings("auto")
-        await _invoke_many(agent, [ENGINE_SUCCESS], element_index=None)
+        (result,) = await _invoke_many(agent, [ENGINE_SUCCESS], element_index=None)
+        assert result.error is None  # the success path, not the generic exception path
         assert agent.settings.use_vision == "auto"
 
     @pytest.mark.asyncio
     async def test_dead_browser_leaves_vision_auto(self):
         agent = FakeAgentWithSettings("auto")
-        await _invoke_many(
+        (result,) = await _invoke_many(
             agent, [ENGINE_FAILURE], element_index=None, browser_session=FakeDeadBrowserSession()
         )
+        assert result.is_done is True  # the terminal dead-browser path
         assert agent.settings.use_vision == "auto"
 
     @pytest.mark.asyncio
@@ -329,3 +332,69 @@ class TestStickyVision:
         result = await _invoke(ENGINE_FAILURE, element_index=42)
         assert result.metadata.get("include_screenshot") is True
         assert result.is_done is not True
+
+    def test_returns_true_only_when_it_flips(self):
+        from browser_service.agent.registration import _keep_vision_on
+
+        agent = FakeAgentWithSettings("auto")
+        assert _keep_vision_on(agent) is True
+        assert _keep_vision_on(agent) is False  # already True: no second flip, no second signal
+        assert _keep_vision_on(FakeAgent()) is False
+
+
+AFTER_FIND_ELEMENTS = "Found 14 elements matching '*'."
+
+
+def _next_call_has_image(use_vision, last_result, tmp_path) -> bool:
+    """Build the next LLM call with browser-use's OWN message builder (0.13.7, no browser, no LLM)
+    and report whether the page screenshot is in it."""
+    from browser_use.agent.message_manager.service import MessageManager
+    from browser_use.browser.views import BrowserStateSummary
+    from browser_use.dom.views import SerializedDOMState
+    from browser_use.filesystem.file_system import FileSystem
+    from browser_use.llm.messages import ContentPartImageParam, SystemMessage
+
+    manager = MessageManager(
+        task="t", system_message=SystemMessage(content="s"), file_system=FileSystem(tmp_path)
+    )
+    state = BrowserStateSummary(
+        dom_state=SerializedDOMState(_root=None, selector_map={}),
+        url="http://127.0.0.1/login.html",
+        title="t",
+        tabs=[],
+        screenshot="iVBORw0KGgo=",
+    )
+    manager.create_state_messages(
+        browser_state_summary=state, result=last_result, use_vision=use_vision
+    )
+    content = manager.get_messages()[-1].content
+    return isinstance(content, list) and any(isinstance(p, ContentPartImageParam) for p in content)
+
+
+class TestTheRun4Shape:
+    """The bs 1.0.50 deploy probe, run 4: a failed locator step, then an action whose result asks
+    for no screenshot (find_elements), then the re-point. Only a sticky flip puts the page in that
+    third call; on 'auto' it goes out blind (run 4 pointed at (640, 485) for a message at y 155)."""
+
+    @pytest.mark.asyncio
+    async def test_after_a_failure_and_another_action_the_call_still_has_the_page(self, tmp_path):
+        from browser_use.agent.views import ActionResult
+
+        agent = FakeAgentWithSettings("auto")
+        await _invoke_many(agent, [ENGINE_FAILURE], element_index=None)
+        after = [ActionResult(extracted_content=AFTER_FIND_ELEMENTS)]
+        assert _next_call_has_image(agent.settings.use_vision, after, tmp_path) is True
+
+    def test_on_auto_that_call_is_blind(self, tmp_path):
+        """Known negative: today's behaviour for run 4's step 6."""
+        from browser_use.agent.views import ActionResult
+
+        after = [ActionResult(extracted_content=AFTER_FIND_ELEMENTS)]
+        assert _next_call_has_image("auto", after, tmp_path) is False
+
+    def test_on_auto_the_one_shot_still_attaches(self, tmp_path):
+        """Known positive for the detector: the call right after a failure carries the page."""
+        from browser_use.agent.views import ActionResult
+
+        failed = [ActionResult(error="x", metadata={"include_screenshot": True})]
+        assert _next_call_has_image("auto", failed, tmp_path) is True

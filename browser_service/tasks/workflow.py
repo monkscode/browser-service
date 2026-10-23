@@ -115,9 +115,9 @@ def _resolve_use_vision(vision_mode: str, custom_actions_enabled: bool):
     """Map config.agent_vision_mode to the browser-use Agent use_vision argument.
 
     'on' → full vision on every step (escape hatch); 'auto' → vision-off with
-    failure-triggered escalation (registration.py attaches the screenshot to
-    the next LLM call via ActionResult metadata when find_unique_locator fails
-    validation). The escalation hook lives in the custom action, so the legacy
+    failure-triggered escalation (when find_unique_locator first fails, registration.py
+    attaches the screenshot to the next LLM call and _keep_vision_on keeps it on for
+    every later call of the run). The escalation hook lives in the custom action, so the legacy
     JS workflow (custom actions disabled) has no failure trigger — 'auto' there
     would mean permanently blind; legacy always gets full vision."""
     if not custom_actions_enabled:

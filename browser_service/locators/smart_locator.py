@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from browser_service.locators.action_fit import check_action_fit
 from browser_service.locators.frame_locator import add_frame, apply_frame_to_result, strip_frame
+from browser_service.locators.hidden_value import hides_value, node_text
 from browser_service.locators.stability import (
     POSITIONAL,
     STABLE,
@@ -471,17 +472,18 @@ async def validate_semantic_match(
         ax = getattr(node, "ax_node", None)
         ax_name = getattr(getattr(ax, "name", None), "value", getattr(ax, "name", "")) or ""
         meaningful = ""
+        attrs = node.attributes or {}
+        hidden = hides_value(attrs)  # D8: a password / secret-marked field skips its value
         try:
-            meaningful = node.get_meaningful_text_for_llm() or ""
+            meaningful = (node_text(node) if hidden else node.get_meaningful_text_for_llm()) or ""
         except Exception:
             pass
-        attrs = node.attributes or {}
         haystack_parts = [
             ax_name,
             meaningful,
             attrs.get("placeholder", ""),
             attrs.get("aria-label", ""),
-            attrs.get("value", ""),
+            "" if hidden else attrs.get("value", ""),
             (getattr(node, "node_value", None) or ""),
         ]
         _haystack_has_content = any(str(p).strip() for p in haystack_parts)
@@ -521,7 +523,9 @@ async def validate_semantic_match(
                         innerText: (el.innerText || '').trim().slice(0, 500),
                         placeholder: el.getAttribute('placeholder') || '',
                         ariaLabel: el.getAttribute('aria-label') || '',
-                        value: el.value || '',
+                        // D8: never read back a password or a secret-marked field
+                        value: ((el.type || '').toLowerCase() === 'password'
+                            || el.hasAttribute('nlrf-secret')) ? '' : (el.value || ''),
                         labelText: labelText.slice(0, 500),
                         labelledbyText: labelledbyText.slice(0, 500),
                         tagName: el.tagName || '',

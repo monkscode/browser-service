@@ -327,6 +327,66 @@ async def test_register_custom_actions_passes_secrets():
     assert seen["specs"]["elem_1"]["value"] == "{{PW}}"  # the spec keeps the name
 
 
+MARK_SCRIPT = "el => el.setAttribute('nlrf-secret', '')"
+
+
+async def test_secret_field_marked_before_typing(type_event, all_logs):
+    """D8: the step's field is marked BEFORE the sensitive typing, so no later read shows it."""
+    page, loc = _page([V])
+    order: list = []
+
+    async def _marked(script, **kwargs):
+        order.append(("mark", script))
+
+    loc.evaluate.side_effect = _marked
+    type_event.side_effect = lambda **kw: order.append(("type", None)) or MagicMock()
+
+    # `_session` hands back a plain event; the dispatch itself is what we order against.
+    await _interact("{{PW}}", {"PW": V}, page)
+
+    assert order[0] == ("mark", MARK_SCRIPT)
+    assert ("type", None) in order
+    assert order.index(("mark", MARK_SCRIPT)) < order.index(("type", None))
+
+
+async def test_plain_value_never_marks(type_event, all_logs):
+    page, loc = _page([])
+
+    await _interact("plain", None, page)
+
+    loc.evaluate.assert_not_awaited()
+
+
+async def test_mark_failure_never_prints(type_event, all_logs):
+    page, loc = _page([V])
+    loc.evaluate.side_effect = Exception(f"bad {V}")
+
+    note, status, _, _, performed = await _interact("{{PW}}", {"PW": V}, page)
+
+    assert type_event.call_args.kwargs["text"] == V  # typing still happened
+    assert status == "auto_ok"
+    assert performed == {"elem_1"}
+    assert "Exception" in all_logs.text
+    _never_shown(all_logs, note)
+
+
+@pytest.mark.integration
+async def test_secret_field_carries_the_mark_on_a_real_page(type_event, all_logs):
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        try:
+            page = await browser.new_page()
+            await page.set_content('<input id="u"><input id="v">')
+            await _interact("{{PW}}", {"PW": V}, page, locator_str="#u")
+            assert await page.locator("#u").get_attribute("nlrf-secret") == ""
+            await _interact("plain", None, page, locator_str="#v")
+            assert await page.locator("#v").get_attribute("nlrf-secret") is None
+        finally:
+            await browser.close()
+
+
 @pytest.mark.integration
 async def test_prefilled_field_corrected_on_a_real_page(type_event, all_logs):
     from playwright.async_api import async_playwright

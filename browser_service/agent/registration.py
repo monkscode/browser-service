@@ -38,6 +38,7 @@ from typing import Optional
 
 from browser_service.locators.action_fit import READ_ACTIONS
 from browser_service.locators.frame_locator import strip_frame
+from browser_service.locators.hidden_value import SECRET_MARK, hides_value, node_text
 from browser_service.locators.read_change import (
     CAME_BACK,
     NOT_CAME_BACK,
@@ -143,7 +144,8 @@ def _extract_dom_node_attributes(dom_node) -> dict:
         "dataTestId": attrs.get("data-testid", "") or attrs.get("data-test", ""),
         "dataTestAttr": data_test_attr,
         "type": attrs.get("type", ""),  # For input elements
-        "value": attrs.get("value", ""),  # Current value of input
+        # A password / secret-marked field never reports what it holds (D8).
+        "value": "" if hides_value(attrs) else attrs.get("value", ""),  # Current value of input
         "xpath": dom_node.xpath if hasattr(dom_node, "xpath") else "",
         "backendNodeId": _backend_node_id(dom_node),
     }
@@ -161,9 +163,14 @@ def _dom_node_text(dom_node) -> str:
     The preferred accessor wins whenever it EXISTS, mirroring the if/elif this
     replaced: an empty meaningful text is an answer, not a reason to fall back.
 
+    A password input or a secret-marked field skips its value (D8): browser-use reads
+    the ``value`` attribute first, and a React page copies what was typed into it.
+
     Returns:
         The node's text, always a str — never None.
     """
+    if hides_value(getattr(dom_node, "attributes", None)):
+        return node_text(dom_node)
     if hasattr(dom_node, "get_meaningful_text_for_llm"):
         return dom_node.get_meaningful_text_for_llm() or ""
     if hasattr(dom_node, "get_all_children_text"):
@@ -594,6 +601,18 @@ def _step_locator(active_page, locator_str: str, iframe_context: str | None):
     step's frame — the form Browser Library turns ``<frame> >>> <locator>`` into."""
     root = active_page.frame_locator(iframe_context) if iframe_context else active_page
     return root, root.locator(strip_frame(locator_str, iframe_context))
+
+
+async def _mark_secret_field(active_page, locator_str: str, iframe_context: str | None) -> None:
+    """Mark the step's field before a secret is typed, so no later read of it shows the value (D8).
+
+    A failure logs the exception type only (its message could hold the field's text)
+    and typing carries on."""
+    try:
+        _, loc = _step_locator(active_page, locator_str, iframe_context)
+        await loc.evaluate(f"el => el.setAttribute('{SECRET_MARK}', '')", timeout=2000)
+    except Exception as e:
+        logger.warning(f"   ⚠️ could not mark the secret field: {type(e).__name__}")
 
 
 async def _field_holds(
@@ -1108,6 +1127,7 @@ async def _do_interaction(
     secret = secret_name(value, secrets) if action in ("input", "type", "select") else None
     if secret:
         value = secrets[secret]
+        await _mark_secret_field(active_page, locator_str, iframe_context)
 
     # check/uncheck skip the event path entirely — browser-use has no state-aware check event.
     # Tom Select skips it too: SelectDropdownOptionEvent targets native <select> elements;

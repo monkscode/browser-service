@@ -168,7 +168,8 @@ def register_routes(app: Flask, task_processor: Any) -> None:
                 "elements": [{"id": "elem_1", "description": "...", "action": "input"}, ...],
                 "url": "https://example.com",
                 "user_query": "search for shoes and get product name",
-                "enable_custom_actions": true  // Optional: Enable/disable custom actions (defaults to config value)
+                "enable_custom_actions": true,  // Optional: Enable/disable custom actions (defaults to config value)
+                "secrets": {"PW": "..."}  // Optional: a step whose value is exactly {{PW}} is typed with it
             }
 
         Response JSON:
@@ -199,6 +200,9 @@ def register_routes(app: Flask, task_processor: Any) -> None:
             parent_workflow_id = data.get("parent_workflow_id")  # Optional
             org_id = data.get("org_id")  # Optional: correlation/observability
             user_id = data.get("user_id")  # Optional: correlation/observability
+            secrets = data["secrets"]  # NAME -> value; never logged, only counted
+            if secrets:
+                logger.info(f"🔑 secrets: {len(secrets)} name(s)")
 
             # Feature flag: enable_custom_actions (defaults to config value if not provided)
             if enable_custom_actions is None:
@@ -258,6 +262,7 @@ def register_routes(app: Flask, task_processor: Any) -> None:
                 parent_workflow_id,  # Pass parent_workflow_id to prevent duplicate metrics
                 org_id,
                 user_id,
+                secrets,
             )
             if not accepted:
                 active_count = task_processor.count_active_tasks()

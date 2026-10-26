@@ -89,6 +89,68 @@ class TestValidateWorkflowRequest:
         assert data["user_query"] == ""
         assert data["session_config"] == {}
 
+    _ELEMENTS = [
+        {"id": "e1", "description": "Password field", "action": "input", "value": "{{PW}}"}
+    ]
+
+    def test_secrets_passed_through(self):
+        """A secrets map of NAME -> value reaches the workflow unchanged."""
+        req = _make_flask_request({"elements": self._ELEMENTS, "secrets": {"PW": "x-made-up-1"}})
+        is_valid, error, data = validate_workflow_request(req)
+        assert is_valid is True, error
+        assert data["secrets"] == {"PW": "x-made-up-1"}
+
+    def test_old_shape_unchanged(self):
+        """A request without secrets keeps today's keys and values; secrets is empty."""
+        body = {
+            "elements": self._ELEMENTS,
+            "url": "https://example.com",
+            "user_query": "q",
+            "session_config": {"headless": True},
+            "enable_custom_actions": True,
+            "parent_workflow_id": "p",
+            "org_id": "o",
+            "user_id": "u",
+        }
+        is_valid, error, data = validate_workflow_request(_make_flask_request(body))
+        assert is_valid is True, error
+        assert data.pop("secrets") == {}
+        assert data == body
+
+    @pytest.mark.parametrize(
+        "secrets",
+        [
+            [],
+            "x",
+            {"pw": "v"},
+            {"1A": "v"},
+            {"A" * 65: "v"},
+            {"PW": ""},
+            {"PW": 5},
+            {"PW": "a\nb"},
+            {"PW": "a\rb"},
+        ],
+    )
+    def test_bad_secrets_rejected(self, secrets):
+        """secrets must be an object of upper-case NAME -> non-empty string."""
+        req = _make_flask_request({"elements": self._ELEMENTS, "secrets": secrets})
+        is_valid, error, data = validate_workflow_request(req)
+        assert is_valid is False
+        assert data is None
+        assert "secrets" in error
+
+    def test_bad_secrets_error_never_shows_the_value(self):
+        req = _make_flask_request({"elements": self._ELEMENTS, "secrets": {"pw": "x-made-up-1"}})
+        is_valid, error, _ = validate_workflow_request(req)
+        assert is_valid is False
+        assert "x-made-up-1" not in error
+
+    def test_line_break_error_never_shows_the_value(self):
+        req = _make_flask_request({"elements": self._ELEMENTS, "secrets": {"PW": "x-made-up-1\nz"}})
+        is_valid, error, _ = validate_workflow_request(req)
+        assert is_valid is False
+        assert "x-made-up-1" not in error
+
 
 class TestFormatTaskResponse:
     """Tests for task response formatting."""

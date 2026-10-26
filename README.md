@@ -185,6 +185,9 @@ curl http://localhost:4999/query/<task_id>
 `session_config` and `enable_custom_actions` are optional. Submission returns
 `429` when `MAX_CONCURRENT_TASKS` tasks are already active.
 
+`secrets` is optional: an object of NAME → value; a step whose value is exactly
+`{{NAME}}` is typed with that value, which is never logged or returned.
+
 ## Contributing
 
 Issues and pull requests: [GitHub](https://github.com/monkscode/browser-service/issues).

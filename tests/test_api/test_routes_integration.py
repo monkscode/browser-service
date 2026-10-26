@@ -119,6 +119,22 @@ class TestWorkflowSubmit:
         data = resp.get_json()
         assert "task_id" in data
 
+    def test_workflow_submit_hands_secrets_to_the_task(self, client, processor):
+        """The secrets map is the last argument handed to process_workflow_task."""
+        resp = client.post(
+            "/workflow",
+            json={
+                "elements": [
+                    {"id": "e1", "description": "Password", "action": "input", "value": "{{PW}}"}
+                ],
+                "url": "https://example.com",
+                "secrets": {"PW": "x-made-up-1"},
+            },
+        )
+        assert resp.status_code == 202
+        args = processor.try_submit_task.call_args.args
+        assert args[-1] == {"PW": "x-made-up-1"}
+
     def test_explicit_enable_custom_actions_is_accepted(self, client):
         """A request that sets enable_custom_actions is honoured (not just the default)."""
         resp = client.post(

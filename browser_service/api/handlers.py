@@ -12,11 +12,15 @@ Functions:
 """
 
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from flask import Request
 
 logger = logging.getLogger(__name__)
+
+# NLRF upper-cases a secret's name before it sends the map.
+_SECRET_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 
 
 def validate_workflow_request(
@@ -68,6 +72,27 @@ def validate_workflow_request(
     org_id = data.get("org_id")  # Optional: correlation/observability
     user_id = data.get("user_id")  # Optional: correlation/observability
 
+    # Optional: NAME -> value for steps whose value is exactly {{NAME}}. The error
+    # names the rule only — never a value.
+    secrets = data.get("secrets")
+    if secrets is None:
+        secrets = {}
+    if not isinstance(secrets, dict) or not all(
+        isinstance(name, str)
+        and _SECRET_NAME_RE.fullmatch(name)
+        and isinstance(value, str)
+        and value
+        and "\n" not in value  # browser-use types a line break as Enter, submitting mid-value
+        and "\r" not in value
+        for name, value in secrets.items()
+    ):
+        return (
+            False,
+            "Invalid 'secrets' field. Must be an object of NAME -> non-empty string without line breaks, "
+            "each NAME matching [A-Z][A-Z0-9_]{0,63}.",
+            None,
+        )
+
     # Return validated data
     validated_data = {
         "elements": elements,
@@ -78,6 +103,7 @@ def validate_workflow_request(
         "parent_workflow_id": parent_workflow_id,
         "org_id": org_id,
         "user_id": user_id,
+        "secrets": secrets,
     }
 
     return True, None, validated_data

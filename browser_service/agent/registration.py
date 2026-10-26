@@ -610,7 +610,10 @@ async def _mark_secret_field(active_page, locator_str: str, iframe_context: str 
     and typing carries on."""
     try:
         _, loc = _step_locator(active_page, locator_str, iframe_context)
-        await loc.evaluate(f"el => el.setAttribute('{SECRET_MARK}', '')", timeout=2000)
+        # A label's mark goes to the field it controls (Playwright fill types into label.control).
+        await loc.evaluate(
+            f"el => (el.control || el).setAttribute('{SECRET_MARK}', '')", timeout=2000
+        )
     except Exception as e:
         logger.warning(f"   ⚠️ could not mark the secret field: {type(e).__name__}")
 

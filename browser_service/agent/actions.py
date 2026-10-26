@@ -38,6 +38,7 @@ from browser_service.agent.read_step_identity import read_identity_facts, read_s
 from browser_service.locators.action_fit import READ_ACTIONS, check_action_fit
 from browser_service.locators.classifier import classify_element_type
 from browser_service.locators.frame_locator import ensure_frame_on_result, strip_frame
+from browser_service.locators.hidden_value import HIDES_VALUE_JS
 from browser_service.locators.read_target import apply_read_target_policy
 from browser_service.locators.stability import (
     STABLE,
@@ -67,10 +68,15 @@ logger = logging.getLogger(__name__)
 # path's extraction JS lowercases explicitly and browser-use's element_data is
 # lowercase. nlrf falls back to element_info['tagName'] for element_type, so an
 # UPPERCASE value here would change assembler prompt text on this path alone.
-_RESOLVED_ELEMENT_JS = """el => ({
+# textContent is '' for a hidden-value field (password / secret-marked): React leaves a textarea's
+# typed text as its child text (D12).
+_RESOLVED_ELEMENT_JS = (
+    """el => ({
     id: typeof el.id === 'string' ? el.id : '',
     tagName: typeof el.tagName === 'string' ? el.tagName.toLowerCase() : '',
-    textContent: (el.textContent || '').trim().slice(0, 500),
+    textContent: """
+    + HIDES_VALUE_JS
+    + """(el) ? '' : (el.textContent || '').trim().slice(0, 500),
     className: typeof el.className === 'string' ? el.className : '',
     ariaInvalid: el.getAttribute('aria-invalid') || '',
     parentClassName: (el.parentElement && typeof el.parentElement.className === 'string')
@@ -80,6 +86,7 @@ _RESOLVED_ELEMENT_JS = """el => ({
     role: el.getAttribute('role') || '',
     type: el.getAttribute('type') || ''
 })"""
+)
 
 
 # The read runs immediately after count()==1, so the element exists and the

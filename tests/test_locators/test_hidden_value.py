@@ -64,7 +64,7 @@ def test_node_text_order_never_value():
     assert node_text(Node({"title": "T", "placeholder": "P", "value": V})) == "T"
     assert node_text(Node({"placeholder": "P", "value": V})) == "P"
     assert node_text(Node({"alt": "Al", "value": V})) == "Al"
-    assert node_text(Node({"value": V}, children_text=" kid ")) == "kid"
+    assert node_text(Node({"value": V}, children_text=" kid ")) == ""  # never child text (D12)
     assert node_text(Node({"value": V})) == ""
 
 
@@ -118,3 +118,31 @@ def test_extract_attributes_blanks_the_value_when_hidden():
 def test_extract_attributes_keeps_other_values():
     assert _extract_dom_node_attributes(Node({"type": "radio", "value": "yes"}))["value"] == "yes"
     assert _extract_dom_node_attributes(Node(PLAIN))["value"] == V
+
+
+# D12: React keeps a controlled textarea's text as a text CHILD, and a contenteditable's text is
+# its child text -- the DOM node of a marked one must report none of it.
+EDITABLE = {"contenteditable": "true", SECRET_MARK: ""}
+TEXTAREA = {"placeholder": "", SECRET_MARK: ""}
+
+
+def test_node_text_of_a_hidden_node_with_only_child_text_is_empty():
+    assert node_text(Node(EDITABLE, children_text=V)) == ""
+    assert node_text(Node(TEXTAREA, children_text=V)) == ""
+
+
+def test_dom_node_text_hides_a_marked_editable_and_textarea_child_text():
+    assert V not in _dom_node_text(Node(EDITABLE, children_text=V))
+    assert V not in _dom_node_text(Node(TEXTAREA, children_text=V))
+
+
+def test_dom_node_text_unmarked_editable_unchanged():
+    assert _dom_node_text(Node({"contenteditable": "true"}, children_text=V)) == V
+
+
+async def test_semantic_marked_editable_never_prints_the_value(caplog):
+    caplog.set_level(logging.DEBUG)
+    # (an empty surface on an interactive tag is accepted by the existing probe-18 carve-out)
+    _, observed = await validate_semantic_match(Node(EDITABLE, children_text=V), "Sign in button")
+    assert V not in observed
+    assert V not in caplog.text

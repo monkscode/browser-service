@@ -327,7 +327,7 @@ async def test_register_custom_actions_passes_secrets():
     assert seen["specs"]["elem_1"]["value"] == "{{PW}}"  # the spec keeps the name
 
 
-MARK_SCRIPT = "el => el.setAttribute('nlrf-secret', '')"
+MARK_SCRIPT = "el => (el.control || el).setAttribute('nlrf-secret', '')"
 
 
 async def test_secret_field_marked_before_typing(type_event, all_logs):

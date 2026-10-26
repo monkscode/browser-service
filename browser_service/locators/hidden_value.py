@@ -5,9 +5,10 @@ An element hides its value when it is ``<input type=password>`` (browser-use's o
 serializer never shows a password value) or carries bs's mark attribute, which
 ``_do_interaction`` sets on a step's field right before typing an org secret into it.
 Every bs reader of an element's text then skips the value, so a re-located field reports
-its aria-label / title / placeholder / alt / child text -- never what was typed. React
-controlled inputs copy typed text into the ``value`` attribute, which browser-use's
-``get_meaningful_text_for_llm`` reads first.
+its aria-label / title / placeholder / alt -- never what was typed. React controlled inputs
+copy typed text into the ``value`` attribute, which browser-use's
+``get_meaningful_text_for_llm`` reads first; a React textarea and a contenteditable keep it as
+CHILD text, so child text is never a fallback either (D12).
 
 Referenced by: agent/registration.py, locators/read_target.py, locators/smart_locator.py
 Depends on: nothing
@@ -33,9 +34,11 @@ def hides_value(attrs: dict | None) -> bool:
 
 
 def node_text(node) -> str:
-    """browser-use's ``get_meaningful_text_for_llm`` order WITHOUT ``value``; always a str."""
+    """browser-use's order WITHOUT ``value`` and WITHOUT child text; always a str.
+
+    Called only for a node that hides its value, whose child text may hold what was typed."""
     attrs = getattr(node, "attributes", None) or {}
     for name in ("aria-label", "title", "placeholder", "alt"):
         if attrs.get(name):
             return str(attrs[name]).strip()
-    return (node.get_all_children_text() or "").strip()
+    return ""

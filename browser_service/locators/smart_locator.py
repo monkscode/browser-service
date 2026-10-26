@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from browser_service.locators.action_fit import check_action_fit
 from browser_service.locators.frame_locator import add_frame, apply_frame_to_result, strip_frame
-from browser_service.locators.hidden_value import hides_value, node_text
+from browser_service.locators.hidden_value import HIDES_VALUE_JS, hides_value, node_text
 from browser_service.locators.stability import (
     POSITIONAL,
     STABLE,
@@ -502,7 +502,11 @@ async def validate_semantic_match(
                 return False, f"[Element count={count}, expected 1]"
             info = await el.evaluate(
                 """el => {
-                    const tc = (el.textContent || '').trim();
+                    // D8 / D12: a hidden-value field (password / secret-marked) shows no typed text
+                    const h = """
+                + HIDES_VALUE_JS
+                + """(el);
+                    const tc = h ? '' : (el.textContent || '').trim();
                     const doc = el.ownerDocument;
                     const labelText = el.labels
                         ? Array.from(el.labels)
@@ -520,12 +524,10 @@ async def validate_semantic_match(
                     return {
                         textContent: tc.slice(0, 500),
                         textContentLength: tc.length,
-                        innerText: (el.innerText || '').trim().slice(0, 500),
+                        innerText: h ? '' : (el.innerText || '').trim().slice(0, 500),
                         placeholder: el.getAttribute('placeholder') || '',
                         ariaLabel: el.getAttribute('aria-label') || '',
-                        // D8: never read back a password or a secret-marked field
-                        value: ((el.type || '').toLowerCase() === 'password'
-                            || el.hasAttribute('nlrf-secret')) ? '' : (el.value || ''),
+                        value: h ? '' : (el.value || ''),
                         labelText: labelText.slice(0, 500),
                         labelledbyText: labelledbyText.slice(0, 500),
                         tagName: el.tagName || '',
@@ -4932,7 +4934,11 @@ async def find_unique_locator_at_coordinates(
                 if (!element) return null;
                 
                 const rect = element.getBoundingClientRect();
-                
+                // D8 / D12: a hidden-value field (password / secret-marked) shows no typed text
+                const hid = """
+            + HIDES_VALUE_JS
+            + """(element);
+
                 // Get all attributes
                 const attrs = {};
                 for (let attr of element.attributes) {
@@ -4964,9 +4970,9 @@ async def find_unique_locator_at_coordinates(
                     id: element.id || '',
                     name: element.name || '',
                     className: element.className || '',
-                    textContent: element.textContent?.trim().substring(0, 100) || '',
-                    innerText: element.innerText?.trim().substring(0, 100) || '',
-                    value: element.value || '',
+                    textContent: hid ? '' : element.textContent?.trim().substring(0, 100) || '',
+                    innerText: hid ? '' : element.innerText?.trim().substring(0, 100) || '',
+                    value: hid ? '' : element.value || '',
                     placeholder: element.placeholder || '',
                     title: element.title || '',
                     alt: element.alt || '',

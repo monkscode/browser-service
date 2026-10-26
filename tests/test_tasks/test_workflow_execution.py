@@ -1042,6 +1042,17 @@ class TestCustomActionRegistrationFallback:
 
         register.assert_not_called()
 
+    def test_secrets_reach_registration(self, workflow_harness):
+        """The request's secrets map is handed to register_custom_actions, never to Agent."""
+        from browser_service.tasks import workflow as wf
+
+        arm(workflow_harness, [])
+
+        with patch.object(wf, "register_custom_actions", return_value=True) as register:
+            run_workflow(workflow_harness, secrets={"PW": "x-made-up-1"})
+
+        assert register.call_args.kwargs["secrets"] == {"PW": "x-made-up-1"}
+
 
 class TestTokenAccounting:
     """Tests for token usage, which drives cost reporting."""

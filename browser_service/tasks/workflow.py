@@ -543,6 +543,7 @@ def process_workflow_task(
     parent_workflow_id: Optional[str] = None,
     org_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    secrets: Optional[Dict[str, str]] = None,
 ) -> None:
     """
     Process elements as a UNIFIED WORKFLOW in a single browser session.
@@ -565,6 +566,8 @@ def process_workflow_task(
         user_query: Full user query for context (e.g., "search for shoes and get product name")
         session_config: Browser configuration
         enable_custom_actions: Optional flag to enable/disable custom actions (defaults to config value)
+        secrets: Optional NAME -> value for steps whose value is exactly {{NAME}}; handed only to
+                 register_custom_actions (never to the Agent), never logged
     """
     bind_request_context(workflow_id=parent_workflow_id or task_id, org_id=org_id, user_id=user_id)
 
@@ -838,7 +841,7 @@ def process_workflow_task(
                 # expected element IDs have been processed, terminating the agent loop without
                 # relying on the LLM to call done() with the correct JSON format.
                 custom_actions_enabled = register_custom_actions(
-                    agent, page=None, elements=elements
+                    agent, page=None, elements=elements, secrets=secrets
                 )
 
                 if custom_actions_enabled:

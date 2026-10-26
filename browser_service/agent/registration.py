@@ -1052,7 +1052,7 @@ async def _do_interaction(
     return note, status, action, value
 
 
-def register_custom_actions(agent, page=None, elements=None) -> bool:
+def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bool:
     """
     Register custom actions with browser-use agent.
 

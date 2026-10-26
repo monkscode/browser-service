@@ -2165,7 +2165,8 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                         elif _action in ("input", "type", "select") and (
                             _secret := secret_name(_value, _secrets)
                         ):
-                            # D18: no fallback call, no placeholder — the agent must not type it.
+                            # D18: no fallback call, no placeholder. browser-use 0.13.7 drops this note
+                            # (long_term_memory is set); it shows only in its Final Result log line.
                             _verb, _does = (
                                 ("select", "selects") if _action == "select" else ("input", "types")
                             )

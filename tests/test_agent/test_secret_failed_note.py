@@ -1,10 +1,12 @@
 """
-A failed secret step tells the agent to move on, never to type the placeholder
-(NLRF #131 Part 2, D18; the D19 pin on browser-use's sensitive fields).
+A failed secret step's note names ``<NAME>`` and never asks for the placeholder
+to be typed (NLRF #131 Part 2, D18; the D19 pin on browser-use's sensitive fields).
 
 When ``_do_interaction`` reports ``auto_failed`` for a step whose value is
-``{{NAME}}``, the old note told the agent to call ``input(text="{{NAME}}")``: a
-wrong action and a wasted step. The note now names ``<NAME>`` and moves on.
+``{{NAME}}``, the old note said ``input(text="{{NAME}}")``. The note is
+``extracted_content``, which browser-use 0.13.7 drops while ``long_term_memory``
+is set (always, here) -- today it shows only in browser-use's Final Result log
+line; this keeps it name-safe if an upgrade ever shows it to the agent.
 Made-up values only.
 """
 

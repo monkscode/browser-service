@@ -89,7 +89,9 @@ class TestValidateWorkflowRequest:
         assert data["user_query"] == ""
         assert data["session_config"] == {}
 
-    _ELEMENTS = [{"id": "e1", "description": "Password field", "action": "input", "value": "{{PW}}"}]
+    _ELEMENTS = [
+        {"id": "e1", "description": "Password field", "action": "input", "value": "{{PW}}"}
+    ]
 
     def test_secrets_passed_through(self):
         """A secrets map of NAME -> value reaches the workflow unchanged."""

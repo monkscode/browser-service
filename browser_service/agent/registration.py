@@ -442,6 +442,29 @@ def _get_cdp_url_from_session(browser_session) -> Optional[str]:
 _RF_SELECT_PREFIXES = frozenset({"label", "value", "text", "index"})
 
 
+# Must match NLRF's _SECRET_VALUE_RE (element_identification.py): the WHOLE value is
+# {{ NAME }}, any case, spaces allowed inside the braces; NLRF upper-cases the name.
+_SECRET_VALUE_RE = re.compile(r"\{\{\s*([A-Za-z][A-Za-z0-9_]{0,63})\s*\}\}")
+
+
+def secret_name(value: str, secrets: dict[str, str]) -> str | None:
+    """NAME when the whole value is ``{{ NAME }}`` and NAME (upper-cased) is a key of
+    ``secrets``; else None — the value is then typed literally, as today."""
+    match = _SECRET_VALUE_RE.fullmatch(value) if isinstance(value, str) else None
+    name = match.group(1).upper() if match else None
+    return name if name in secrets else None
+
+
+def _shown(value: str, secret: str | None) -> str:
+    """What a note or log line shows for a value: ``<NAME>`` for a secret."""
+    return f"<{secret}>" if secret else value
+
+
+def _error_text(error: Exception, secret: str | None):
+    """An exception as a note or log line shows it: its type only when a secret is in play."""
+    return type(error).__name__ if secret else error
+
+
 def _strip_rf_select_prefix(value: str) -> str:
     """Strip the Robot Framework Select Options By strategy prefix from a value string.
 
@@ -481,13 +504,22 @@ async def _wait_for_page_stability(active_page) -> None:
 
 
 async def _dispatch_browser_use_event(
-    browser_session, node, action: str, value: str, element_id: str, performed_actions: set
+    browser_session,
+    node,
+    action: str,
+    value: str,
+    element_id: str,
+    performed_actions: set,
+    secret: str | None = None,
 ):
     """Attempt the interaction via browser-use's built-in event bus (preferred path).
 
     Returns (note, status) on success or not_applicable.
     Returns (None, None) as the universal fall-through signal — Playwright path retries.
-    performed_actions.add() is called ONLY on confirmed success, never on fall-through."""
+    performed_actions.add() is called ONLY on confirmed success, never on fall-through.
+
+    secret is the NAME when value is an org secret: the event is marked sensitive (browser-use
+    then logs ``<NAME>``) and the note and log show ``<NAME>``, never the value."""
     from browser_use.browser.events import (
         ClickElementEvent,
         SelectDropdownOptionEvent,
@@ -499,15 +531,22 @@ async def _dispatch_browser_use_event(
             if not value:
                 return "", "not_applicable"
             event = browser_session.event_bus.dispatch(
-                TypeTextEvent(node=node, text=value, clear=True)
+                TypeTextEvent(
+                    node=node,
+                    text=value,
+                    clear=True,
+                    is_sensitive=secret is not None,
+                    sensitive_key_name=secret,
+                )
             )
             await event
             await event.event_result(raise_if_any=True, raise_if_none=False)
             # TypeTextEvent types via CDP key events (character-by-character) — reliable if no exception raised.
             # Returns {input_x, input_y, actual_value} (0.12.6, re-verified 0.13.7). Built-in concatenation-detection retry
-            # self-corrects append-instead-of-replace without caller intervention. No explicit verification needed.
+            # self-corrects append-instead-of-replace without caller intervention — but NOT for a
+            # sensitive event, so _do_interaction checks a secret's field itself.
             performed_actions.add(element_id)
-            return f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}'", "auto_ok"
+            return f"\n✅ AUTO-ACTION COMPLETE: Typed '{_shown(value, secret)}'", "auto_ok"
 
         elif action in ("click", "submit"):
             event = browser_session.event_bus.dispatch(ClickElementEvent(node=node))
@@ -544,8 +583,57 @@ async def _dispatch_browser_use_event(
 
     except Exception as e:
         # Unexpected error in event path — log and fall through to Playwright.
-        logger.warning(f"   AUTO-ACTION event path error for {element_id} ({action}): {e}")
+        logger.warning(
+            f"   AUTO-ACTION event path error for {element_id} ({action}): {_error_text(e, secret)}"
+        )
         return None, None
+
+
+def _step_locator(active_page, locator_str: str, iframe_context: str | None):
+    """(root, locator) for a step: the page, or Playwright's own frame locator for the
+    step's frame — the form Browser Library turns ``<frame> >>> <locator>`` into."""
+    root = active_page.frame_locator(iframe_context) if iframe_context else active_page
+    return root, root.locator(strip_frame(locator_str, iframe_context))
+
+
+async def _field_holds(
+    active_page, locator_str: str, iframe_context: str | None, expected: str
+) -> bool:
+    """True when the step's field holds ``expected``, or cannot be read (a contenteditable
+    editor) — then the typing result stands, as the fill tier accepts an unread fill."""
+    try:
+        _, loc = _step_locator(active_page, locator_str, iframe_context)
+        return await loc.input_value(timeout=2000) == expected
+    except Exception:
+        return True
+
+
+async def _event_result_stands(
+    active_page,
+    locator_str: str,
+    iframe_context: str | None,
+    element_id: str,
+    performed_actions: set,
+    status: str,
+    value: str,
+    secret: str | None,
+) -> bool:
+    """False when a secret's sensitive typing left its field without the secret.
+
+    A sensitive event skips browser-use's own read-back and "field not cleared" retry, so
+    a pre-filled field can keep its old text. The caller then falls through to the
+    Playwright fill() tier — one fill, the action no longer counted as performed."""
+    if (
+        not secret
+        or status != "auto_ok"
+        or await _field_holds(active_page, locator_str, iframe_context, value)
+    ):
+        return True
+    performed_actions.discard(element_id)
+    logger.info(
+        f"   🔑 {element_id}: the field does not hold <{secret}> after typing — typing it with fill()"
+    )
+    return False
 
 
 async def _do_interaction_playwright(
@@ -559,8 +647,13 @@ async def _do_interaction_playwright(
     select_id: str | None = None,
     datepicker_framework: str = "",
     iframe_context: str | None = None,
+    secret: str | None = None,
 ):
     """Playwright fallback with layered retry chains.
+
+    secret is the NAME when value is an org secret: every note and log line shows
+    ``<NAME>`` where it would show the value or the field's read-back, and an exception
+    by its type only.
 
     Each action type runs through multiple strategies in order, stopping at first success.
     All strategies exhausted → auto_failed. performed_actions.add() only on confirmed success.
@@ -573,9 +666,9 @@ async def _do_interaction_playwright(
     performed on the element the generated test will act on. A frame that cannot be
     entered fails the strategies; nothing is ever tried at page level, where the inner
     locator can name a different element."""
+    shown = _shown(value, secret)
     try:
-        root = active_page.frame_locator(iframe_context) if iframe_context else active_page
-        loc = root.locator(strip_frame(locator_str, iframe_context))
+        root, loc = _step_locator(active_page, locator_str, iframe_context)
         if action in ("input", "type"):
             if not value:
                 return "", "not_applicable"
@@ -604,15 +697,16 @@ async def _do_interaction_playwright(
                     if diag == "ok":
                         performed_actions.add(element_id)
                         return (
-                            f"\n✅ AUTO-ACTION COMPLETE: Set date '{value}' (flatpickr setDate JS)",
+                            f"\n✅ AUTO-ACTION COMPLETE: Set date '{shown}' (flatpickr setDate JS)",
                             "auto_ok",
                         )
                     logger.info(
-                        f"   ⚠️ flatpickr.tier0_js_failed: reason={diag} locator={locator_str!r} value={value!r}"
+                        f"   ⚠️ flatpickr.tier0_js_failed: reason={diag} locator={locator_str!r} value={shown!r}"
                     )
                 except Exception as e:
                     logger.warning(
-                        f"   ⚠️ flatpickr.tier0_exception: locator={locator_str!r} error={e}"
+                        f"   ⚠️ flatpickr.tier0_exception: locator={locator_str!r} "
+                        f"error={_error_text(e, secret)}"
                     )
                 # Fall through to the generic input tiers — fail-open,
                 # same contract as the Tom Select JS tiers.
@@ -625,20 +719,21 @@ async def _do_interaction_playwright(
                     if actual == value:
                         performed_actions.add(element_id)
                         return (
-                            f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (fill, verified)",
+                            f"\n✅ AUTO-ACTION COMPLETE: Typed '{shown}' (fill, verified)",
                             "auto_ok",
                         )
                     # the page reformatted the value (a mask, maxlength): the test's Fill Text gets the same
                     performed_actions.add(element_id)
+                    field_shows = "another value" if secret else f"'{actual}'"
                     return (
-                        f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (fill, field shows '{actual}')",
+                        f"\n✅ AUTO-ACTION COMPLETE: Typed '{shown}' (fill, field shows {field_shows})",
                         "auto_partial",
                     )
                 except Exception:
                     # input_value() unsupported (e.g. contenteditable) — accept fill result
                     performed_actions.add(element_id)
                     return (
-                        f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (fill, unverified)",
+                        f"\n✅ AUTO-ACTION COMPLETE: Typed '{shown}' (fill, unverified)",
                         "auto_partial",
                     )
             except Exception:
@@ -652,12 +747,13 @@ async def _do_interaction_playwright(
                 )
                 performed_actions.add(element_id)
                 return (
-                    f"\n✅ AUTO-ACTION COMPLETE: Typed '{value}' (JS, unverified)",
+                    f"\n✅ AUTO-ACTION COMPLETE: Typed '{shown}' (JS, unverified)",
                     "auto_partial",
                 )
             except Exception as e:
                 return (
-                    f"\n⚠️ AUTO-ACTION FAILED (input): all strategies exhausted — {e}",
+                    f"\n⚠️ AUTO-ACTION FAILED (input): all strategies exhausted — "
+                    f"{_error_text(e, secret)}",
                     "auto_failed",
                 )
 
@@ -730,16 +826,16 @@ async def _do_interaction_playwright(
                         if diag == "ok":
                             performed_actions.add(element_id)
                             return (
-                                f"\n✅ AUTO-SELECT: Selected '{value}' (Tom Select JS via select_id)",
+                                f"\n✅ AUTO-SELECT: Selected '{shown}' (Tom Select JS via select_id)",
                                 "auto_ok",
                             )
                         else:
                             logger.info(
-                                f"   ⚠️ tom_select.tier0_js_failed: reason={diag} select_id={select_id!r} value={value!r}"
+                                f"   ⚠️ tom_select.tier0_js_failed: reason={diag} select_id={select_id!r} value={shown!r}"
                             )
                     except Exception as e:
                         logger.warning(
-                            f"   ⚠️ tom_select.tier0_exception: select_id={select_id!r} error={e}"
+                            f"   ⚠️ tom_select.tier0_exception: select_id={select_id!r} error={_error_text(e, secret)}"
                         )
 
                 # Tier 0b: locator-based traversal when select_id is unavailable.
@@ -778,16 +874,16 @@ async def _do_interaction_playwright(
                     if diag == "ok":
                         performed_actions.add(element_id)
                         return (
-                            f"\n✅ AUTO-SELECT: Selected '{value}' (Tom Select JS via locator)",
+                            f"\n✅ AUTO-SELECT: Selected '{shown}' (Tom Select JS via locator)",
                             "auto_ok",
                         )
                     else:
                         logger.info(
-                            f"   ⚠️ tom_select.tier0b_js_failed: reason={diag} locator={locator_str!r} value={value!r}"
+                            f"   ⚠️ tom_select.tier0b_js_failed: reason={diag} locator={locator_str!r} value={shown!r}"
                         )
                 except Exception as e:
                     logger.warning(
-                        f"   ⚠️ tom_select.tier0b_exception: locator={locator_str!r} error={e}"
+                        f"   ⚠️ tom_select.tier0b_exception: locator={locator_str!r} error={_error_text(e, secret)}"
                     )
 
                 # Fall through to click-to-open as last resort for Tom Select.
@@ -799,7 +895,7 @@ async def _do_interaction_playwright(
                 try:
                     await loc.select_option(label=value, timeout=2000)
                     performed_actions.add(element_id)
-                    return f"\n✅ AUTO-SELECT: Selected '{value}' (native label)", "auto_ok"
+                    return f"\n✅ AUTO-SELECT: Selected '{shown}' (native label)", "auto_ok"
                 except Exception:
                     pass
 
@@ -807,7 +903,7 @@ async def _do_interaction_playwright(
                 try:
                     await loc.select_option(value=value, timeout=2000)
                     performed_actions.add(element_id)
-                    return f"\n✅ AUTO-SELECT: Selected '{value}' (native value attr)", "auto_ok"
+                    return f"\n✅ AUTO-SELECT: Selected '{shown}' (native value attr)", "auto_ok"
                 except Exception:
                     pass
 
@@ -855,7 +951,7 @@ async def _do_interaction_playwright(
                             dropdown_opened = False
                             performed_actions.add(element_id)
                             return (
-                                f"\n✅ AUTO-SELECT: Selected '{value}' (click-to-open, exact, {sel})",
+                                f"\n✅ AUTO-SELECT: Selected '{shown}' (click-to-open, exact, {sel})",
                                 "auto_ok",
                             )
                         except Exception:
@@ -873,7 +969,7 @@ async def _do_interaction_playwright(
                             dropdown_opened = False
                             performed_actions.add(element_id)
                             return (
-                                f"\n✅ AUTO-SELECT: Selected '{value}' (click-to-open, partial, {sel})",
+                                f"\n✅ AUTO-SELECT: Selected '{shown}' (click-to-open, partial, {sel})",
                                 "auto_ok",
                             )
                         except Exception:
@@ -891,7 +987,7 @@ async def _do_interaction_playwright(
                     except Exception:
                         pass
 
-            return f"\n⚠️ AUTO-SELECT FAILED: all strategies exhausted for '{value}'", "auto_failed"
+            return f"\n⚠️ AUTO-SELECT FAILED: all strategies exhausted for '{shown}'", "auto_failed"
 
         elif action == "check":
             # State-aware: only clicks if not already checked
@@ -912,7 +1008,7 @@ async def _do_interaction_playwright(
                 return f"\n⚠️ AUTO-ACTION FAILED (uncheck): {e}", "auto_failed"
 
     except Exception as e:
-        return f"\n⚠️ AUTO-ACTION FAILED ({action}): {e}", "auto_failed"
+        return f"\n⚠️ AUTO-ACTION FAILED ({action}): {_error_text(e, secret)}", "auto_failed"
 
 
 def _memory_line(
@@ -963,11 +1059,13 @@ async def _do_interaction(
     select_id: str | None = None,
     datepicker_framework: str = "",
     iframe_context: str | None = None,
+    secrets: dict[str, str] | None = None,
 ):
     """Orchestrate the interaction for one element — event path first, Playwright fallback second.
 
     Returns (note, status, action, value). action and value are returned alongside note/status
-    so the caller never needs to re-read element_specs independently (single source of truth)."""
+    so the caller never needs to re-read element_specs independently (single source of truth).
+    value is the step's value as sent — ``{{NAME}}`` for an org secret, never the secret."""
     if element_id in performed_actions:
         return "", "not_applicable", "", ""
     spec = element_specs.get(element_id, {})
@@ -1003,6 +1101,14 @@ async def _do_interaction(
                     f"   ℹ️  select value for {element_id}: '{value}' (single token — no prefix possible)"
                 )
 
+    # NLRF #131: a value that is exactly {{NAME}} becomes the org secret here, for the typing
+    # call only. `sent` (the name) is what every note, log line and the return carry.
+    sent = value
+    secrets = secrets or {}
+    secret = secret_name(value, secrets) if action in ("input", "type", "select") else None
+    if secret:
+        value = secrets[secret]
+
     # check/uncheck skip the event path entirely — browser-use has no state-aware check event.
     # Tom Select skips it too: SelectDropdownOptionEvent targets native <select> elements;
     # the indexed node is the ts-control <input>, so the event always returns (None, None).
@@ -1012,10 +1118,13 @@ async def _do_interaction(
     # flatpickr skips it for the same reason: TypeTextEvent "succeeds" against the
     # readonly input without changing widget state — only the Playwright path's
     # setDate JS tier actually sets the date.
+    # A secret select skips it too: browser-use's select event logs the option text and has
+    # no sensitive switch.
     if (
         action not in ("check", "uncheck")
         and dropdown_framework != "tom-select"
         and datepicker_framework != "flatpickr"
+        and not (secret and action == "select")
     ):
         if element_index is not None and browser_session is not None:
             try:
@@ -1025,14 +1134,32 @@ async def _do_interaction(
                 )
                 if node is not None:
                     note, status = await _dispatch_browser_use_event(
-                        browser_session, node, action, value, element_id, performed_actions
+                        browser_session,
+                        node,
+                        action,
+                        value,
+                        element_id,
+                        performed_actions,
+                        secret=secret,
                     )
-                    if note is not None:  # None = fall-through signal; Playwright handles it
+                    # None = fall-through signal; Playwright handles it
+                    if note is not None and await _event_result_stands(
+                        active_page,
+                        locator_str,
+                        iframe_context,
+                        element_id,
+                        performed_actions,
+                        status,
+                        value,
+                        secret,
+                    ):
                         if action in ("click", "submit", "select") and status == "auto_ok":
                             await _wait_for_page_stability(active_page)
-                        return note, status, action, value
+                        return note, status, action, sent
             except Exception as e:
-                logger.warning(f"   AUTO-ACTION event path failed for {element_id}: {e}")
+                logger.warning(
+                    f"   AUTO-ACTION event path failed for {element_id}: {_error_text(e, secret)}"
+                )
 
     # Fallback: Playwright layered retry chain (always used for check/uncheck; fallback for others)
     note, status = await _do_interaction_playwright(
@@ -1046,10 +1173,11 @@ async def _do_interaction(
         select_id=select_id,
         datepicker_framework=datepicker_framework,
         iframe_context=iframe_context,
+        secret=secret,
     )
     if action in ("click", "submit", "select") and status == "auto_ok":
         await _wait_for_page_stability(active_page)
-    return note, status, action, value
+    return note, status, action, sent
 
 
 def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bool:
@@ -1068,6 +1196,9 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                   When provided, completion is tracked via a closure dict. Once all expected
                   element IDs have been successfully processed, is_done=True is returned so the
                   browser-use agent loop terminates automatically — no LLM call to done() needed.
+        secrets: Optional NAME -> value (NLRF #131). A step whose value is exactly {{NAME}}
+                 is typed with the value by _do_interaction; the step specs keep the name.
+                 The map lives only in this closure — never in the Agent or its task text.
 
     Returns:
         bool: True if registration succeeded, False otherwise
@@ -1095,6 +1226,7 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
         # The inner action handler updates _completed_elements on each success and sets
         # is_done=True once every expected element ID has been processed, terminating
         # the browser-use agent loop without relying on the LLM to call done().
+        _secrets: dict = dict(secrets or {})
         _element_specs: dict = {}
         if elements:
             for _i, _elem in enumerate(elements):
@@ -1967,6 +2099,7 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                         select_id=result.get("select_id") or None,
                         datepicker_framework=result.get("datepicker_framework") or "",
                         iframe_context=iframe_context,
+                        secrets=_secrets,
                     )
                     result["interaction_status"] = interaction_status
                     if _f1_acts and interaction_status != "not_applicable":

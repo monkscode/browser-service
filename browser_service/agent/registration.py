@@ -2162,6 +2162,18 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                                     f"to complete this click. If no available action can complete it, proceed "
                                     f"to the next element — Robot Framework will handle it at execution time."
                                 )
+                        elif _action in ("input", "type", "select") and (
+                            _secret := secret_name(_value, _secrets)
+                        ):
+                            # D18: no fallback call, no placeholder — the agent must not type it.
+                            _verb, _does = (
+                                ("select", "selects") if _action == "select" else ("input", "types")
+                            )
+                            display_note = (
+                                f"\n⚠️ Automated {_verb} of <{_secret}> failed — all strategies "
+                                f"exhausted. Do not {_verb} it yourself; proceed to the next "
+                                f"element — Robot Framework {_does} it at execution time."
+                            )
                         elif _action in ("input", "type"):
                             if _idx is not None:
                                 display_note = (

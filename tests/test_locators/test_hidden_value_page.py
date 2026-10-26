@@ -14,6 +14,7 @@ from browser_service.agent.registration import _mark_secret_field
 from browser_service.locators.hidden_value import HIDES_VALUE_JS, SECRET_MARK
 from browser_service.locators.read_target import resolve_read_address
 from browser_service.locators.smart_locator import (
+    _get_element_accessibility_info,
     find_unique_locator_at_coordinates,
     validate_semantic_match,
 )
@@ -279,3 +280,97 @@ async def test_mark_stays_on_a_custom_element_host_that_exposes_a_control():
         ]
 
     assert await _on_page(html, run) == ["", None]
+
+
+# ---- D16: an editor that auto-links turns a URL-shaped secret into <a href="U">U</a> INSIDE the
+# marked editor; such a link gives away neither its text (accessible name) nor its href.
+U = "https://hooks.example.invalid/zq131-made-up-7"
+U_MARKER = "zq131-made-up-7"
+LINK_ED = (  # wide box: a wrapped link has an empty bounding-box centre
+    f'<div id="ed" contenteditable nlrf-secret="" style="width:700px;border:1px solid #888">'
+    f'<p {_P}>see <a id="lk" href="{U}">{U}</a></p></div>'
+)
+LINK_ED_UNMARKED = LINK_ED.replace(' nlrf-secret=""', "")
+PLAIN_LINK = '<a id="lk" href="/docs/guide">Read the guide</a>'
+
+
+def _assert_no_link_value(text):
+    assert U not in text
+    assert U_MARKER not in text.casefold()
+
+
+async def _link_info(html):
+    async def run(page):
+        x, y = await _centre(page, "#lk")
+        return await _get_element_accessibility_info(page, x, y)
+
+    return await _on_page(html, run)
+
+
+async def test_link_in_a_marked_editor_has_no_accessible_name():
+    info = await _link_info(LINK_ED)
+    assert info["role"] == "link"
+    assert not info["accessibleName"]
+    _assert_no_link_value(json.dumps(info, default=str))
+
+
+async def test_link_in_an_unmarked_editor_is_still_named_by_its_text():
+    """The known positive: step 5 can read a link's text at all."""
+    assert (await _link_info(LINK_ED_UNMARKED))["accessibleName"] == U
+
+
+async def test_a_normal_link_still_gets_its_text_as_name():
+    assert (await _link_info(PLAIN_LINK))["accessibleName"] == "Read the guide"
+
+
+@pytest.mark.parametrize("expected", ["", "Editor link"], ids=["no-text", "with-text"])
+async def test_coordinate_path_never_gives_away_a_link_in_a_marked_editor(expected, caplog):
+    caplog.set_level(logging.DEBUG)
+
+    async def run(page):
+        x, y = await _centre(page, "#lk")
+        return await find_unique_locator_at_coordinates(page, x, y, "elem_1", expected)
+
+    out = json.dumps(await _on_page(LINK_ED, run), default=str)
+    _assert_no_link_value(out)
+    _assert_no_link_value(caplog.text)
+
+
+async def test_coordinate_path_unmarked_link_href_still_read(caplog):
+    caplog.set_level(logging.DEBUG)
+
+    async def run(page):
+        x, y = await _centre(page, "#lk")
+        return await find_unique_locator_at_coordinates(page, x, y, "elem_1", "")
+
+    out = json.dumps(await _on_page(LINK_ED_UNMARKED, run), default=str)
+    assert U_MARKER in out or U_MARKER in caplog.text
+
+
+def _without_id(html):
+    return html.replace(' id="lk"', "")
+
+
+async def test_coordinate_strategies_never_carry_a_marked_links_href(caplog):
+    """A second link makes role=link ambiguous and no id ends the cascade early, so xpath-href runs."""
+    caplog.set_level(logging.DEBUG)
+
+    async def run(page):
+        x, y = await _centre(page, "#ed a")
+        return await find_unique_locator_at_coordinates(page, x, y, "elem_1", "")
+
+    out = await _on_page(_without_id(LINK_ED) + '<a href="/other">Other</a>', run)
+    dumped = json.dumps(out, default=str)
+    _assert_no_link_value(dumped)
+    _assert_no_link_value(caplog.text)
+
+
+async def test_coordinate_strategies_unmarked_link_href_still_used(caplog):
+    caplog.set_level(logging.DEBUG)
+
+    async def run(page):
+        x, y = await _centre(page, "#ed a")
+        return await find_unique_locator_at_coordinates(page, x, y, "elem_1", "")
+
+    out = await _on_page(_without_id(LINK_ED_UNMARKED) + '<a href="/other">Other</a>', run)
+    assert U_MARKER in json.dumps(out, default=str)

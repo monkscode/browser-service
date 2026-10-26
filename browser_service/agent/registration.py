@@ -139,7 +139,7 @@ def _extract_dom_node_attributes(dom_node) -> dict:
         "parentClassName": parent_class,
         "placeholder": attrs.get("placeholder", ""),
         "title": attrs.get("title", ""),
-        "href": attrs.get("href", ""),
+        "href": "" if node_hides_value(dom_node) else attrs.get("href", ""),
         "role": attrs.get("role", ""),
         "dataTestId": attrs.get("data-testid", "") or attrs.get("data-test", ""),
         "dataTestAttr": data_test_attr,

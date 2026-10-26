@@ -221,3 +221,49 @@ def test_node_hides_value_stops_on_a_mock_chain_that_never_ends():
     node = MagicMock()
     node.attributes = {"id": "x"}
     assert not node_hides_value(node)
+
+
+# D16: a link inside a marked editor gives away neither its accessible name nor its href.
+U = "https://hooks.example.invalid/zq131-made-up-7"
+U_MARKER = "zq131-made-up-7"
+
+
+class _AxName:
+    def __init__(self, name):
+        self.name = name
+
+
+def _link_in(parent, ax_name=U):
+    link = _child_of(parent, attributes={"href": U}, children_text=U)
+    link.tag_name, link.node_name = "a", "A"
+    link.ax_node = _AxName(ax_name)
+    return link
+
+
+async def test_semantic_link_in_a_marked_editor_never_uses_its_ax_name(caplog):
+    caplog.set_level(logging.DEBUG)
+    ok, observed = await validate_semantic_match(_link_in(Node(EDITABLE)), "Sign in button")
+    assert U_MARKER not in observed.casefold()
+    assert U_MARKER not in caplog.text.casefold()
+
+
+async def test_semantic_link_in_an_unmarked_editor_still_uses_its_ax_name():
+    """The known positive: the ax name is read at all."""
+    _, observed = await validate_semantic_match(
+        _link_in(Node({"contenteditable": "true"})), "Sign in button"
+    )
+    assert observed == U
+
+
+async def test_semantic_marked_field_keeps_its_own_label_as_ax_name():
+    node = Node(MARKED)
+    node.ax_node = _AxName("Password")
+    assert (await validate_semantic_match(node, "Password"))[0] is True
+    password = Node(SYNCED)
+    password.ax_node = _AxName("Password")
+    assert (await validate_semantic_match(password, "Password"))[0] is True
+
+
+def test_extract_attributes_blanks_the_href_of_a_link_in_a_marked_editor():
+    assert _extract_dom_node_attributes(_link_in(Node(EDITABLE)))["href"] == ""
+    assert _extract_dom_node_attributes(_link_in(Node({"contenteditable": "true"})))["href"] == U

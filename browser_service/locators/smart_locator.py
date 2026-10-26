@@ -13,7 +13,12 @@ from typing import Any, Optional
 
 from browser_service.locators.action_fit import check_action_fit
 from browser_service.locators.frame_locator import add_frame, apply_frame_to_result, strip_frame
-from browser_service.locators.hidden_value import HIDES_VALUE_JS, node_hides_value, node_text
+from browser_service.locators.hidden_value import (
+    HIDES_VALUE_JS,
+    hides_value,
+    node_hides_value,
+    node_text,
+)
 from browser_service.locators.stability import (
     POSITIONAL,
     STABLE,
@@ -474,6 +479,8 @@ async def validate_semantic_match(
         meaningful = ""
         attrs = node.attributes or {}
         hidden = node_hides_value(node)  # D8: a password / secret-marked field skips its value
+        if hidden and not hides_value(attrs):
+            ax_name = ""  # D16: inside a marked editor the AX name of a link is its typed text
         try:
             meaningful = (node_text(node) if hidden else node.get_meaningful_text_for_llm()) or ""
         except Exception:
@@ -2291,8 +2298,10 @@ async def _get_element_accessibility_info(search_context, x: float, y: float) ->
                     accessibleName = element.getAttribute('title');
                 }
                 
-                // 5. For buttons/links, use text content
-                if (!accessibleName) {
+                // 5. For buttons/links, use text content (never inside a hidden-value element, D16)
+                if (!accessibleName && !"""
+            + HIDES_VALUE_JS
+            + """(element)) {
                     const interactiveRoles = ['button', 'link', 'tab', 'menuitem', 'option'];
                     if (interactiveRoles.includes(role) || ['BUTTON', 'A'].includes(element.tagName)) {
                         const text = element.textContent?.trim();
@@ -4976,7 +4985,7 @@ async def find_unique_locator_at_coordinates(
                     placeholder: element.placeholder || '',
                     title: element.title || '',
                     alt: element.alt || '',
-                    href: element.href || '',
+                    href: hid ? '' : (element.href || ''),
                     src: element.src || '',
                     type: element.type || '',
                     ariaLabel: element.getAttribute('aria-label') || '',

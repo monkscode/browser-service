@@ -26,7 +26,7 @@ actions, iframes, collections, row-anchored results, shadow-root elements,
 and everything when ENABLE_ACTION_FIT=false.
 
 Referenced by: agent/actions.py
-Depends on: locators/action_fit.py, locators/stability.py
+Depends on: locators/action_fit.py, locators/hidden_value.py, locators/stability.py
 """
 
 import asyncio
@@ -35,6 +35,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from browser_service.locators.action_fit import FIT_READ_TIMEOUT_MS, READ_ACTIONS
+from browser_service.locators.hidden_value import HIDES_VALUE_JS
 from browser_service.locators.stability import (
     STABLE,
     classify_locator,
@@ -128,10 +129,17 @@ def own_texts_match(texts: List[Optional[str]], observed: Optional[str]) -> bool
 # value / placeholder, an image's alt, the title tooltip, the aria-label — and
 # its DIRECT text: its own child text nodes only, whitespace-collapsed (a flash
 # message with a close link, a label with a required star).
-OWN_TEXT_JS = """el => [(el.innerText || '').trim(), el.value || '', el.getAttribute('placeholder') || '',
+# A field that hides its value (password / secret-marked) shows NONE of its typed text: innerText,
+# value and direct child text read '' there (a React textarea keeps the text as a child).
+OWN_TEXT_JS = (
+    "el => { const h = "
+    + HIDES_VALUE_JS
+    + "(el); return [h ? '' : (el.innerText || '').trim(), h ? '' : el.value || '',"
+    + """ el.getAttribute('placeholder') || '',
     el.getAttribute('alt') || '', el.getAttribute('title') || '', el.getAttribute('aria-label') || '',
-    Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.nodeValue).join('')
-      .replace(/\\s+/g, ' ').trim()]"""
+    h ? '' : Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.nodeValue).join('')
+      .replace(/\\s+/g, ' ').trim()]; }"""
+)
 
 # Up to 3 ancestors of the source node (stopping before body): the own texts of
 # each, in order. Read only when the node itself does not match and may walk up

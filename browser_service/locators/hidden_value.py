@@ -9,12 +9,20 @@ its aria-label / title / placeholder / alt / child text -- never what was typed.
 controlled inputs copy typed text into the ``value`` attribute, which browser-use's
 ``get_meaningful_text_for_llm`` reads first.
 
-Referenced by: agent/registration.py, locators/smart_locator.py
+Referenced by: agent/registration.py, locators/read_target.py, locators/smart_locator.py
 Depends on: nothing
 """
 
 # No ``data-`` prefix on purpose: read_target.py turns any data-* attribute NAME into a token.
 SECRET_MARK = "nlrf-secret"
+
+
+# The JS twin of hides_value: a function expression of one element, called as (HIDES_VALUE_JS)(x).
+HIDES_VALUE_JS = (
+    "(el => String(el.type || '').toLowerCase() === 'password' || el.hasAttribute('"
+    + SECRET_MARK
+    + "'))"
+)
 
 
 def hides_value(attrs: dict | None) -> bool:

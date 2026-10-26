@@ -467,7 +467,7 @@ def _shown(value: str, secret: str | None) -> str:
     return f"<{secret}>" if secret else value
 
 
-def _error_text(error: Exception, secret: str | None):
+def _error_text(error: Exception, secret: str | None) -> str | Exception:
     """An exception as a note or log line shows it: its type only when a secret is in play."""
     return type(error).__name__ if secret else error
 
@@ -576,7 +576,7 @@ async def _dispatch_browser_use_event(
             sel = await event.event_result(raise_if_any=True, raise_if_none=False)
             if isinstance(sel, dict) and sel.get("success") == "true":
                 performed_actions.add(element_id)
-                return f"\n✅ AUTO-SELECT: Selected '{value}'", "auto_ok"
+                return f"\n✅ AUTO-SELECT: Selected '{_shown(value, secret)}'", "auto_ok"
             # Any failure (Tom Select sibling pattern, option not found, unrecognised element, etc.)
             # — fall through to Playwright which has a wider selection strategy.
             # Do NOT add to performed_actions here; Playwright path will handle it.

@@ -82,11 +82,13 @@ def validate_workflow_request(
         and _SECRET_NAME_RE.fullmatch(name)
         and isinstance(value, str)
         and value
+        and "\n" not in value  # browser-use types a line break as Enter, submitting mid-value
+        and "\r" not in value
         for name, value in secrets.items()
     ):
         return (
             False,
-            "Invalid 'secrets' field. Must be an object of NAME -> non-empty string, "
+            "Invalid 'secrets' field. Must be an object of NAME -> non-empty string without line breaks, "
             "each NAME matching [A-Z][A-Z0-9_]{0,63}.",
             None,
         )

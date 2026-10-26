@@ -119,7 +119,17 @@ class TestValidateWorkflowRequest:
 
     @pytest.mark.parametrize(
         "secrets",
-        [[], "x", {"pw": "v"}, {"1A": "v"}, {"A" * 65: "v"}, {"PW": ""}, {"PW": 5}],
+        [
+            [],
+            "x",
+            {"pw": "v"},
+            {"1A": "v"},
+            {"A" * 65: "v"},
+            {"PW": ""},
+            {"PW": 5},
+            {"PW": "a\nb"},
+            {"PW": "a\rb"},
+        ],
     )
     def test_bad_secrets_rejected(self, secrets):
         """secrets must be an object of upper-case NAME -> non-empty string."""
@@ -131,6 +141,12 @@ class TestValidateWorkflowRequest:
 
     def test_bad_secrets_error_never_shows_the_value(self):
         req = _make_flask_request({"elements": self._ELEMENTS, "secrets": {"pw": "x-made-up-1"}})
+        is_valid, error, _ = validate_workflow_request(req)
+        assert is_valid is False
+        assert "x-made-up-1" not in error
+
+    def test_line_break_error_never_shows_the_value(self):
+        req = _make_flask_request({"elements": self._ELEMENTS, "secrets": {"PW": "x-made-up-1\nz"}})
         is_valid, error, _ = validate_workflow_request(req)
         assert is_valid is False
         assert "x-made-up-1" not in error

@@ -419,3 +419,30 @@ async def test_prefilled_field_corrected_on_a_real_page(type_event, all_logs):
             _never_shown(all_logs, note2)
         finally:
             await browser.close()
+
+
+class _SelectResultEvent(FakeEvent):
+    async def event_result(self, raise_if_any=False, raise_if_none=False):
+        return {"success": "true"}
+
+
+async def test_select_note_never_shows_a_secret(type_event, all_logs):
+    from browser_service.agent.registration import _dispatch_browser_use_event
+
+    note, status = await _dispatch_browser_use_event(
+        _session(_SelectResultEvent()), MagicMock(), "select", V, "elem_1", set(), secret="PW"
+    )
+
+    assert status == "auto_ok"
+    assert "<PW>" in note
+    _never_shown(all_logs, note)
+
+
+async def test_select_note_plain_value_unchanged(type_event, all_logs):
+    from browser_service.agent.registration import _dispatch_browser_use_event
+
+    note, status = await _dispatch_browser_use_event(
+        _session(_SelectResultEvent()), MagicMock(), "select", "plain", "elem_1", set()
+    )
+
+    assert (note, status) == ("\n✅ AUTO-SELECT: Selected 'plain'", "auto_ok")

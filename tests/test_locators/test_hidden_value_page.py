@@ -11,7 +11,8 @@ from playwright.async_api import async_playwright
 
 from browser_service.agent.actions import _read_resolved_element
 from browser_service.agent.registration import _mark_secret_field
-from browser_service.locators.hidden_value import SECRET_MARK
+from browser_service.locators.hidden_value import HIDES_VALUE_JS, SECRET_MARK
+from browser_service.locators.read_target import resolve_read_address
 from browser_service.locators.smart_locator import (
     find_unique_locator_at_coordinates,
     validate_semantic_match,
@@ -154,3 +155,127 @@ async def test_mark_on_a_plain_field_is_unchanged():
         return await page.locator("#f").get_attribute(SECRET_MARK)
 
     assert await _on_page('<input id="f">', run) == ""
+
+
+# ---- D14 / D15: a rich-text editor keeps typed text in CHILD elements (Quill / ProseMirror <p>,
+# CodeMirror .cm-line); an element INSIDE a marked element hides its value too. The mark follows
+# .control only for a <label>.
+_BOX = 'style="width:320px;height:60px;border:1px solid #888"'
+_P = 'style="height:40px;margin:0"'
+MARKED_EDITOR_HTML = f'<div id="ed" contenteditable nlrf-secret="" {_BOX}><p {_P}>{V}</p></div>'
+UNMARKED_EDITOR_HTML = f'<div id="ed" contenteditable {_BOX}><p {_P}>{V}</p></div>'
+EMPTY_EDITOR_HTML = f'<div id="ed" contenteditable {_BOX}><p {_P}><br></p></div>'
+
+P_XPATH_JS = """el => { const p = []; for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+  let i = 1; for (let s = n.previousElementSibling; s; s = s.previousElementSibling) if (s.tagName === n.tagName) i++;
+  p.unshift(n.tagName.toLowerCase() + '[' + i + ']'); } return p.join('/'); }"""
+
+
+async def _centre(page, selector):
+    box = await page.locator(selector).bounding_box()
+    return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+
+async def test_predicate_hides_inside_a_marked_element_only():
+    html = (
+        MARKED_EDITOR_HTML
+        + '<input id="pw" type="password"><label id="l" for="t">T</label><input id="t">'
+        + '<form id="fm"><input id="m" nlrf-secret=""></form><button id="b">Go</button>'
+    )
+
+    async def run(page):
+        return {
+            sel: await page.locator(sel).evaluate(HIDES_VALUE_JS)
+            for sel in ("#ed p", "#ed", "#pw", "#m", "#l", "#fm", "#b")
+        }
+
+    assert await _on_page(html, run) == {
+        "#ed p": True,
+        "#ed": True,
+        "#pw": True,
+        "#m": True,
+        "#l": False,
+        "#fm": False,  # an ANCESTOR of a marked element is not hidden (D12)
+        "#b": False,
+    }
+
+
+async def _child_probes(html, caplog, prepare=None):
+    """Every reader that can land on the editor's <p>; returns (dumped results, log text)."""
+    caplog.set_level(logging.DEBUG)
+
+    async def run(page):
+        if prepare:
+            await prepare(page)
+        x, y = await _centre(page, "#ed p")
+        coord = await find_unique_locator_at_coordinates(page, x, y, "elem_1", "Editor text")
+        address = await resolve_read_address(
+            page, "Editor text", {"xpath": await page.locator("#ed p").evaluate(P_XPATH_JS)}, (x, y)
+        )
+        _, observed = await validate_semantic_match(
+            None, "Sign in button", page=page, locator="#ed p"
+        )
+        resolved = await _read_resolved_element(page, "#ed p")
+        return {"coord": coord, "address": address, "observed": observed, "resolved": resolved}
+
+    out = await _on_page(html, run)
+    return out, json.dumps(out, default=str), caplog.text
+
+
+def _assert_no_value(dumped, log):
+    for text in (dumped, log):
+        assert V not in text
+        assert V.casefold() not in text.casefold()
+
+
+async def test_child_of_a_marked_editor_is_never_read(caplog):
+    out, dumped, log = await _child_probes(MARKED_EDITOR_HTML, caplog)
+    _assert_no_value(dumped, log)
+    assert out["resolved"]["textContent"] == ""
+
+
+async def test_real_sequence_mark_then_fill_then_read_the_child(caplog):
+    async def prepare(page):
+        await _mark_secret_field(page, "#ed", None)
+        await page.locator("#ed").fill(V)
+        assert V in await page.locator("#ed p").text_content()  # the value is really in the child
+
+    _, dumped, log = await _child_probes(EMPTY_EDITOR_HTML, caplog, prepare)
+    _assert_no_value(dumped, log)
+
+
+async def test_child_of_an_unmarked_editor_is_still_read(caplog):
+    """The known positive: the probes can see a child's text at all."""
+    _, dumped, log = await _child_probes(UNMARKED_EDITOR_HTML, caplog)
+    assert V in dumped or V in log
+
+
+async def test_label_mark_goes_to_its_control_not_the_label():
+    html = '<label for="f" id="l">Token</label><input id="f">'
+
+    async def run(page):
+        await _mark_secret_field(page, "label", None)
+        return [
+            await page.locator("#l").get_attribute(SECRET_MARK),
+            await page.locator("#f").get_attribute(SECRET_MARK),
+        ]
+
+    assert await _on_page(html, run) == [None, ""]
+
+
+async def test_mark_stays_on_a_custom_element_host_that_exposes_a_control():
+    html = """<x-field id="host"></x-field><script>
+      customElements.define('x-field', class extends HTMLElement {
+        constructor() { super(); this.inner = document.createElement('input'); this.inner.id = 'inner';
+          this.appendChild(this.inner); }
+        get control() { return this.inner; }
+      });</script>"""
+
+    async def run(page):
+        await _mark_secret_field(page, "#host", None)
+        return [
+            await page.locator("#host").get_attribute(SECRET_MARK),
+            await page.locator("#inner").get_attribute(SECRET_MARK),
+        ]
+
+    assert await _on_page(html, run) == ["", None]

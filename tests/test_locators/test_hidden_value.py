@@ -14,7 +14,12 @@ import logging
 from browser_use.dom.views import EnhancedDOMTreeNode
 
 from browser_service.agent.registration import _dom_node_text, _extract_dom_node_attributes
-from browser_service.locators.hidden_value import SECRET_MARK, hides_value, node_text
+from browser_service.locators.hidden_value import (
+    SECRET_MARK,
+    hides_value,
+    node_hides_value,
+    node_text,
+)
 from browser_service.locators.smart_locator import validate_semantic_match
 
 V = "Zq131-made-up-7"
@@ -146,3 +151,73 @@ async def test_semantic_marked_editable_never_prints_the_value(caplog):
     _, observed = await validate_semantic_match(Node(EDITABLE, children_text=V), "Sign in button")
     assert V not in observed
     assert V not in caplog.text
+
+
+# D14: a rich-text editor keeps the typed text in CHILD elements (<p>, .cm-line, span[data-text]),
+# so an element INSIDE a marked element hides its value too. Only the mark is inherited.
+def _child_of(parent, attributes=None, children_text=""):
+    child = Node(attributes or {}, children_text=children_text)
+    child.tag_name = "p"
+    child.node_name = "P"
+    child.parent_node = parent
+    return child
+
+
+def test_node_hides_value_inherits_the_mark_from_any_ancestor():
+    parent = Node(EDITABLE)
+    child = _child_of(parent)
+    grandchild = _child_of(child)
+    assert node_hides_value(parent)
+    assert node_hides_value(child)
+    assert node_hides_value(grandchild)
+
+
+def test_node_hides_value_unmarked_parent_and_password_parent_do_not_hide():
+    assert not node_hides_value(_child_of(Node({"contenteditable": "true"})))
+    assert not node_hides_value(_child_of(Node({"type": "password"})))  # only the mark is inherited
+    assert node_hides_value(Node({"type": "password"}))
+
+
+def test_node_hides_value_survives_a_missing_parent_or_attributes():
+    bare = Node({})
+    assert not node_hides_value(bare)  # no parent_node attribute at all
+    bare.parent_node = None
+    assert not node_hides_value(bare)
+    no_attrs = Node(None)
+    no_attrs.parent_node = Node(None)
+    assert not node_hides_value(no_attrs)
+    assert not node_hides_value(object())
+
+
+def test_dom_node_text_of_a_child_of_a_marked_editor_has_no_value():
+    assert _dom_node_text(_child_of(Node(EDITABLE), children_text=V)) == ""
+
+
+def test_dom_node_text_of_a_child_of_an_unmarked_editor_is_unchanged():
+    # The known positive: the child's text is readable at all.
+    assert _dom_node_text(_child_of(Node({"contenteditable": "true"}), children_text=V)) == V
+
+
+async def test_semantic_child_of_a_marked_editor_never_prints_the_value(caplog):
+    caplog.set_level(logging.DEBUG)
+    child = _child_of(Node(EDITABLE), children_text=V)
+    _, observed = await validate_semantic_match(child, "Sign in button")
+    assert V not in observed
+    assert V not in caplog.text
+
+
+def test_extract_attributes_blanks_a_child_value_under_a_marked_parent():
+    child = _child_of(Node(EDITABLE), attributes={"value": V})
+    assert _extract_dom_node_attributes(child)["value"] == ""
+    assert (
+        _extract_dom_node_attributes(_child_of(Node(PLAIN), attributes={"value": V}))["value"] == V
+    )
+
+
+def test_node_hides_value_stops_on_a_mock_chain_that_never_ends():
+    # A MagicMock invents a fresh parent_node forever; real nodes end at None.
+    from unittest.mock import MagicMock
+
+    node = MagicMock()
+    node.attributes = {"id": "x"}
+    assert not node_hides_value(node)

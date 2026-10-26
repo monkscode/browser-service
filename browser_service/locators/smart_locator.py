@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from browser_service.locators.action_fit import check_action_fit
 from browser_service.locators.frame_locator import add_frame, apply_frame_to_result, strip_frame
-from browser_service.locators.hidden_value import HIDES_VALUE_JS, hides_value, node_text
+from browser_service.locators.hidden_value import HIDES_VALUE_JS, node_hides_value, node_text
 from browser_service.locators.stability import (
     POSITIONAL,
     STABLE,
@@ -473,7 +473,7 @@ async def validate_semantic_match(
         ax_name = getattr(getattr(ax, "name", None), "value", getattr(ax, "name", "")) or ""
         meaningful = ""
         attrs = node.attributes or {}
-        hidden = hides_value(attrs)  # D8: a password / secret-marked field skips its value
+        hidden = node_hides_value(node)  # D8: a password / secret-marked field skips its value
         try:
             meaningful = (node_text(node) if hidden else node.get_meaningful_text_for_llm()) or ""
         except Exception:

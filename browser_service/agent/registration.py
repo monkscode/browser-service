@@ -38,7 +38,7 @@ from typing import Optional
 
 from browser_service.locators.action_fit import READ_ACTIONS
 from browser_service.locators.frame_locator import strip_frame
-from browser_service.locators.hidden_value import SECRET_MARK, hides_value, node_text
+from browser_service.locators.hidden_value import SECRET_MARK, node_hides_value, node_text
 from browser_service.locators.read_change import (
     CAME_BACK,
     NOT_CAME_BACK,
@@ -145,7 +145,9 @@ def _extract_dom_node_attributes(dom_node) -> dict:
         "dataTestAttr": data_test_attr,
         "type": attrs.get("type", ""),  # For input elements
         # A password / secret-marked field never reports what it holds (D8).
-        "value": "" if hides_value(attrs) else attrs.get("value", ""),  # Current value of input
+        "value": ""
+        if node_hides_value(dom_node)
+        else attrs.get("value", ""),  # Current value of input
         "xpath": dom_node.xpath if hasattr(dom_node, "xpath") else "",
         "backendNodeId": _backend_node_id(dom_node),
     }
@@ -169,7 +171,7 @@ def _dom_node_text(dom_node) -> str:
     Returns:
         The node's text, always a str — never None.
     """
-    if hides_value(getattr(dom_node, "attributes", None)):
+    if node_hides_value(dom_node):
         return node_text(dom_node)
     if hasattr(dom_node, "get_meaningful_text_for_llm"):
         return dom_node.get_meaningful_text_for_llm() or ""
@@ -610,9 +612,11 @@ async def _mark_secret_field(active_page, locator_str: str, iframe_context: str 
     and typing carries on."""
     try:
         _, loc = _step_locator(active_page, locator_str, iframe_context)
-        # A label's mark goes to the field it controls (Playwright fill types into label.control).
+        # Only a label's mark goes to its field (Playwright's fill follows label.control and nothing else).
         await loc.evaluate(
-            f"el => (el.control || el).setAttribute('{SECRET_MARK}', '')", timeout=2000
+            "el => ((el.localName === 'label' && el.control) || el)"
+            f".setAttribute('{SECRET_MARK}', '')",
+            timeout=2000,
         )
     except Exception as e:
         logger.warning(f"   ⚠️ could not mark the secret field: {type(e).__name__}")

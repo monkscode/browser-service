@@ -485,3 +485,109 @@ async def test_point_on_a_piece_of_a_split_price_confirms_its_container(edge):
     verdict = await resolve_read_address(edge, "$29.99", None, await _center_in_view(edge, ".amt"))
     assert verdict["source"] == "screen point"
     await _assert_rule(edge, verdict, ".price-wrap", "$29.99")
+
+
+# ---- #71: a class of <html> / <body> never anchors a read address
+
+SOUP = (
+    "<main><div><div>Access granted</div></div><section><div>7</div><div>2</div></section></main>"
+)
+UTIL = '<div class="flex"><div class="flex"><div class="flex">Access granted</div></div></div>'
+CARDS = '<div role="listitem"><span>A</span></div><div role="listitem"><span>B</span></div>'
+ADD_HTML_CLASS = "document.documentElement.classList.add('idc0_343')"
+DROP_HTML_CLASS = "document.documentElement.classList.remove('idc0_343')"
+READ = "text=Access granted"
+
+
+async def _read_address(page, target=READ, observed="Access granted"):
+    return await resolve_read_address(page, observed, await _element_data(page, target), None)
+
+
+async def test_html_class_added_after_load_never_anchors(page):
+    """A class the discovery browser's extension adds to <html> after load is not part of the address."""
+    await page.set_content(f"<body>{SOUP}</body>")
+    await page.evaluate(ADD_HTML_CLASS)
+    verdict = await _read_address(page)
+    assert verdict["locator"] == "body > main > div > div"
+    await page.evaluate(DROP_HTML_CLASS)
+    await _assert_rule(page, verdict, READ, "Access granted")
+
+
+@pytest.mark.parametrize(
+    "add, drop",
+    [
+        (
+            "document.body.classList.add('theme-dark')",
+            "document.body.classList.remove('theme-dark')",
+        ),
+        (
+            ADD_HTML_CLASS + "; document.body.classList.add('theme-dark')",
+            DROP_HTML_CLASS + "; document.body.classList.remove('theme-dark')",
+        ),
+    ],
+)
+async def test_body_class_added_after_load_never_anchors(page, add, drop):
+    """A class on <body> (alone or with one on <html>) scopes nothing: the address is the inner path."""
+    await page.set_content(f"<body>{SOUP}</body>")
+    await page.evaluate(add)
+    verdict = await _read_address(page)
+    assert verdict["locator"] == "main > div > div"
+    await page.evaluate(drop)
+    await _assert_rule(page, verdict, READ, "Access granted")
+
+
+async def test_repeated_utility_classes_under_an_html_class_never_anchor(page):
+    """Utility classes repeated down the path stay as they are; the <html> class adds nothing in front."""
+    await page.set_content(f"<body>{UTIL}</body>")
+    await page.evaluate(ADD_HTML_CLASS)
+    verdict = await _read_address(page)
+    assert verdict["locator"] == "body > div.flex > div.flex > div.flex"
+    await page.evaluate(DROP_HTML_CLASS)
+    await _assert_rule(page, verdict, READ, "Access granted")
+
+
+async def test_class_served_on_html_keeps_the_inner_path(page):
+    """A class the page itself serves on <html> gives the same address: the class is never an anchor."""
+    await page.set_content(f'<html class="app"><body>{SOUP}</body></html>')
+    verdict = await _read_address(page)
+    assert verdict["locator"] == "body > main > div > div"
+    await _assert_rule(page, verdict, READ, "Access granted")
+
+
+@pytest.mark.parametrize(
+    "attr, expected",
+    [
+        ('id="app"', "#app >> main > div > div"),
+        ('data-testid="app"', '[data-testid="app"] >> main > div > div'),
+    ],
+)
+async def test_id_or_test_id_on_body_stays_the_anchor(page, attr, expected):
+    """An id or a test id on <body> is the page's own and stays the anchor."""
+    await page.set_content(f"<body {attr}>{SOUP}</body>")
+    await page.evaluate(ADD_HTML_CLASS)
+    verdict = await _read_address(page)
+    assert verdict["locator"] == expected
+    await page.evaluate(DROP_HTML_CLASS)
+    await _assert_rule(page, verdict, READ, "Access granted")
+
+
+async def test_body_class_never_scopes_a_card_path(page):
+    """A card-path (the cards repeat under <body>) is not scoped by a class of <body>."""
+    await page.set_content(f'<body role="listitem">{CARDS}</body>')
+    await page.evaluate("document.body.classList.add('t')")
+    verdict = await _read_address(page, "text=B", "B")
+    assert verdict["kind"] == "card-path"
+    assert verdict["locator"] == '[role="listitem"] >> nth=2 >> span'
+    await page.evaluate("document.body.classList.remove('t')")
+    await _assert_rule(page, verdict, "text=B", "B")
+
+
+async def test_same_shaped_sibling_after_the_target_fails_loudly(page):
+    """Control: the address is a path, so a same-shaped sibling added later makes it match twice (loud)."""
+    await page.set_content(f"<body>{SOUP}</body>")
+    await page.evaluate(ADD_HTML_CLASS)
+    verdict = await _read_address(page)
+    await page.evaluate(
+        "document.querySelector('main > div').insertAdjacentHTML('afterend', '<div><div>Later</div></div>')"
+    )
+    assert await page.locator(verdict["locator"]).count() == 2

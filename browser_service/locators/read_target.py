@@ -214,6 +214,8 @@ STRUCTURAL_CANDIDATES_JS = """(el, volatile) => {
     const v = el.getAttribute(a);
     if (v && !v.includes('"') && !vol(a, v)) add('test-id', `[${a}="${v}"]`, [[a, v]]);
   }
+  // The root's own address is its tag: <html> / <body> is always unique and its class may exist only in discovery.
+  if (['HTML', 'BODY'].includes(el.tagName)) { add('tag', tag, []); return out; }
   // The first class that is not volatile and can be written.
   const firstClass = n => classesOf(n).find(okClass);
   const step = n => { const c = firstClass(n); return n.tagName.toLowerCase() + (c ? clsSel(c) : ''); };
@@ -310,8 +312,9 @@ STRUCTURAL_CANDIDATES_JS = """(el, volatile) => {
   const near = anchorOf(el);
   if (near) {
     const inside = innerSel(near[1]);
-    if (inside) add('anchored-path', scopes(near) ? `${near[0]} >> ${inside[0]}` : inside[0],
-                    scopes(near) ? [...near[2], ...inside[1]] : inside[1]);
+    const scoped = scopes(near);
+    if (inside) add('anchored-path', scoped ? `${near[0]} >> ${inside[0]}` : inside[0],
+                    scoped ? [...near[2], ...inside[1]] : inside[1]);
   }
   const xpathOf = (node, stopAtId) => {
     const parts = [];

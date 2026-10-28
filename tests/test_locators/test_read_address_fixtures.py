@@ -525,6 +525,7 @@ async def test_html_class_added_after_load_never_anchors(page):
             DROP_HTML_CLASS + "; document.body.classList.remove('theme-dark')",
         ),
     ],
+    ids=["body", "html+body"],
 )
 async def test_body_class_added_after_load_never_anchors(page, add, drop):
     """A class on <body> (alone or with one on <html>) scopes nothing: the address is the inner path."""
@@ -591,3 +592,35 @@ async def test_same_shaped_sibling_after_the_target_fails_loudly(page):
         "document.querySelector('main > div').insertAdjacentHTML('afterend', '<div><div>Later</div></div>')"
     )
     assert await page.locator(verdict["locator"]).count() == 2
+
+
+@pytest.mark.parametrize(
+    "html, add, drop, expected, kind",
+    [
+        (
+            "<body>Access granted</body>",
+            "document.body.classList.add('theme-dark')",
+            "document.body.classList.remove('theme-dark')",
+            "body",
+            "tag",
+        ),
+        (
+            "<body>Access granted</body>",
+            ADD_HTML_CLASS + "; document.body.classList.add('theme-dark')",
+            DROP_HTML_CLASS + "; document.body.classList.remove('theme-dark')",
+            "body",
+            "tag",
+        ),
+        ('<body id="app">Access granted</body>', ADD_HTML_CLASS, DROP_HTML_CLASS, "id=app", "id"),
+    ],
+    ids=["body-class", "html-and-body-class", "body-id"],
+)
+async def test_body_read_target_ships_the_bare_tag(page, html, add, drop, expected, kind):
+    """A read of <body> itself ships its tag: a class of <body> / <html> may exist only in discovery."""
+    await page.set_content(html)
+    await page.evaluate(add)
+    verdict = await _read_address(page, "body", "Access granted")
+    assert verdict["locator"] == expected
+    assert verdict["kind"] == kind
+    await page.evaluate(drop)
+    await _assert_rule(page, verdict, "body", "Access granted")

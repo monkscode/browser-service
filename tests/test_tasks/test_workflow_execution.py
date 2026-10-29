@@ -493,6 +493,98 @@ class TestResultExtraction:
         # The request's own description stands; the payload cannot rewrite it.
         assert entry["description"] == "submit button"
 
+    @staticmethod
+    def _final_record(harness, payloads):
+        arm(harness, [FakeStep([FakeActionResult(p) for p in payloads])])
+        run_workflow(harness, elements=[{"id": "elem_2", "description": "submit button"}])
+        return harness.updates[-1][1]["results"]["results"][0]
+
+    def test_refusal_does_not_replace_an_earlier_rejection(self, workflow_harness):
+        """bs #72 follow-up: a later "named no element" refusal must not erase a real rejection."""
+        rejected = {
+            "element_id": "elem_2",
+            "found": False,
+            "error": "Semantic mismatch: expected 'Submit'",
+            "error_type": "SemanticMismatch",
+        }
+        refusal = {
+            "element_id": "elem_2",
+            "found": False,
+            "error": "named no element",
+            "error_type": "NoElementEvidence",
+            "evidence": "none",
+        }
+        entry = self._final_record(workflow_harness, [rejected, refusal])
+        assert entry["error"] == "Semantic mismatch: expected 'Submit'"
+        assert entry["error_type"] == "SemanticMismatch"
+        assert "evidence" not in entry
+
+    def test_refusal_keeps_earlier_rejection_when_another_element_is_found(self, workflow_harness):
+        """With elem_1 found the fallback is skipped, so only the primary path protects elem_2."""
+        rejected = {"element_id": "elem_2", "found": False, "error": "Semantic mismatch"}
+        refusal = {
+            "element_id": "elem_2",
+            "found": False,
+            "error": "named no element",
+            "evidence": "none",
+        }
+        arm(
+            workflow_harness,
+            [
+                FakeStep(
+                    [
+                        FakeActionResult(locator_metadata("elem_1", "id=search")),
+                        FakeActionResult(rejected),
+                        FakeActionResult(refusal),
+                    ]
+                )
+            ],
+        )
+        run_workflow(
+            workflow_harness,
+            elements=[
+                {"id": "elem_1", "description": "search box"},
+                {"id": "elem_2", "description": "submit button"},
+            ],
+        )
+        results = workflow_harness.updates[-1][1]["results"]["results"]
+        entry = next(r for r in results if r["element_id"] == "elem_2")
+        assert entry["error"] == "Semantic mismatch"
+        assert "evidence" not in entry
+
+    def test_evidenced_rejection_replaces_an_earlier_refusal(self, workflow_harness):
+        refusal = {
+            "element_id": "elem_2",
+            "found": False,
+            "error": "named no element",
+            "evidence": "none",
+        }
+        rejected = {"element_id": "elem_2", "found": False, "error": "Semantic mismatch"}
+        entry = self._final_record(workflow_harness, [refusal, rejected])
+        assert entry["error"] == "Semantic mismatch"
+        assert "evidence" not in entry
+
+    def test_second_refusal_keeps_the_refusal_marker(self, workflow_harness):
+        """The retry cap hands the workflow a second refusal: still "nothing was checked"."""
+        refusal = {
+            "element_id": "elem_2",
+            "found": False,
+            "error": "named no element",
+            "evidence": "none",
+        }
+        entry = self._final_record(workflow_harness, [refusal, dict(refusal)])
+        assert entry["evidence"] == "none"
+
+    def test_refusal_alone_carries_the_refusal_marker(self, workflow_harness):
+        refusal = {
+            "element_id": "elem_2",
+            "found": False,
+            "error": "named no element",
+            "evidence": "none",
+        }
+        entry = self._final_record(workflow_harness, [refusal])
+        assert entry["evidence"] == "none"
+
     def test_failed_element_contributes_no_approach_metrics(self, workflow_harness):
         """element_approach_metrics stays what it has always been: located elements.
 

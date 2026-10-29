@@ -96,8 +96,22 @@ class TestElementInfoCopy:
 
     @pytest.mark.asyncio
     async def test_element_info_empty_without_element_data(self, mock_playwright_page):
-        """No element_data → element_info stays {} (nothing to copy)."""
-        result = await _accept_candidate(mock_playwright_page, element_data=None)
+        """No element_data → element_info stays {} (nothing to copy).
+
+        The call sends an expected_text (bs #72: a call with neither is refused).
+        Only the semantic probe is answered; the resolved-element read stays
+        unreadable, which is the path this test pins.
+        """
+
+        async def evaluate(js, *args, **kwargs):
+            if "labelledbyText" not in js:
+                raise RuntimeError("identity read not mocked")
+            return {"textContent": "Submit", "innerText": "Submit", "tagName": "BUTTON"}
+
+        mock_playwright_page.locator.return_value.evaluate = evaluate
+        result = await _accept_candidate(
+            mock_playwright_page, element_data=None, expected_text="Submit"
+        )
         assert result["element_info"] == {}
 
     @pytest.mark.asyncio

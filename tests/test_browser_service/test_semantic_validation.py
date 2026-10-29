@@ -320,10 +320,11 @@ class TestChangeCFastPath:
         )
 
     @pytest.mark.asyncio
-    async def test_no_expected_text_accepts_unique_candidate(self):
+    async def test_no_expected_text_no_element_data_refuses_unique_candidate(self):
         """
-        When expected_text is absent, the fast-path still accepts a unique candidate
-        without calling validate_semantic_match (guard: if expected_text:).
+        bs #72: a unique candidate with no expected_text AND no element_data is no
+        evidence at all — it is refused, not accepted on its count, and the page is
+        never touched.
         """
         from browser_service.agent.actions import find_unique_locator_action
 
@@ -344,8 +345,10 @@ class TestChangeCFastPath:
             page=page,
         )
 
-        assert result.get("found") is True
-        assert result.get("best_locator") == "#submit-btn"
+        assert result.get("found") is False
+        assert result.get("error_type") == "NoElementEvidence"
+        assert result.get("best_locator") is None
+        page.locator.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_semantic_match_returns_candidate_directly(self):

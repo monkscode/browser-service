@@ -165,8 +165,19 @@ async def test_accessibility_step_carries_the_frame(page):
 
 
 async def test_description_step_carries_the_frame(page):
-    """No expected_text: text-first is skipped and the description answers."""
-    out = await _in_frame(page, "#save-btn", element_description="Save draft button")
+    """No expected_text: text-first is skipped and the description answers.
+
+    Since bs #72 a call needs evidence, and in a frame an expected_text cannot be used here (the
+    description step checks its frame-prefixed locator against the frame and errors),
+    so the call carries a bare element_data: it names no id, class or xpath for the element_data
+    step to use, and the description still answers.
+    """
+    out = await _in_frame(
+        page,
+        "#save-btn",
+        element_description="Save draft button",
+        element_data={"tagName": "button"},
+    )
     _assert_carries_the_frame(out, 'role=button[name="Save draft"]', "semantic")
 
 
@@ -269,6 +280,7 @@ async def test_volatile_candidate_kept_as_last_resort_carries_the_frame(
         page,
         "#ext-gen1042",
         element_description="the panel",
+        expected_text="Panel",
         candidate_locator="id=ext-gen1042",
         action="click",
     )
@@ -277,9 +289,13 @@ async def test_volatile_candidate_kept_as_last_resort_carries_the_frame(
 
 
 async def test_coordinate_fallback_in_a_frame_carries_the_frame(page):
-    """No element_data, no expected_text, a description that names nothing and
-    no role at the point: only the coordinate strategies are left."""
-    out = await _in_frame(page, "span.sync-chip", element_description="status chip")
+    """No element_data, a description that names nothing and no role at the point: only the
+    coordinate strategies are left. The one-character expected_text is the evidence bs #72
+    asks for; it is below the text-first minimum (2), so text-first stays skipped, and it
+    is found in the chip's text, so the coordinate strategies still validate."""
+    out = await _in_frame(
+        page, "span.sync-chip", element_description="status chip", expected_text="S"
+    )
     assert out["found"] is True, out.get("error")
     assert _approach(out) == "coordinate_fallback"
     entries = [entry["locator"] for entry in out["all_locators"]]

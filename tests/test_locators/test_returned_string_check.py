@@ -197,10 +197,13 @@ async def test_live_string_is_kept(page, in_frame, body, target, desc, expected,
 
 
 # Top only: STEP 2.5b (the collection route) cannot run in a frame today.
+# A collection with no element data and no expected text carries no evidence, so since bs #72 it
+# is refused before STEP 2.5b can run (owner: collections get no exception); the collection branch
+# of _returned_string_matches stays pinned by the unit cases in test_accessibility_fallback_guards.py.
 @pytest.mark.parametrize(
-    "body,target,n", [(LIST3, 'li:text-is("Banana")', 3), (LIST1, "li", 1)], ids=["3", "1"]
+    "body,target", [(LIST3, 'li:text-is("Banana")'), (LIST1, "li")], ids=["3", "1"]
 )
-async def test_collection_string_is_kept(page, body, target, n):
+async def test_collection_without_evidence_is_refused(page, body, target):
     out = await _run(
         page,
         body,
@@ -211,15 +214,16 @@ async def test_collection_string_is_kept(page, body, target, n):
         action="get_text",
         is_collection=True,
     )
-    assert out["best_locator"] == "role=listitem"
-    assert await page.locator("role=listitem").count() == n
+    assert out["found"] is False
+    assert out["error_type"] == "NoElementEvidence"
+    assert not out.get("best_locator")
 
 
 @pytest.mark.parametrize(
-    "body,target,n", [(LIST3, 'li:text-is("Banana")', 8), (LIST1, "li", 6)], ids=["3", "1"]
+    "body,target", [(LIST3, 'li:text-is("Banana")'), (LIST1, "li")], ids=["3", "1"]
 )
-async def test_growing_collection_is_kept(page, body, target, n):
-    """A live list that grows after the site's count still passes (collection = at least 1)."""
+async def test_growing_collection_without_evidence_is_refused(page, body, target):
+    """A growing live list changes nothing: the refusal comes before the accessibility fallback."""
     real = smart_locator._find_element_via_accessibility
     grew = []
 
@@ -243,9 +247,9 @@ async def test_growing_collection_is_kept(page, body, target, n):
             action="get_text",
             is_collection=True,
         )
-    assert grew
-    assert out["best_locator"] == "role=listitem"
-    assert await page.locator("role=listitem").count() == n
+    assert grew == []
+    assert out["found"] is False
+    assert out["error_type"] == "NoElementEvidence"
 
 
 @pytest.mark.parametrize("in_frame", [False, True])

@@ -165,12 +165,22 @@ class TestFindUniqueLocatorAction:
 
         mock_playwright_page.locator.return_value.count = AsyncMock(return_value=1)
 
+        # The call carries expected_text (bs #72), so the semantic check reads the element.
+        # Only that probe is answered; the identity read stays unreadable, as before.
+        async def evaluate(js, *args, **kwargs):
+            if "labelledbyText" not in js:
+                raise RuntimeError("identity read not mocked")
+            return {"textContent": "Submit", "innerText": "Submit", "tagName": "BUTTON"}
+
+        mock_playwright_page.locator.return_value.evaluate = evaluate
+
         result = await find_unique_locator_action(
             page=mock_playwright_page,
             x=100,
             y=200,
             element_id="elem_1",
             element_description="submit button",
+            expected_text="Submit",
             candidate_locator="id=submit-btn",
         )
 
@@ -220,6 +230,7 @@ class TestFindUniqueLocatorAction:
             y=200,
             element_id="elem_1",
             element_description="ambiguous element",
+            expected_text="Submit",
             candidate_locator=candidate,
         )
 
@@ -243,6 +254,7 @@ class TestFindUniqueLocatorAction:
             y=200,
             element_id="elem_1",
             element_description="element with a blank candidate",
+            expected_text="Submit",
             candidate_locator=candidate,
         )
 
@@ -268,6 +280,7 @@ class TestFindUniqueLocatorAction:
             y=200,
             element_id="elem_1",
             element_description="slow element",
+            expected_text="Submit",
             candidate_locator="id=slow",
         )
 
@@ -290,6 +303,7 @@ class TestFindUniqueLocatorAction:
             y=200,
             element_id="elem_1",
             element_description="numeric id element",
+            expected_text="Submit",
             candidate_locator="#123",
         )
 
@@ -313,6 +327,7 @@ class TestFindUniqueLocatorAction:
             y=200,
             element_id="elem_1",
             element_description="element",
+            expected_text="Submit",
             candidate_locator="id=x",
         )
 
@@ -334,6 +349,7 @@ class TestFindUniqueLocatorAction:
             y=200,
             element_id="elem_1",
             element_description="element",
+            expected_text="Submit",
         )
         assert result["found"] is False
         assert result["error_type"] == "CancelledError"
@@ -351,6 +367,7 @@ class TestFindUniqueLocatorAction:
             y=200,
             element_id="elem_1",
             element_description="element",
+            expected_text="Submit",
         )
         assert result["found"] is False
         assert result["error_type"] == "RuntimeError"
@@ -368,6 +385,7 @@ class TestFindUniqueLocatorAction:
             y=200,
             element_id="elem_1",
             element_description="element",
+            expected_text="Submit",
         )
         assert result["found"] is False
         assert result["error_type"] == "ValueError"
@@ -423,8 +441,10 @@ class TestFindUniqueLocatorAction:
         assert result == CASCADE_RESULT
 
     @pytest.mark.asyncio
-    async def test_no_candidate_no_element_data(self, mock_playwright_page, cascade):
-        """No candidate + no element_data → straight to the coordinate cascade."""
+    async def test_no_candidate_no_element_data_no_text_is_refused(
+        self, mock_playwright_page, cascade
+    ):
+        """No candidate, no element_data, no expected_text → refused (bs #72); the cascade never runs."""
         from browser_service.agent.actions import find_unique_locator_action
 
         result = await find_unique_locator_action(
@@ -433,6 +453,26 @@ class TestFindUniqueLocatorAction:
             y=400,
             element_id="elem_3",
             element_description="unknown element",
+        )
+
+        assert result["found"] is False
+        assert result["error_type"] == "NoElementEvidence"
+        cascade.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_candidate_no_element_data_with_text_goes_to_the_cascade(
+        self, mock_playwright_page, cascade
+    ):
+        """No candidate + no element_data but an expected_text → straight to the coordinate cascade."""
+        from browser_service.agent.actions import find_unique_locator_action
+
+        result = await find_unique_locator_action(
+            page=mock_playwright_page,
+            x=300,
+            y=400,
+            element_id="elem_3",
+            element_description="unknown element",
+            expected_text="Submit",
         )
 
         cascade.assert_called_once()
@@ -475,6 +515,7 @@ class TestTimeoutFromConfig:
                 y=400,
                 element_id="elem_slow",
                 element_description="element on a wedged page",
+                expected_text="Submit",
             )
             elapsed = time.monotonic() - start
 
@@ -508,6 +549,7 @@ class TestTimeoutFromConfig:
                 y=400,
                 element_id="elem_slow",
                 element_description="element on a wedged page",
+                expected_text="Submit",
             )
 
         assert result["timeout_seconds"] == 0.05

@@ -197,9 +197,9 @@ class TestD1MismatchReject:
         assert result["semantic_match"] is True
 
     @pytest.mark.asyncio
-    async def test_no_expected_text_accept_unchanged(self):
-        """No expected_text -> nothing to contradict -> accept stands
-        (paste-mode and icon-only flows unchanged)."""
+    async def test_no_expected_text_no_element_data_is_refused(self):
+        """No expected_text and no element_data -> no evidence at all -> refused
+        (bs #72) before the accessibility fallback runs."""
         dialog = _dialog_fallback_result(DIALOG_NAME_NORM)
         with patch(
             "browser_service.locators.smart_locator._find_element_via_accessibility",
@@ -216,8 +216,9 @@ class TestD1MismatchReject:
                 page=LenientPage(live=(dialog["locator"],)),
                 is_collection=False,
             )
-        assert result["found"] is True
-        assert result["best_locator"] == dialog["locator"]
+        assert result["found"] is False
+        assert result["error_type"] == "NoElementEvidence"
+        assert result.get("best_locator") is None
 
 
 # ======================================================================

@@ -6,8 +6,10 @@ Evidence is an element the index or the point lookup found (a non-empty
 ``element_data``, filled in by registration.py before the call) or an
 ``expected_text`` with a non-blank character. Without either the call names no
 element, so it is refused before the page is touched: no candidate is counted,
-no frame is entered, the cascade does not run. A row anchor, ``is_collection`` or
-a candidate locator alone are NOT evidence (owner: collections get no exception).
+no frame is entered, the cascade does not run (one exception: a frame container as the
+only element data passes this check and is refused by the cascade itself, before any step).
+A row anchor, ``is_collection`` or a candidate locator alone are NOT evidence (owner:
+collections get no exception).
 """
 
 import logging
@@ -245,3 +247,23 @@ async def test_a_parked_candidate_survives_the_cascade_refusal():
 
     assert out["best_locator"] == CANDIDATE
     assert out["action_fit"] == "misfit"
+
+
+async def test_fit_mode_refusal_is_logged_once_and_the_cascade_runs_once(page, caplog):
+    """Fit mode (an action is given) re-runs today's cascade when nothing was found; a refusal
+    is not a miss, so it must not run again (the signal is counted)."""
+    runs = []
+
+    async def cascade(**kwargs):
+        runs.append(kwargs["action"])
+        return await find_unique_locator_at_coordinates(**kwargs)
+
+    with (
+        patch("browser_service.locators.find_unique_locator_at_coordinates", new=cascade),
+        caplog.at_level(logging.INFO),
+    ):
+        result = await _call(page, element_data=CONTAINER, iframe_context=FRAME, action="get_text")
+
+    assert result["evidence"] == "none"
+    assert runs == ["get_text"]
+    assert len([m for m in caplog.messages if "signal: no-evidence-refused" in m]) == 1

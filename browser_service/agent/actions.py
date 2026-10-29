@@ -454,6 +454,8 @@ async def _settle_action_fit(
         return fallback_result
     if result.get("found"):
         return result
+    if result.get("evidence") == "none":
+        return result  # bs #72: a refusal, not a miss — today's cascade would refuse it again
     legacy = await run_cascade(None)
     if legacy.get("found"):
         legacy["action_fit"] = "misfit"

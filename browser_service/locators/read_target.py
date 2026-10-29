@@ -214,6 +214,8 @@ STRUCTURAL_CANDIDATES_JS = """(el, volatile) => {
     const v = el.getAttribute(a);
     if (v && !v.includes('"') && !vol(a, v)) add('test-id', `[${a}="${v}"]`, [[a, v]]);
   }
+  // The root's own address is its tag: <html> / <body> is always unique and its class may exist only in discovery.
+  if (['HTML', 'BODY'].includes(el.tagName)) { add('tag', tag, []); return out; }
   // The first class that is not volatile and can be written.
   const firstClass = n => classesOf(n).find(okClass);
   const step = n => { const c = firstClass(n); return n.tagName.toLowerCase() + (c ? clsSel(c) : ''); };
@@ -277,6 +279,9 @@ STRUCTURAL_CANDIDATES_JS = """(el, volatile) => {
     }
     return null;
   };
+  // A class of <html> / <body> is always unique and may exist only in the discovery browser
+  // (an extension's, a theme's): it scopes nothing, so it never prefixes an address.
+  const scopes = anc => !(['HTML', 'BODY'].includes(anc[1].tagName) && anc[2][0][0] === 'class');
   let cardFound = false;
   for (let a = el.parentElement, depth = 0; a && a.parentElement && depth < __MAX_DEPTH__ && !cardFound;
        a = a.parentElement, depth++) {
@@ -290,7 +295,7 @@ STRUCTURAL_CANDIDATES_JS = """(el, volatile) => {
       const sel = (a.parentElement.tagName === 'TBODY' ? 'tbody > ' : '') + base;
       let scope = '', scopeTokens = [], root = document;
       const anc = anchorOf(a);
-      if (anc && document.querySelectorAll(sel).length !== anc[1].querySelectorAll(sel).length)
+      if (anc && scopes(anc) && document.querySelectorAll(sel).length !== anc[1].querySelectorAll(sel).length)
         [scope, root, scopeTokens] = [anc[0] + ' >> ', anc[1], anc[2]];
       const index = Array.from(root.querySelectorAll(sel)).indexOf(a);
       if (index < 0) continue;
@@ -307,7 +312,9 @@ STRUCTURAL_CANDIDATES_JS = """(el, volatile) => {
   const near = anchorOf(el);
   if (near) {
     const inside = innerSel(near[1]);
-    if (inside) add('anchored-path', `${near[0]} >> ${inside[0]}`, [...near[2], ...inside[1]]);
+    const scoped = scopes(near);
+    if (inside) add('anchored-path', scoped ? `${near[0]} >> ${inside[0]}` : inside[0],
+                    scoped ? [...near[2], ...inside[1]] : inside[1]);
   }
   const xpathOf = (node, stopAtId) => {
     const parts = [];

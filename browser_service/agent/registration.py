@@ -1271,6 +1271,8 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
         # unconfirmed. The first gets one retry with the reason; after that
         # the element is reported not found (owner: "Retry once, then not found").
         _read_address_attempts: dict = {}
+        # bs #72: element_id → refusals for naming no element; the second is NOT FOUND.
+        _no_evidence_attempts: dict = {}
         # D3 (dialog-clobber): element_id → True when the stored result was
         # fully validated (validated=True and semantic_match not False).
         # A re-query may only replace a fully-validated result with another
@@ -2291,8 +2293,28 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                     # If element_index was not provided AND fallback failed,
                     # request LLM to retry with the correct element_index.
                     # This handles interactable elements with stale DOM.
+                    _no_evidence = result.get("evidence") == "none"
+                    if _no_evidence:
+                        _n = _no_evidence_attempts.get(params.element_id, 0) + 1
+                        _no_evidence_attempts[params.element_id] = _n
                     _read_unconfirmed = result.get("read_address_unconfirmed")
-                    if _read_unconfirmed:
+                    if _no_evidence and _n > 1:
+                        final_msg = (
+                            f"'{params.element_id}' named no element again (no element_index "
+                            f"matched and no expected_text was given); it is recorded as NOT "
+                            f"FOUND. Do not retry it — continue with the remaining elements."
+                        )
+                        logger.info(
+                            f"⛔ NO EVIDENCE NOT FOUND for {params.element_id} after {_n} attempts "
+                            f"(signal: no-evidence-not-found)"
+                        )
+                        action_result = ActionResult(
+                            extracted_content=final_msg,
+                            error=final_msg,
+                            is_done=False,
+                            metadata=result,
+                        )
+                    elif _read_unconfirmed:
                         _n = _read_address_attempts.get(params.element_id, 0) + 1
                         _read_address_attempts[params.element_id] = _n
                         if _n == 1:

@@ -712,6 +712,22 @@ async def find_unique_locator_action(
             logger.error(f"❌ {error_msg}")
             return create_error_result("InvalidElementIdError", error_msg)
 
+        # bs #72: a call that names no element ships nothing. Blank text counts as
+        # none: a blank needle makes validate_semantic_match accept any empty element.
+        if not element_data and not (expected_text or "").strip():
+            logger.info(
+                f"   ⛔ NO EVIDENCE: {element_id} '{element_description}' at ({x}, {y}), "
+                f"candidate={candidate_locator!r} — no element data and no expected text; "
+                f"refused (signal: no-evidence-refused)"
+            )
+            return create_error_result(
+                "NoElementEvidence",
+                "No element evidence: no element_index matched an element and no "
+                "expected_text was given, so nothing was checked. Send the element's "
+                "index, or its visible text as expected_text.",
+                {"evidence": "none"},
+            )
+
         # ========================================
         # ROW-ANCHOR EXPECTED-TEXT CORRECTION (ASTPP gate q02)
         # ========================================

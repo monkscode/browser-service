@@ -268,7 +268,7 @@ PARAMETERS:
     ⚠️ When you see [23] <a>Services</a>, set element_index=23
     ⚠️ This works for ALL elements including table cells, buttons, inputs, links, etc.
     ⚠️ We extract all element attributes (id, class, xpath) from this index automatically
-    ⚠️ Without element_index, we fall back to less accurate coordinate-based approaches
+    ⚠️ Without element_index, we fall back to less accurate coordinate-based approaches; with neither element_index nor expected_text the call is refused
   • candidate_locator (str, optional): Your suggested locator if you can identify one
     Examples: "id=search-input", "data-testid=login-btn", "name=username"
   • is_collection (bool, ★ REQUIRED FOR COLLECTIONS ★): Set to true if element has (loop: FOR)

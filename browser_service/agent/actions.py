@@ -40,6 +40,7 @@ from browser_service.locators.classifier import classify_element_type
 from browser_service.locators.frame_locator import ensure_frame_on_result, strip_frame
 from browser_service.locators.hidden_value import HIDES_VALUE_JS
 from browser_service.locators.read_target import apply_read_target_policy
+from browser_service.locators.smart_locator import NO_EVIDENCE_ERROR
 from browser_service.locators.stability import (
     STABLE,
     VOLATILE,
@@ -453,6 +454,8 @@ async def _settle_action_fit(
         return fallback_result
     if result.get("found"):
         return result
+    if result.get("evidence") == "none":
+        return result  # bs #72: a refusal, not a miss — today's cascade would refuse it again
     legacy = await run_cascade(None)
     if legacy.get("found"):
         legacy["action_fit"] = "misfit"
@@ -711,6 +714,21 @@ async def find_unique_locator_action(
             error_msg = f"Invalid element_id: {element_id} (type={type(element_id).__name__})"
             logger.error(f"❌ {error_msg}")
             return create_error_result("InvalidElementIdError", error_msg)
+
+        # bs #72: a call that names no element ships nothing. Blank text counts as
+        # none: a blank needle makes validate_semantic_match accept any empty element.
+        # (The cascade refuses the one case left: a frame container it discards.)
+        if not element_data and not (expected_text or "").strip():
+            logger.info(
+                f"   ⛔ NO EVIDENCE: {element_id} '{element_description}' at ({x}, {y}), "
+                f"candidate={candidate_locator!r} — no element data and no expected text; "
+                f"refused (signal: no-evidence-refused)"
+            )
+            return create_error_result(
+                "NoElementEvidence",
+                NO_EVIDENCE_ERROR,
+                {"evidence": "none"},
+            )
 
         # ========================================
         # ROW-ANCHOR EXPECTED-TEXT CORRECTION (ASTPP gate q02)

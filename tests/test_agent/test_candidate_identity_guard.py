@@ -257,10 +257,20 @@ class TestIdentityGateBoundaries:
         assert result["all_locators"][0]["type"] == "candidate"
 
     @pytest.mark.asyncio
-    async def test_absent_element_data_still_accepts(self):
+    async def test_absent_element_data_and_no_text_is_refused(self):
+        """bs #72: with no element data and no expected text the call carries no evidence, so
+        even a unique candidate is refused instead of accepted on its count."""
         resolved = {"id": "go", "tagName": "button", "textContent": "Go"}
         page = FakePage({"id=go": FakeLocator(1, resolved)})
         result = await _call(page, candidate_locator="id=go", expected_text=None, element_data=None)
+        assert result["found"] is False
+        assert result["error_type"] == "NoElementEvidence"
+
+    @pytest.mark.asyncio
+    async def test_absent_element_data_with_text_still_accepts(self):
+        resolved = {"id": "go", "tagName": "button", "textContent": "Go"}
+        page = FakePage({"id=go": FakeLocator(1, resolved)})
+        result = await _call(page, candidate_locator="id=go", expected_text="Go", element_data=None)
         assert result["all_locators"][0]["type"] == "candidate"
 
     @pytest.mark.asyncio
@@ -275,6 +285,11 @@ class TestIdentityGateBoundaries:
         supplied, which is genuinely nothing; element_tag reports the element
         being RETURNED. Both are accurate, and the cascade path computes
         element_data_available the same way (smart_locator.py).
+
+        Since bs #72 the call must carry evidence: with no element_data AND no
+        expected_text it is refused before any candidate is read. This test
+        sends an expected_text (the field's empty surface lets the semantic
+        check accept it) so the E1 routing is still tested for an evidenced call.
         """
         resolved = {
             "id": "from_date",
@@ -287,7 +302,7 @@ class TestIdentityGateBoundaries:
         result = await _call(
             page,
             candidate_locator="id=from_date",
-            expected_text=None,
+            expected_text="From date",
             element_data=None,
             element_description="the from-date field",
         )

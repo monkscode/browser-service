@@ -53,6 +53,8 @@ def _bare_cascade_result():
 
 
 async def _call(page, **kwargs):
+    # Evidence for the call (bs #72): without an index or a text the action refuses it.
+    kwargs.setdefault("expected_text", "Save draft")
     return await find_unique_locator_action(
         x=100,
         y=200,
@@ -77,7 +79,15 @@ async def test_bare_result_from_any_exit_leaves_with_the_frame(framed_page):
 async def test_frame_passed_positionally_is_gated_too(framed_page):
     with _cascade_returning(_bare_cascade_result()):
         out = await find_unique_locator_action(
-            100, 200, "elem_1", "the editable paragraph", None, None, None, framed_page, FRAME
+            100,
+            200,
+            "elem_1",
+            "the editable paragraph",
+            "Save draft",
+            None,
+            None,
+            framed_page,
+            FRAME,
         )
     assert out["best_locator"] == f"{FRAME} >>> css=.from-a-new-exit"
 
@@ -107,6 +117,15 @@ async def test_no_frame_returns_the_cascade_result_as_the_same_object(framed_pag
 
 
 async def test_candidate_accepted_in_a_frame_carries_the_frame(framed_page):
+    # The call carries expected_text (bs #72), so the semantic check reads the element's text.
+    framed_page.frame_locator.return_value.locator.return_value.evaluate = AsyncMock(
+        return_value={
+            "tagName": "p",
+            "id": "",
+            "textContent": "Save draft",
+            "innerText": "Save draft",
+        }
+    )
     with _cascade_returning(_bare_cascade_result()) as cascade:
         out = await _call(
             framed_page, iframe_context=FRAME, candidate_locator="p[contenteditable='true']"

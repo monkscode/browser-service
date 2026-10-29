@@ -55,6 +55,7 @@ async def test_timer_logged_and_duration_injected_on_success(caplog):
             y=20,
             element_id="elem_1",
             element_description="login button",
+            expected_text="Login",
             page=_page(),
         )
 
@@ -89,6 +90,7 @@ async def test_timer_logged_but_not_injected_when_approach_metrics_absent(caplog
             y=20,
             element_id="elem_2",
             element_description="missing thing",
+            expected_text="Thing",
             page=_page(),
         )
 
@@ -116,6 +118,7 @@ async def test_timer_logged_on_timeout_path(caplog):
             y=20,
             element_id="elem_3",
             element_description="slow page",
+            expected_text="Slow",
             page=_page(),
         )
 

@@ -519,6 +519,39 @@ class TestResultExtraction:
         assert entry["error_type"] == "SemanticMismatch"
         assert "evidence" not in entry
 
+    def test_refusal_keeps_earlier_rejection_when_another_element_is_found(self, workflow_harness):
+        """With elem_1 found the fallback is skipped, so only the primary path protects elem_2."""
+        rejected = {"element_id": "elem_2", "found": False, "error": "Semantic mismatch"}
+        refusal = {
+            "element_id": "elem_2",
+            "found": False,
+            "error": "named no element",
+            "evidence": "none",
+        }
+        arm(
+            workflow_harness,
+            [
+                FakeStep(
+                    [
+                        FakeActionResult(locator_metadata("elem_1", "id=search")),
+                        FakeActionResult(rejected),
+                        FakeActionResult(refusal),
+                    ]
+                )
+            ],
+        )
+        run_workflow(
+            workflow_harness,
+            elements=[
+                {"id": "elem_1", "description": "search box"},
+                {"id": "elem_2", "description": "submit button"},
+            ],
+        )
+        results = workflow_harness.updates[-1][1]["results"]["results"]
+        entry = next(r for r in results if r["element_id"] == "elem_2")
+        assert entry["error"] == "Semantic mismatch"
+        assert "evidence" not in entry
+
     def test_evidenced_rejection_replaces_an_earlier_refusal(self, workflow_harness):
         refusal = {
             "element_id": "elem_2",

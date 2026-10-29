@@ -1144,7 +1144,13 @@ def process_workflow_task(
                                         # Not found, or found without a locator.
                                         # Either way it carries the engine's
                                         # reason — the only copy of it.
-                                        rejected_payloads[elem_id] = metadata
+                                        # A refusal (bs #72: named no element) never
+                                        # replaces an earlier rejection: that one was checked.
+                                        if not (
+                                            metadata.get("evidence") == "none"
+                                            and elem_id in rejected_payloads
+                                        ):
+                                            rejected_payloads[elem_id] = metadata
 
                 if results_list:
                     logger.info(
@@ -1345,7 +1351,10 @@ def process_workflow_task(
                                 logger.info(
                                     f"   ✅ Direct access: {elem_id} (best_locator: {direct_result.get('best_locator')})"
                                 )
-                        elif elem_id:
+                        elif elem_id and not (
+                            # Same rule as the primary path: a refusal keeps an earlier rejection.
+                            direct_result.get("evidence") == "none" and elem_id in rejected_payloads
+                        ):
                             rejected_payloads[elem_id] = direct_result
 
                     # If we got all elements via direct access, we're completely done!

@@ -220,6 +220,29 @@ class TestD1MismatchReject:
         assert result["error_type"] == "NoElementEvidence"
         assert result.get("best_locator") is None
 
+    @pytest.mark.asyncio
+    async def test_no_expected_text_with_an_index_hit_accept_unchanged(self):
+        """No expected_text but an index hit (element_data) -> the call has evidence, nothing to
+        contradict -> the D1 accept stands (icon-only controls; bs #72 keeps this point)."""
+        dialog = _dialog_fallback_result(DIALOG_NAME_NORM)
+        with patch(
+            "browser_service.locators.smart_locator._find_element_via_accessibility",
+            new=AsyncMock(return_value=dialog),
+        ):
+            result = await find_unique_locator_action(
+                x=X,
+                y=Y,
+                element_id="elem_3",
+                element_description=SIGNIN_DESC,
+                expected_text=None,
+                candidate_locator=None,
+                element_data={"tagName": "button"},
+                page=LenientPage(live=(dialog["locator"],)),
+                is_collection=False,
+            )
+        assert result["found"] is True
+        assert result["best_locator"] == dialog["locator"]
+
 
 # ======================================================================
 # bs #53 — the string STEP 2.5 hands on must match where it is applied

@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from browser_service.agent.actions import find_unique_locator_action
+from browser_service.locators.smart_locator import find_unique_locator_at_coordinates
 
 CASCADE_RESULT = {"element_id": "elem_1", "found": True, "best_locator": "css=.from-cascade"}
 
@@ -129,3 +130,118 @@ async def test_element_data_found_in_a_frame_is_evidence(page, cascade):
     page.frame_locator.assert_called_with(FRAME)  # the candidate was counted inside the frame
     cascade.assert_called_once()
     assert "evidence" not in result
+
+
+# --- the frame container: evidence at the action's top check, not in the cascade (review I1) ---
+# The point lookup can hand over the <iframe> node itself. The candidate block may use it (the
+# identity check compares against it), so the top check lets the call through; the cascade drops
+# it and, with no text, refuses before any step ships what lies under the point.
+
+CONTAINER = {"tagName": "iframe", "id": "editor-frame"}
+
+
+async def _cascade_call(page, **kwargs):
+    args = {
+        "x": 120,
+        "y": 340,
+        "element_id": "elem_1",
+        "element_description": "the status message",
+        "search_context": page.frame_locator(FRAME),
+        "iframe_context": FRAME,
+    }
+    args.update(kwargs)
+    return await find_unique_locator_at_coordinates(page=page, **args)
+
+
+async def test_the_action_lets_the_frame_container_through_and_the_cascade_refuses_it(page):
+    result = await _call(page, element_data=CONTAINER, iframe_context=FRAME)
+
+    assert result["found"] is False
+    assert result["error_type"] == "NoElementEvidence"
+    assert result["error"] == ERROR
+    assert result["evidence"] == "none"
+    page.locator.assert_not_called()  # no step ran against the page
+
+
+async def test_the_cascade_refuses_a_dropped_frame_container_without_text(page, caplog):
+    root = page.frame_locator.return_value
+    with caplog.at_level(logging.INFO, logger="browser_service.locators.smart_locator"):
+        result = await _cascade_call(page, element_data=CONTAINER)
+
+    assert result["found"] is False
+    assert result["error_type"] == "NoElementEvidence"
+    assert result["error"] == ERROR
+    assert result["evidence"] == "none"
+    assert result["coordinates"] == {"x": 120, "y": 340}
+    assert "approach_metrics" not in result
+    page.locator.assert_not_called()
+    root.locator.assert_not_called()
+    assert [m for m in caplog.messages if "signal: no-evidence-refused" in m] == [
+        "   ⛔ NO EVIDENCE: elem_1 'the status message' at (120, 340) — no element data and no "
+        "expected text after the iframe reset; refused (signal: no-evidence-refused)"
+    ]
+
+
+@pytest.mark.parametrize("text", [None, "", "   "])
+async def test_blank_text_is_no_text_for_the_cascade_rule(page, text):
+    result = await _cascade_call(page, element_data=CONTAINER, expected_text=text)
+    assert result["evidence"] == "none"
+
+
+async def test_a_dropped_frame_container_with_text_is_not_refused(page, caplog):
+    with caplog.at_level(logging.INFO, logger="browser_service.locators.smart_locator"):
+        result = await _cascade_call(page, element_data=CONTAINER, expected_text="Synced")
+
+    assert "evidence" not in result
+    assert [m for m in caplog.messages if "signal: no-evidence-refused" in m] == []
+
+
+async def test_an_iframe_node_without_a_frame_is_not_dropped_and_not_refused(page):
+    step0 = AsyncMock(return_value={"found": True, "best_locator": "css=iframe#editor-frame"})
+    with patch(
+        "browser_service.locators.smart_locator._generate_locators_from_element_data", new=step0
+    ):
+        result = await _cascade_call(page, element_data=CONTAINER, iframe_context=None)
+
+    step0.assert_awaited_once()
+    assert result["found"] is True
+    assert "evidence" not in result
+
+
+async def test_a_parked_candidate_survives_the_cascade_refusal():
+    """E2: a demoted candidate is the last resort; a no-evidence cascade answer is a not-found
+    answer, so the candidate is returned as before."""
+    from tests.test_agent.test_action_fit_actions import (
+        CANDIDATE,
+        SEARCH_TEXT,
+        FakeLocator,
+        FakePage,
+    )
+
+    refusal = {
+        "found": False,
+        "error": ERROR,
+        "error_type": "NoElementEvidence",
+        "evidence": "none",
+    }
+    cascade = AsyncMock(return_value=refusal)
+    with (
+        patch("browser_service.locators.find_unique_locator_at_coordinates", new=cascade),
+        patch(
+            "browser_service.agent.actions.check_action_fit",
+            new=AsyncMock(return_value="<div> cannot be filled"),
+        ),
+    ):
+        out = await find_unique_locator_action(
+            x=100,
+            y=100,
+            element_id="elem_1",
+            element_description="the search input box",
+            expected_text=SEARCH_TEXT,
+            candidate_locator=CANDIDATE,
+            page=FakePage({CANDIDATE: FakeLocator(1)}),
+            action="input",
+        )
+
+    assert out["best_locator"] == CANDIDATE
+    assert out["action_fit"] == "misfit"

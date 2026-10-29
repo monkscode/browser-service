@@ -32,6 +32,13 @@ from browser_service.locators.stability import (
 
 logger = logging.getLogger(__name__)
 
+# bs #72: the refusal for a call that names no element (agent/actions.py uses it too).
+NO_EVIDENCE_ERROR = (
+    "No element evidence: no element_index matched an element and no expected_text "
+    "was given, so nothing was checked. Send the element's index, or its visible "
+    "text as expected_text."
+)
+
 # Configuration Constants
 # These values control the behavior of locator finding strategies
 
@@ -4226,14 +4233,40 @@ async def find_unique_locator_at_coordinates(
     # When browser-use provides element_data for an iframe but the user wants
     # an element INSIDE the iframe, we must reset element_data so STEP 1/2/3
     # will search inside the iframe for the actual target element.
+    _frame_container_dropped = False
     if element_data and iframe_context:
         element_tag = element_data.get("tagName", "").lower()
         if element_tag == "iframe":
+            _frame_container_dropped = True
             logger.info(f"⚠️ element_data is the iframe container (tagName={element_tag})")
             logger.info(
                 f"   Resetting element_data - will search inside {iframe_context} for actual element"
             )
             element_data = None  # Force STEP 1/2/3 to find element inside iframe
+
+    # bs #72: the frame node was the only element data and the cascade just dropped it, so
+    # without a text the call names nothing: refuse before any step ships what lies at the point.
+    # (Only after a drop: actions.py refuses every other no-evidence call at its top.)
+    if _frame_container_dropped and not (expected_text or "").strip():
+        logger.info(
+            f"   ⛔ NO EVIDENCE: {element_id} '{element_description}' at ({x}, {y}) — "
+            f"no element data and no expected text after the iframe reset; "
+            f"refused (signal: no-evidence-refused)"
+        )
+        return {
+            "element_id": element_id,
+            "description": element_description,
+            "found": False,
+            "error": NO_EVIDENCE_ERROR,
+            "error_type": "NoElementEvidence",
+            "evidence": "none",
+            "coordinates": {"x": x, "y": y},
+            "validated": False,
+            "count": 0,
+            "unique": False,
+            "valid": False,
+            "validation_method": "playwright",
+        }
 
     # ========================================
     # APPROACH METRICS: Build base dict for pattern analysis

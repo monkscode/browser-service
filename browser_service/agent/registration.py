@@ -2287,25 +2287,30 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                     fallback_error = result.get("error", "Could not find unique locator")
                     logger.error(f"❌ Custom action failed: {fallback_error}")
 
+                    # bs #72: a refusal for naming no element is counted per element_id;
+                    # from the second one on the element is reported NOT FOUND (no retry).
+                    _no_evidence = result.get("evidence") == "none"
+                    _no_evidence_again = False
+                    if _no_evidence:
+                        _no_evidence_n = _no_evidence_attempts.get(params.element_id, 0) + 1
+                        _no_evidence_attempts[params.element_id] = _no_evidence_n
+                        _no_evidence_again = _no_evidence_n > 1
+
                     # ========================================
                     # RETRY WITH element_index (only if it was originally None)
                     # ========================================
                     # If element_index was not provided AND fallback failed,
                     # request LLM to retry with the correct element_index.
                     # This handles interactable elements with stale DOM.
-                    _no_evidence = result.get("evidence") == "none"
-                    if _no_evidence:
-                        _n = _no_evidence_attempts.get(params.element_id, 0) + 1
-                        _no_evidence_attempts[params.element_id] = _n
                     _read_unconfirmed = result.get("read_address_unconfirmed")
-                    if _no_evidence and _n > 1:
+                    if _no_evidence_again:
                         final_msg = (
                             f"'{params.element_id}' named no element again (no element_index "
                             f"matched and no expected_text was given); it is recorded as NOT "
                             f"FOUND. Do not retry it — continue with the remaining elements."
                         )
                         logger.info(
-                            f"⛔ NO EVIDENCE NOT FOUND for {params.element_id} after {_n} attempts "
+                            f"⛔ NO EVIDENCE NOT FOUND for {params.element_id} after {_no_evidence_n} attempts "
                             f"(signal: no-evidence-not-found)"
                         )
                         action_result = ActionResult(

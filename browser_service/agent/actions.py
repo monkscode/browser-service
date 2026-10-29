@@ -40,6 +40,7 @@ from browser_service.locators.classifier import classify_element_type
 from browser_service.locators.frame_locator import ensure_frame_on_result, strip_frame
 from browser_service.locators.hidden_value import HIDES_VALUE_JS
 from browser_service.locators.read_target import apply_read_target_policy
+from browser_service.locators.smart_locator import NO_EVIDENCE_ERROR
 from browser_service.locators.stability import (
     STABLE,
     VOLATILE,
@@ -714,6 +715,7 @@ async def find_unique_locator_action(
 
         # bs #72: a call that names no element ships nothing. Blank text counts as
         # none: a blank needle makes validate_semantic_match accept any empty element.
+        # (The cascade refuses the one case left: a frame container it discards.)
         if not element_data and not (expected_text or "").strip():
             logger.info(
                 f"   ⛔ NO EVIDENCE: {element_id} '{element_description}' at ({x}, {y}), "
@@ -722,9 +724,7 @@ async def find_unique_locator_action(
             )
             return create_error_result(
                 "NoElementEvidence",
-                "No element evidence: no element_index matched an element and no "
-                "expected_text was given, so nothing was checked. Send the element's "
-                "index, or its visible text as expected_text.",
+                NO_EVIDENCE_ERROR,
                 {"evidence": "none"},
             )
 

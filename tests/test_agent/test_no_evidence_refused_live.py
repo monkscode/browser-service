@@ -235,3 +235,29 @@ class TestNotRefusedByThisRule:
             assert "evidence" not in out
         finally:
             await ctx.close()
+
+
+@pytest.mark.parametrize("candidate", [None, "span.sync-chip"])
+async def test_the_frame_container_as_element_data_is_refused_in_a_real_frame(browser, candidate):
+    """Review I1: the point lookup hands over the <iframe> node when the element under the
+    point inside the frame is not indexed. The candidate block may use it (a candidate rejected
+    by the identity check, or none, falls on), the cascade drops it, so the call names nothing
+    and is refused instead of shipping whatever lies under the point."""
+    from tests.test_agent.test_frame_prefix_exits import _in_frame
+
+    ctx = await browser.new_context(viewport={"width": 1280, "height": 900})
+    try:
+        kwargs = {"candidate_locator": candidate} if candidate else {}
+        out = await _in_frame(
+            await ctx.new_page(),
+            "span.sync-chip",
+            element_description="status chip",
+            element_data={"tagName": "iframe", "id": "editor-frame", "textContent": ""},
+            **kwargs,
+        )
+        assert out["found"] is False
+        assert out["error_type"] == "NoElementEvidence"
+        assert out["evidence"] == "none"
+        assert "best_locator" not in out
+    finally:
+        await ctx.close()

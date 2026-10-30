@@ -569,6 +569,44 @@ def _through_frame_gate(action):
     return gated
 
 
+async def _reaimed(action, call, inner, search_root, frame) -> Optional[Dict[str, Any]]:
+    """``action`` run as if the agent had indexed ``inner``: the accepted answer, or None.
+
+    An answer is accepted only when it is found and its locator resolves to exactly the control.
+    """
+    # The control's own text replaces the agent's: with the whole row as expected text the
+    # normal path fails its own text check on the link.
+    result = await action(
+        **{
+            **call,
+            "x": inner.x,
+            "y": inner.y,
+            "element_data": inner.element_data,
+            "candidate_locator": None,
+            "expected_text": inner.element_data["textContent"] or call.get("expected_text"),
+        }
+    )
+    if not (isinstance(result, dict) and result.get("found")):
+        return None
+    best = result.get("best_locator")
+    locator = convert_to_playwright_locator(strip_frame(best, frame))[0] if best else None
+    if not (locator and await inner.is_answer(search_root, locator)):
+        logger.info(
+            "   🎯 inner control found a locator for another element, "
+            "the click stays where it was (signal: inner-control-answer-elsewhere)"
+        )
+        return None
+    result["inner_control"] = True
+    metrics = result.get("approach_metrics")
+    if isinstance(metrics, dict):  # what the agent really pointed at (#62)
+        pointed = call.get("element_data") or {}
+        metrics["indexed_tag"] = (pointed.get("tagName") or "").lower()
+    logger.info(
+        f"   🎯 CLICK AIMED AT THE INNER CONTROL: '{best}' (signal: click-aimed-at-inner-control)"
+    )
+    return result
+
+
 def _through_inner_control(action):
     """Aim a click at the one control inside a dead container (bs #63).
 
@@ -597,40 +635,13 @@ def _through_inner_control(action):
                 description=call.get("element_description"),
                 row_anchor_text=call.get("row_anchor_text"),
             )
-            if inner is not None:
-                # The control's own text replaces the agent's: with the whole row as expected
-                # text the normal path fails its own text check on the link.
-                result = await action(
-                    **{
-                        **call,
-                        "x": inner.x,
-                        "y": inner.y,
-                        "element_data": inner.element_data,
-                        "candidate_locator": None,
-                        "expected_text": inner.element_data["textContent"]
-                        or call.get("expected_text"),
-                    }
-                )
-                if isinstance(result, dict) and result.get("found"):
-                    best = result.get("best_locator")
-                    if isinstance(best, str) and await inner.is_answer(
-                        search_root, convert_to_playwright_locator(strip_frame(best, frame))[0]
-                    ):
-                        result["inner_control"] = True
-                        metrics = result.get("approach_metrics")
-                        if isinstance(metrics, dict):  # what the agent really pointed at (#62)
-                            metrics["indexed_tag"] = (
-                                (call.get("element_data") or {}).get("tagName") or ""
-                            ).lower()
-                        logger.info(
-                            f"   🎯 CLICK AIMED AT THE INNER CONTROL: '{best}' "
-                            f"(signal: click-aimed-at-inner-control)"
-                        )
-                        return result
-                    logger.info(
-                        "   🎯 inner control found a locator for another element, "
-                        "the click stays where it was (signal: inner-control-answer-elsewhere)"
-                    )
+            result = (
+                await _reaimed(action, call, inner, search_root, frame)
+                if inner is not None
+                else None
+            )
+            if result is not None:
+                return result
         except Exception as exc:  # found can never fall: today's call below
             logger.warning(f"   inner-control re-aim skipped ({type(exc).__name__}): {exc}")
         return await action(*args, **kwargs)

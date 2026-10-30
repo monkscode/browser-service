@@ -210,7 +210,73 @@ async def test_action_link_is_never_clicked(page):
 
     assert "inner_control" not in out
     assert out["best_locator"] == today["best_locator"]
-    assert await page.evaluate("window.__acts") == []
+    assert await _acts_after_click(page, CANCEL, out["best_locator"]) == []
+
+
+ALICE_ROW = (
+    f"{ACTS}<table>"
+    '<tr class="r-a"><td style="width:300px">Alice, Smith</td><td style="width:400px">alice@x.io</td>'
+    '<td><button aria-label="Delete Alice" onclick="window.__acts.push(\'delete-alice\')">x'
+    "</button></td></tr></table>"
+)
+REMOVE_ROW = (
+    f"{ACTS}<table>"
+    f'<tr class="r-1"><td>{_link("remove", "Remove")}</td>'
+    '<td style="width:500px">Remove legacy login</td><td style="width:200px">Open</td></tr></table>'
+)
+
+
+@chromium
+@pytest.mark.parametrize(
+    "html, pointed, over",
+    [
+        (
+            ALICE_ROW,
+            "tr.r-a",
+            dict(expected_text="Alice", element_description="table row for Alice"),
+        ),
+        (
+            REMOVE_ROW,
+            "tr.r-1",
+            dict(
+                expected_text="Remove Remove legacy login Open",
+                element_description="table row for Remove legacy login",
+            ),
+        ),
+    ],
+    ids=["delete-beside-punctuation", "action-column-first"],
+)
+async def test_destructive_control_is_never_clicked(page, html, pointed, over):
+    out, kwargs = await _call(page, html, pointed, candidate_locator=pointed, **over)
+    today = await find_unique_locator_action.__wrapped__(**kwargs)
+
+    assert "inner_control" not in out
+    assert out["best_locator"] == today["best_locator"]
+    try:  # today's own answer may not click at all; what matters is that nothing destructive does
+        acts = await _acts_after_click(page, html, out["best_locator"])
+    except Exception:
+        acts = []
+    assert acts == []
+
+
+@chromium
+async def test_off_screen_row_keeps_todays_answer(page):
+    html = (
+        '<div style="height:1200px"></div><style>td{cursor:pointer}</style>'
+        f'{ACTS}<table><tr class="r-a"><td style="width:600px">{_link("profile", "Alice")}</td></tr></table>'
+    )
+    out, kwargs = await _call(
+        page,
+        html,
+        "tr.r-a",
+        candidate_locator="tr.r-a",
+        expected_text="Alice",
+        element_description="table row for Alice",
+    )
+    today = await find_unique_locator_action.__wrapped__(**kwargs)
+
+    assert "inner_control" not in out
+    assert out["best_locator"] == today["best_locator"]
 
 
 @chromium

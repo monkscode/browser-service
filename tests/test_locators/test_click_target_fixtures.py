@@ -273,13 +273,15 @@ async def test_word_inside_a_longer_word(page):
 async def test_devanagari_word_stays_whole(page):
     rad = "रद्द"
     ridi = rad + "ी"
-    html = ROW.format(w=300, first=f"{ridi} scrap", rest=f"<td><a href='#'>{rad}</a></td>")
+    # the link is the FIRST text of the row, so `first(c)` holds; the step does not hold the other
+    # cell's whole text, so `named` does not refuse either: only `\p{M}` keeps the word whole
+    html = f"<table><tr><td><a href='#'>{rad}</a></td><td style='width:500px'>{ridi} scrap</td></tr></table>"
     r = await _find(
         page,
         html,
         "tr",
-        f"{ridi} scrap {rad}",
-        description=f"table row for {ridi} scrap",
+        f"{rad} {ridi} scrap",
+        description=f"table row for {ridi}",
     )
     assert r is None
 
@@ -320,9 +322,104 @@ async def test_control_under_a_cover(page):
 
 
 async def test_control_below_the_fold(page):
+    # the pointed container's centre is off-screen: the cursor and cover checks read a hit test
+    # that answers nothing there, so the container is left as it is
     html = '<div style="height:3000px"></div>' + MENU.format(inner='<a href="#">Products</a>')
+    assert await _find(page, html, "li", "Products") is None
+
+
+async def test_control_below_the_fold_in_a_tall_container(page):
+    html = (
+        '<ul style="width:300px"><li role="menuitem" style="width:300px;height:1600px;position:relative">'
+        '<a href="#" style="position:absolute;top:1300px;left:0">Products</a></li></ul>'
+    )
+    await page.set_content(html)
+    assert await page.evaluate("document.querySelector('a').getBoundingClientRect().top") > 900
     r = await _find(page, html, "li", "Products")
-    assert _tag(r) == "a", "an off-screen control (no element at its point) is not refused"
+    assert _tag(r) == "a", "only the container's centre has to be on-screen"
+
+
+async def test_cursor_pointer_on_the_cells_below_the_fold(page):
+    html = '<div style="height:1200px"></div><style>td{cursor:pointer}</style>' + ROW.format(
+        w=600, first='<a href="#">Alice</a>', rest=""
+    )
+    assert await _find(page, html, "tr", "Alice") is None
+
+
+@pytest.mark.parametrize(
+    "cells, name",
+    [
+        (
+            '<td style="width:300px">Alice, Smith</td><td style="width:400px">alice@x.io</td>'
+            '<td><button aria-label="Delete Alice">x</button></td>',
+            "Alice",
+        ),
+        (
+            '<td style="width:300px">(Alice)</td><td style="width:400px">alice@x.io</td>'
+            '<td><a href="#">Delete Alice</a></td>',
+            "Alice",
+        ),
+        (
+            '<td style="width:400px">Order 1234: Shipped</td><td style="width:200px">2026-10-30</td>'
+            '<td><a href="#">Cancel Order 1234</a></td>',
+            "Order 1234",
+        ),
+    ],
+    ids=["comma", "parenthesis", "colon"],
+)
+async def test_name_beside_punctuation(page, cells, name):
+    html = f"<table><tr>{cells}</tr></table>"
+    assert await _find(page, html, "tr", name, description=f"table row for {name}") is None
+
+
+async def test_name_only_in_an_input_value(page):
+    html = (
+        '<table><tr><td style="width:300px"><input value="Alice"></td>'
+        '<td style="width:400px">Active</td><td><button>Delete Alice</button></td></tr></table>'
+    )
+    assert await _find(page, html, "tr", "Alice", description="table row for Alice") is None
+
+
+@pytest.mark.parametrize(
+    "first, name, rest, expected, step",
+    [
+        (
+            '<a href="#">Remove</a>',
+            "Remove legacy login",
+            "Open",
+            "Remove Remove legacy login Open",
+            "table row for Remove legacy login",
+        ),
+        (
+            '<a href="#">Close</a>',
+            "Will Close",
+            "Admin",
+            "Close Will Close Admin",
+            "table row for Will Close",
+        ),
+        (
+            "<button>Action</button>",
+            "Order 1234",
+            "Shipped",
+            "Action Order 1234 Shipped",
+            "table row for Order 1234 (action: click)",
+        ),
+    ],
+    ids=["remove", "close", "action"],
+)
+async def test_action_column_first(page, first, name, rest, expected, step):
+    html = (
+        f'<table><tr><td>{first}</td><td style="width:500px">{name}</td>'
+        f'<td style="width:200px">{rest}</td></tr></table>'
+    )
+    assert await _find(page, html, "tr", expected, description=step) is None
+
+
+async def test_hidden_value_is_not_counted(page):
+    # a password's value is not read, so it is not "the name shown elsewhere"
+    inner = '<input type="password" value="Products" style="width:60px"> <a href="#">Products</a>'
+    r = await _find(page, MENU.format(inner=inner), "li", "Products")
+    assert _tag(r) == "a"
 
 
 async def test_cursor_pointer_on_the_container(page):
@@ -356,10 +453,11 @@ async def test_onclick_on_the_container(page):
 @pytest.mark.parametrize(
     "control",
     [
-        '<input type="password" value="Products">',
-        '<input type="password" value="Products" aria-label="Products">',
+        '<input type="password" value="Products" style="width:60px">',
+        '<input type="password" value="Products" aria-label="Products" style="width:60px">',
+        '<textarea nlrf-secret aria-label="Products" style="width:60px;height:16px"></textarea>',
     ],
-    ids=["value", "aria-label"],
+    ids=["value", "aria-label", "marked-textarea"],
 )
 async def test_password_input_is_never_matched(page, control):
     assert await _find(page, MENU.format(inner=control), "li", "Products") is None

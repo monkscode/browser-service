@@ -15,7 +15,7 @@ controls, a control that hides its value, a failed read) is None. A name is matc
 words (``\\p{M}`` keeps Devanagari words whole), a name that only names an action on the row
 ("Delete Alice" for a row Alice) never answers for the row, and the innermost match wins.
 
-Referenced by: agent/actions.py, agent/registration.py
+Referenced by: agent/actions.py
 Depends on: locators/action_fit.py, locators/hidden_value.py
 """
 
@@ -44,8 +44,9 @@ INNER_CONTROL_JS = r"""
         + '[role="switch"]';
     const r = el.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     const at = el.ownerDocument.elementFromPoint(cx, cy);
+    if (!at) return null;
     if (el.hasAttribute('onclick') || el.getAttribute('tabindex') === '0' || getComputedStyle(el).cursor === 'pointer'
-        || (at && !at.closest(CONTROL) && getComputedStyle(at).cursor === 'pointer')) return null;
+        || (!at.closest(CONTROL) && getComputedStyle(at).cursor === 'pointer')) return null;
     const norm = s => (s || '').split(/\s+/).filter(Boolean).join(' ').toLowerCase();
     const shown = c => { const b = c.getBoundingClientRect(), s = getComputedStyle(c);
         return b.width > 1 && b.height > 1 && s.visibility !== 'hidden'
@@ -58,12 +59,19 @@ INNER_CONTROL_JS = r"""
     const shownText = e => norm(e.innerText || e.textContent || '');
     const dbl = s => ' ' + s.split(' ').join('  ') + ' ';
     const times = (s, n) => dbl(s).split(dbl(n)).length - 1;
+    const wordy = words(needle).trim();
+    const count = s => wordy ? times(words(s).trim(), wordy) : times(norm(s), needle);
+    const rowText = [shownText(el)].concat(Array.from(el.querySelectorAll('input:not([type="hidden"]), textarea'))
+        .filter(i => !HIDES(i) && !['button', 'submit', 'reset'].includes(i.type)).map(i => i.value)).join(' ');
+    const rowTimes = count(rowText);
     const first = c => { const g = el.ownerDocument.createRange(); g.setStart(el, 0); g.setEndBefore(c);
         return !/\p{L}/u.test(g.toString()); };
+    const named = c => Array.from(el.children).some(k => !k.contains(c) && words(shownText(k)).trim() !== ''
+        && words(step).includes(words(shownText(k))));
     const carries = c => { const w = words(name(c));
         return ((norm(name(c)) === needle || (words(needle).trim() !== '' && w.includes(words(needle))))
-                && times(shownText(el), needle) <= times(shownText(c), needle))
-            || (w.trim() !== '' && words(needle).includes(w) && words(step).includes(w) && first(c)); };
+                && rowTimes <= count(shownText(c)))
+            || (w.trim() !== '' && words(needle).includes(w) && words(step).includes(w) && first(c) && !named(c)); };
     const hits = Array.from(el.querySelectorAll(CONTROL))
         .filter(c => !HIDES(c) && shown(c) && carries(c));
     const inner = hits.filter(c => !hits.some(o => o !== c && c.contains(o)));
@@ -74,10 +82,10 @@ INNER_CONTROL_JS = r"""
     return Array.from(c.getClientRects()).some(b => cx >= b.left && cx <= b.right && cy >= b.top && cy <= b.bottom)
         ? null : c;
 }
-""".replace("HIDES(c)", HIDES_VALUE_JS + "(c)")
+""".replace("HIDES(", HIDES_VALUE_JS + "(")
 
 # The control's element data: the keys of registration._extract_dom_node_attributes plus
-# textContent and hasClickListener, the xpath absolute as browser-use writes it.
+# textContent, the xpath absolute as browser-use writes it.
 ELEMENT_DATA_JS = """
 c => {
     const parts = [];

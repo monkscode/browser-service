@@ -219,6 +219,11 @@ ALICE_ROW = (
     '<td><button aria-label="Delete Alice" onclick="window.__acts.push(\'delete-alice\')">x'
     "</button></td></tr></table>"
 )
+DELETE_ROW = (
+    f"{ACTS}<table>"
+    f'<tr class="r-1"><td>{_link("delete", "Delete")}</td>'
+    '<td style="width:500px">Delete</td><td style="width:200px">Allowed</td></tr></table>'
+)
 REMOVE_ROW = (
     f"{ACTS}<table>"
     f'<tr class="r-1"><td>{_link("remove", "Remove")}</td>'
@@ -243,8 +248,16 @@ REMOVE_ROW = (
                 element_description="table row for Remove legacy login",
             ),
         ),
+        (
+            DELETE_ROW,
+            "tr.r-1",
+            dict(
+                expected_text="Delete Delete Allowed",
+                element_description="table row for Delete",
+            ),
+        ),
     ],
-    ids=["delete-beside-punctuation", "action-column-first"],
+    ids=["delete-beside-punctuation", "action-column-first", "one-word-name-cell"],
 )
 async def test_destructive_control_is_never_clicked(page, html, pointed, over):
     out, kwargs = await _call(page, html, pointed, candidate_locator=pointed, **over)

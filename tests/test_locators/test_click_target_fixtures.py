@@ -454,6 +454,88 @@ async def test_step_holds_part_of_a_cell(page, html, pointed, expected):
     assert r is None
 
 
+def _row(a, b, c):
+    return TABLE.format(
+        f'<tr class="r-1"><td>{a}</td><td style="width:500px">{b}</td>'
+        f'<td style="width:200px">{c}</td></tr>'
+    )
+
+
+def _wrapped(a, b, c):
+    return (
+        '<div class="row" style="width:900px"><div class="cells" style="display:flex">'
+        f'<div>{a}</div><div style="width:500px">{b}</div><div style="width:200px">{c}</div>'
+        "</div></div>"
+    )
+
+
+def _tbody(a, b, c):
+    return (
+        '<table style="width:900px"><tbody><tr>'
+        f'<td>{a}</td><td style="width:500px">{b}</td><td style="width:200px">{c}</td>'
+        "</tr></tbody></table>"
+    )
+
+
+DELETE = '<a href="#">Delete</a>'
+ACTION = "<button>Action</button>"
+
+
+@pytest.mark.parametrize(
+    "html, pointed, expected, step",
+    [
+        (
+            _row(DELETE, "Delete", "Allowed"),
+            "tr.r-1",
+            "Delete Delete Allowed",
+            "table row for Delete",
+        ),
+        (
+            _row(REMOVE, "Remove", "Open"),
+            "tr.r-1",
+            "Remove Remove Open",
+            "table row for Remove",
+        ),
+        (
+            _row(DELETE, "Allowed", "Delete"),
+            "tr.r-1",
+            "Delete Allowed Delete",
+            "table row for Delete",
+        ),
+        (
+            _row(ACTION, "Alice", "Shipped"),
+            "tr.r-1",
+            "Action Alice Shipped",
+            "table row for Alice (action: click)",
+        ),
+        (
+            _wrapped(DELETE, "Delete", "Allowed"),
+            "div.row",
+            "Delete Delete Allowed",
+            "table row for Delete",
+        ),
+        (
+            _tbody(DELETE, "Delete", "Allowed"),
+            "tbody",
+            "Delete Delete Allowed",
+            "table row for Delete",
+        ),
+    ],
+    ids=[
+        "delete-named-delete",
+        "remove-named-remove",
+        "delete-name-last",
+        "action-one-word",
+        "wrapper-one-word",
+        "tbody-one-word",
+    ],
+)
+async def test_step_names_another_element_of_the_row(page, html, pointed, expected, step):
+    # a one-word cell equal to the control's name holds no run longer than the name:
+    # only the element check refuses these
+    assert await _find(page, html, pointed, expected, description=step) is None
+
+
 async def test_later_control_named_by_one_word(page):
     # only `first(c)` refuses this page: the link is not the row's first text
     html = TABLE.format(

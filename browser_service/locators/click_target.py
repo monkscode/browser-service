@@ -12,11 +12,11 @@ the two click sites need; in every other case it returns None and the caller cha
 Found can never fall: any doubt (not a click, a control or a container with its own listener, a
 collection, a row-anchored or text-less step, no xpath, a stale or ambiguous xpath, two candidate
 controls, a control that hides its value, a failed read) is None. A name is matched by whole
-words (``\\p{M}`` keeps Devanagari words whole). A control whose name the row also shows
-elsewhere, in its text or an input value ("Delete Alice" for a row "Alice, Smith"), does not
-answer for the row. When the agent reported the whole row, the control must come first in it
-and the step must not hold more of the row's words than the control's own name. The innermost
-match wins.
+words (``\\p{M}`` keeps Devanagari words whole). A control named by the expected text does
+not answer for the row when the row shows that text more often than the control does, in its
+text or an input value ("Delete Alice" for a row "Alice, Smith"). When the agent reported the
+whole row, the control must come first in it, and the step must not name another element of
+the row or hold more of the row's words than the control's own name. The innermost match wins.
 
 Referenced by: agent/actions.py
 Depends on: locators/action_fit.py, locators/hidden_value.py
@@ -72,7 +72,9 @@ INNER_CONTROL_JS = r"""
         return !/\p{L}/u.test(g.toString()); };
     const named = c => { const n = words(name(c)).trim().split(' ').length, own = words(shownText(c)).trim();
         const rest = words(shownText(el)).trim().split(' ').slice(own ? own.split(' ').length : 0);
-        return rest.some((_, i) => i + n < rest.length && words(step).includes(' ' + rest.slice(i, i + n + 1).join(' ') + ' ')); };
+        return Array.from(el.querySelectorAll('*')).some(k => !k.contains(c) && !c.contains(k)
+                && words(shownText(k)).trim() !== '' && words(step).includes(words(shownText(k))))
+            || rest.some((_, i) => i + n < rest.length && words(step).includes(' ' + rest.slice(i, i + n + 1).join(' ') + ' ')); };
     const carries = c => { const w = words(name(c));
         return ((norm(name(c)) === needle || (words(needle).trim() !== '' && w.includes(words(needle))))
                 && rowTimes <= count(shownText(c)))

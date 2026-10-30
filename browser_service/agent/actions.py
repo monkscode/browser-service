@@ -37,6 +37,7 @@ from typing import Any, Dict, Optional, Tuple
 from browser_service.agent.read_step_identity import read_identity_facts, read_step_verdict
 from browser_service.locators.action_fit import READ_ACTIONS, check_action_fit
 from browser_service.locators.classifier import classify_element_type
+from browser_service.locators.click_target import find_inner_control
 from browser_service.locators.frame_locator import ensure_frame_on_result, strip_frame
 from browser_service.locators.hidden_value import HIDES_VALUE_JS
 from browser_service.locators.read_target import apply_read_target_policy
@@ -47,6 +48,7 @@ from browser_service.locators.stability import (
     classify_locator,
     stability_rank,
 )
+from browser_service.locators.validation import convert_to_playwright_locator
 
 # Get logger
 logger = logging.getLogger(__name__)
@@ -567,6 +569,76 @@ def _through_frame_gate(action):
     return gated
 
 
+def _through_inner_control(action):
+    """Aim a click at the one control inside a dead container (bs #63).
+
+    When the agent pointed at a container whose centre misses the control the step names,
+    run ``action`` once as if it had indexed that control. The answer stands only when it is
+    found and its locator resolves to exactly that control; otherwise the caller gets what
+    today's call returns. Any failure here is the same: today's call.
+    """
+    signature = inspect.signature(action)
+
+    @functools.wraps(action)
+    async def aimed(*args, **kwargs):
+        call = signature.bind(*args, **kwargs).arguments
+        page = call.get("page")
+        if page is None:
+            return await action(*args, **kwargs)
+        try:
+            frame = call.get("iframe_context")
+            search_root = page.frame_locator(frame) if frame else page
+            inner = await find_inner_control(
+                search_root,
+                action=call.get("action"),
+                expected_text=call.get("expected_text"),
+                is_collection=call.get("is_collection"),
+                element_data=call.get("element_data"),
+                description=call.get("element_description"),
+                row_anchor_text=call.get("row_anchor_text"),
+            )
+            if inner is not None:
+                # The control's own text replaces the agent's: with the whole row as expected
+                # text the normal path fails its own text check on the link.
+                result = await action(
+                    **{
+                        **call,
+                        "x": inner.x,
+                        "y": inner.y,
+                        "element_data": inner.element_data,
+                        "candidate_locator": None,
+                        "expected_text": inner.element_data["textContent"]
+                        or call.get("expected_text"),
+                    }
+                )
+                if isinstance(result, dict) and result.get("found"):
+                    best = result.get("best_locator")
+                    if isinstance(best, str) and await inner.is_answer(
+                        search_root, convert_to_playwright_locator(strip_frame(best, frame))[0]
+                    ):
+                        result["inner_control"] = True
+                        metrics = result.get("approach_metrics")
+                        if isinstance(metrics, dict):  # what the agent really pointed at (#62)
+                            metrics["indexed_tag"] = (
+                                (call.get("element_data") or {}).get("tagName") or ""
+                            ).lower()
+                        logger.info(
+                            f"   🎯 CLICK AIMED AT THE INNER CONTROL: '{best}' "
+                            f"(signal: click-aimed-at-inner-control)"
+                        )
+                        return result
+                    logger.info(
+                        "   🎯 inner control found a locator for another element, "
+                        "the click stays where it was (signal: inner-control-answer-elsewhere)"
+                    )
+        except Exception as exc:  # found can never fall: today's call below
+            logger.warning(f"   inner-control re-aim skipped ({type(exc).__name__}): {exc}")
+        return await action(*args, **kwargs)
+
+    return aimed
+
+
+@_through_inner_control
 @_through_frame_gate
 async def find_unique_locator_action(
     x: float,

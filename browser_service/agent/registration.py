@@ -127,6 +127,12 @@ def _extract_dom_node_attributes(dom_node) -> dict:
     parent = getattr(dom_node, "parent_node", None)
     parent_attrs = getattr(parent, "attributes", None) if parent is not None else None
     parent_class = parent_attrs.get("class", "") if isinstance(parent_attrs, dict) else ""
+    # A row's listener sits on its tbody/table (selmap3: <tr js=False parent_js=True>); `is True`
+    # because a MagicMock attribute is truthy.
+    chain = [dom_node, parent, getattr(parent, "parent_node", None)]
+    has_click_listener = any(
+        getattr(n, "has_js_click_listener", None) is True for n in chain if n is not None
+    )
     return {
         "tagName": dom_node.node_name.lower() if hasattr(dom_node, "node_name") else "",
         "id": attrs.get("id", ""),
@@ -150,6 +156,7 @@ def _extract_dom_node_attributes(dom_node) -> dict:
         else attrs.get("value", ""),  # Current value of input
         "xpath": dom_node.xpath if hasattr(dom_node, "xpath") else "",
         "backendNodeId": _backend_node_id(dom_node),
+        "hasClickListener": has_click_listener,
     }
 
 
@@ -1934,6 +1941,10 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                 action_result = None
                 if result.get("found"):
                     best_locator = result.get("best_locator")
+                    # With an index bs clicks the indexed node, which here is the dead container.
+                    _interaction_index = (
+                        None if result.pop("inner_control", False) else params.element_index
+                    )
 
                     # Get validation data from result (not validation_summary)
                     validation_method = result.get("validation_method", "playwright")
@@ -2121,7 +2132,7 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                         active_page,
                         best_locator,
                         params.element_id,
-                        params.element_index,
+                        _interaction_index,
                         _element_specs,
                         _performed_actions,
                         dropdown_framework=result.get("dropdown_framework") or "",
@@ -2142,7 +2153,7 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                             logger.warning(
                                 f"   F1 read-change step skipped ({type(_f1_err).__name__}): {_f1_err}"
                             )
-                    _idx = params.element_index
+                    _idx = _interaction_index
 
                     # Build display_note for the success message.
                     # On auto_failed with element_index: name the exact browser-use native action + index.

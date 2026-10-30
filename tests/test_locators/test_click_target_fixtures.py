@@ -500,7 +500,6 @@ async def test_is_answer_false_when_the_page_went_away(page):
 async def test_element_data_keys_match_the_indexed_shape(page):
     r = await _find(page, MENU.format(inner='<a href="#">Products</a>'), "li", "Products")
     assert r is not None
-    # hasClickListener reaches _extract_dom_node_attributes only with the wiring (Task 2).
-    expected = set(_extract_dom_node_attributes(MagicMock())) | {"textContent", "hasClickListener"}
+    expected = set(_extract_dom_node_attributes(MagicMock())) | {"textContent"}
     assert set(r.element_data) == expected
     assert r.element_data["xpath"].startswith("html[1]/body[1]/ul[1]/li[1]/a[1]")

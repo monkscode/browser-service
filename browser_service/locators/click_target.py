@@ -12,8 +12,11 @@ the two click sites need; in every other case it returns None and the caller cha
 Found can never fall: any doubt (not a click, a control or a container with its own listener, a
 collection, a row-anchored or text-less step, no xpath, a stale or ambiguous xpath, two candidate
 controls, a control that hides its value, a failed read) is None. A name is matched by whole
-words (``\\p{M}`` keeps Devanagari words whole), a name that only names an action on the row
-("Delete Alice" for a row Alice) never answers for the row, and the innermost match wins.
+words (``\\p{M}`` keeps Devanagari words whole). A control whose name the row also shows
+elsewhere, in its text or an input value ("Delete Alice" for a row "Alice, Smith"), does not
+answer for the row. When the agent reported the whole row, the control must come first in it
+and the step must not hold more of the row's words than the control's own name. The innermost
+match wins.
 
 Referenced by: agent/actions.py
 Depends on: locators/action_fit.py, locators/hidden_value.py
@@ -33,8 +36,9 @@ CONTROL_TAGS = frozenset(
     {"a", "button", "input", "select", "textarea", "label", "summary", "option"}
 )
 
-# The proven rule (bench/private/bs63/stress_opus/). HIDES(c) is resolved below, so the block
-# stays comparable byte for byte with the plan.
+# shortcut: a row whose name shows only in an image alt, a title or a CSS image is not counted, so a control named after it can answer for the row; upgrade if a real page shows it.
+# The proven rule (bench/private/bs63/stress_opus/). HIDES(c) and HIDES(i) are resolved below, so
+# the block stays comparable byte for byte with the plan.
 INNER_CONTROL_JS = r"""
 (el, {needle, step}) => {
     const TAGS = new Set(['a', 'button', 'input', 'select', 'textarea', 'label', 'summary', 'option']);
@@ -66,8 +70,9 @@ INNER_CONTROL_JS = r"""
     const rowTimes = count(rowText);
     const first = c => { const g = el.ownerDocument.createRange(); g.setStart(el, 0); g.setEndBefore(c);
         return !/\p{L}/u.test(g.toString()); };
-    const named = c => Array.from(el.children).some(k => !k.contains(c) && words(shownText(k)).trim() !== ''
-        && words(step).includes(words(shownText(k))));
+    const named = c => { const n = words(name(c)).trim().split(' ').length, own = words(shownText(c)).trim();
+        const rest = words(shownText(el)).trim().split(' ').slice(own ? own.split(' ').length : 0);
+        return rest.some((_, i) => i + n < rest.length && words(step).includes(' ' + rest.slice(i, i + n + 1).join(' ') + ' ')); };
     const carries = c => { const w = words(name(c));
         return ((norm(name(c)) === needle || (words(needle).trim() !== '' && w.includes(words(needle))))
                 && rowTimes <= count(shownText(c)))

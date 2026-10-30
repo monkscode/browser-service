@@ -415,6 +415,63 @@ async def test_action_column_first(page, first, name, rest, expected, step):
     assert await _find(page, html, "tr", expected, description=step) is None
 
 
+TABLE = (
+    "<style>td,th{{border:1px solid #ccc;padding:6px}}</style>"
+    '<table style="width:900px;border-collapse:collapse"><thead><tr><th>Name</th><th>Info</th>'
+    "<th>Actions</th></tr></thead><tbody>{}</tbody></table>"
+)
+REMOVE = '<a href="#">Remove</a>'
+
+
+@pytest.mark.parametrize(
+    "html, pointed, expected",
+    [
+        (  # the name cell holds more than the step names
+            TABLE.format(
+                f'<tr class="r-1"><td>{REMOVE}</td><td style="width:500px">Remove legacy login #12</td>'
+                '<td style="width:200px">Open</td></tr>'
+            ),
+            "tr.r-1",
+            "Remove Remove legacy login #12 Open",
+        ),
+        (  # the same cells one wrapper down
+            f'<div class="row" style="width:900px"><div class="cells" style="display:flex"><div>{REMOVE}</div>'
+            '<div style="width:500px">Remove legacy login</div><div style="width:200px">Open</div></div></div>',
+            "div.row",
+            "Remove Remove legacy login Open",
+        ),
+        (  # a one-row tbody
+            f'<table style="width:900px"><tbody><tr><td>{REMOVE}</td><td style="width:500px">'
+            'Remove legacy login</td><td style="width:200px">Open</td></tr></tbody></table>',
+            "tbody",
+            "Remove Remove legacy login Open",
+        ),
+    ],
+    ids=["cell-holds-more", "nested-wrapper", "tbody-one-row"],
+)
+async def test_step_holds_part_of_a_cell(page, html, pointed, expected):
+    r = await _find(page, html, pointed, expected, description="table row for Remove legacy login")
+    assert r is None
+
+
+async def test_later_control_named_by_one_word(page):
+    # only `first(c)` refuses this page: the link is not the row's first text
+    html = TABLE.format(
+        '<tr class="r-1"><td style="width:400px">Legacy login</td><td style="width:300px">Open</td>'
+        f"<td>{REMOVE}</td></tr>"
+    )
+    r = await _find(
+        page, html, "tr.r-1", "Legacy login Open Remove", description="table row for Remove"
+    )
+    assert r is None
+
+
+async def test_symbol_name_shown_twice(page):
+    # a row showing "→" twice: only the plain-string branch of `count` sees it (no word to count)
+    r = await _find(page, MENU.format(inner='→ <a href="#">→</a>'), "li", "→")
+    assert r is None
+
+
 async def test_hidden_value_is_not_counted(page):
     # a password's value is not read, so it is not "the name shown elsewhere"
     inner = '<input type="password" value="Products" style="width:60px"> <a href="#">Products</a>'

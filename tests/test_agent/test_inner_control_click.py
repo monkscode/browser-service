@@ -249,6 +249,35 @@ T1_TWO_ROWS = (
     '<td style="width:400px">User</td><td><button aria-label="Delete" '
     "onclick=\"window.__acts.push('delete-bob')\">&#128465;</button></td></tr></tbody></table>"
 )
+# T1's two rows with the Delete control shown only while its row is hovered: a button
+# (bench/private/bs63/build_review/rr8_hoverlib.py rr8_hover_opacity_two) and a span icon whose
+# handler a script attaches (m3_hoverlib.py a_display_two)
+T1_HOVER_TWO_ROWS = (
+    f"{ACTS}<style>.act{{opacity:0}} tr:hover .act{{opacity:1}}</style>"
+    "<style>td,th{border:1px solid #ccc;padding:6px}</style>"
+    '<table style="width:900px;border-collapse:collapse"><thead><tr><th>Name</th><th>Info</th>'
+    "<th>Actions</th></tr></thead><tbody>"
+    f'<tr class="r-a"><td style="width:300px">{_link("profile-alice", "Alice")}</td>'
+    '<td style="width:400px">Admin</td><td class="act"><button aria-label="Delete" '
+    "onclick=\"window.__acts.push('delete-alice')\">&#128465;</button></td></tr>"
+    f'<tr class="r-b"><td style="width:300px">{_link("profile-bob", "Bob")}</td>'
+    '<td style="width:400px">User</td><td class="act"><button aria-label="Delete" '
+    "onclick=\"window.__acts.push('delete-bob')\">&#128465;</button></td></tr></tbody></table>"
+)
+T1_HOVER_ICON_TWO_ROWS = (
+    f"{ACTS}<style>.act .del{{display:none}} tr:hover .act .del{{display:inline}}</style>"
+    "<style>td,th{border:1px solid #ccc;padding:6px}</style>"
+    '<table style="width:900px;border-collapse:collapse"><thead><tr><th>Name</th><th>Info</th>'
+    "<th>Actions</th></tr></thead><tbody>"
+    f'<tr class="r-a"><td style="width:300px">{_link("profile-alice", "Alice")}</td>'
+    '<td style="width:400px">Admin</td><td class="act"><span class="del" data-who="alice" '
+    'style="cursor:pointer;font-size:16px">&#128465;</span></td></tr>'
+    f'<tr class="r-b"><td style="width:300px">{_link("profile-bob", "Bob")}</td>'
+    '<td style="width:400px">User</td><td class="act"><span class="del" data-who="bob" '
+    'style="cursor:pointer;font-size:16px">&#128465;</span></td></tr></tbody></table>'
+    "<script>document.querySelectorAll('.del').forEach(d => d.addEventListener('click', "
+    "() => window.__acts.push('delete-' + d.dataset.who)))</script>"
+)
 
 
 @chromium
@@ -289,6 +318,16 @@ T1_TWO_ROWS = (
             "tr.r-a",
             dict(expected_text="Alice", element_description="Delete button in the row for Alice"),
         ),
+        (
+            T1_HOVER_TWO_ROWS,
+            "tr.r-a",
+            dict(expected_text="Alice", element_description="Delete button in the row for Alice"),
+        ),
+        (
+            T1_HOVER_ICON_TWO_ROWS,
+            "tr.r-a",
+            dict(expected_text="Alice", element_description="Delete button in the row for Alice"),
+        ),
     ],
     ids=[
         "delete-beside-punctuation",
@@ -296,6 +335,8 @@ T1_TWO_ROWS = (
         "one-word-name-cell",
         "two_candidates",
         "t1_two_rows",
+        "rr8_hover_opacity_two",
+        "a_display_two",
     ],
 )
 async def test_destructive_control_is_never_clicked(page, html, pointed, over):

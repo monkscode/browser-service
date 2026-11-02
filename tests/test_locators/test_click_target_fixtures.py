@@ -394,15 +394,28 @@ async def test_name_only_in_an_input_value(page):
     assert await _find(page, html, "tr", "Alice", description="table row for Alice") is None
 
 
-async def test_hidden_password_value_is_never_counted(page):
-    # a password input that is not shown holds "Alice": counted, the row would read "Alice" twice
+async def test_hidden_password_input_counts_as_a_second_control(page):
+    # a password input that is not shown still counts as a control: the row holds two (the link
+    # and the input), so it is left as today
     html = (
         '<table><tr><td style="width:600px">User</td><td><a href="#">Alice</a></td>'
         '<td><input type="password" value="Alice" style="display:none"></td></tr></table>'
     )
     r = await _find(page, html, "tr", "Alice", description="table row for Alice")
+    assert r is None
+
+
+async def test_hidden_password_value_is_never_counted(page):
+    # the link's only content is a password input holding "Alice" (one control: the innermost).
+    # Counted, the value would make the cell read "Alice" once more than the link shows, and the
+    # step does not hold "Alice", so nothing would answer; skipped, the link answers by its label
+    first = (
+        '<a href="#" aria-label="Alice" style="display:inline-block;width:120px">'
+        '<input type="password" value="Alice" style="width:100px"></a>'
+    )
+    html = ROW.format(w=600, first=first, rest="")
+    r = await _find(page, html, "td", "Alice", description="the link in the first cell")
     assert _tag(r) == "a"
-    assert _text(r) == "Alice"
 
 
 @pytest.mark.parametrize(
@@ -592,14 +605,24 @@ async def test_two_candidates_stay_unanswered(page, html):
 BIN_DELETE = '<button aria-label="Delete">&#128465;</button>'
 
 
-def _t1(ctrl, name='<a href="#">Alice</a>', role="Admin", cls="r-a"):
+def _t1(ctrl, name='<a href="#">Alice</a>', role="Admin", cls="r-a", act=False):
+    td = '<td class="act">' if act else "<td>"
     return (
         f'<tr class="{cls}"><td style="width:300px">{name}</td>'
-        f'<td style="width:400px">{role}</td><td>{ctrl}</td></tr>'
+        f'<td style="width:400px">{role}</td>{td}{ctrl}</td></tr>'
     )
 
 
 T1_STEP = "Delete button in the row for Alice"
+# The Delete control shown only while the row is hovered, or an icon whose click handler a script
+# attaches (bench/private/bs63/build_review: rr8_hoverlib.py, m3_hoverlib.py, m3_pages.py)
+TRASH_ICON = (
+    '<span class="del" data-who="alice" style="cursor:pointer;font-size:16px">&#128465;</span>'
+)
+SR_ONLY = (
+    "<style>.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;"
+    "clip:rect(0,0,0,0);white-space:nowrap;border:0}</style>"
+)
 
 
 @pytest.mark.parametrize(
@@ -622,6 +645,58 @@ T1_STEP = "Delete button in the row for Alice"
         ),
         (TABLE.format(_t1(BIN_DELETE)), "the trash icon in the row for Alice"),
         (TABLE.format(_t1(BIN_DELETE)), "remove button in Alice's row"),
+        (
+            "<style>.act{opacity:0} tr:hover .act{opacity:1}</style>"
+            + TABLE.format(_t1(BIN_DELETE, act=True)),
+            T1_STEP,
+        ),
+        (
+            "<style>.act{visibility:hidden} tr:hover .act{visibility:visible}</style>"
+            + TABLE.format(_t1(BIN_DELETE, act=True)),
+            T1_STEP,
+        ),
+        (
+            "<style>.act button{display:none} tr:hover .act button{display:inline}</style>"
+            + TABLE.format(_t1(BIN_DELETE, act=True)),
+            T1_STEP,
+        ),
+        (TABLE.format(_t1(TRASH_ICON)), T1_STEP),
+        (
+            TABLE.format(
+                _t1(
+                    '<svg class="del" data-who="alice" width="16" height="16" '
+                    'style="cursor:pointer"><rect width="16" height="16"/></svg>'
+                )
+            ),
+            T1_STEP,
+        ),
+        (
+            "<style>.act .del{display:none} tr:hover .act .del{display:inline}</style>"
+            + TABLE.format(_t1(TRASH_ICON, act=True)),
+            T1_STEP,
+        ),
+        (
+            "<style>.act{opacity:0} tr:hover .act{opacity:1}</style>"
+            + TABLE.format(
+                _t1(
+                    '<i class="del" data-who="alice" '
+                    'style="cursor:pointer;font-style:normal;font-size:16px">&#128465;</i>',
+                    act=True,
+                )
+            ),
+            T1_STEP,
+        ),
+        (
+            SR_ONLY
+            + TABLE.format(
+                _t1(
+                    "a@x",
+                    name='<input type="checkbox" class="sr-only" aria-label="Select row"> '
+                    '<a href="#">Alice</a>',
+                )
+            ),
+            "Select row checkbox for Alice",
+        ),
     ],
     ids=[
         "t1_aria",
@@ -632,12 +707,33 @@ T1_STEP = "Delete button in the row for Alice"
         "t1_two_rows",
         "t1_trash",
         "t1_remove",
+        "rr8_hover_opacity",
+        "rr8_hover_visibility",
+        "rr8_hover_display",
+        "rr8_icon_span",
+        "rr8_icon_svg",
+        "a_display",
+        "a_i_opacity",
+        "m3_sronly_select",
     ],
 )
 async def test_a_second_control_leaves_the_row_alone(page, html, step):
     # the expected text names the row, the step means its other control: the Alice link
     # must not answer
     assert await _find(page, html, "tr.r-a", "Alice", description=step) is None
+
+
+async def test_menu_item_with_a_hidden_submenu_stays_unanswered(page):
+    # the hidden submenu's two links count as controls, so the item holds three and is left as
+    # today, though the step means the shown link (the price of counting hidden controls)
+    html = (
+        '<ul class="menu" style="list-style:none;padding:0;width:320px">'
+        '<li class="mi-p" style="width:300px;height:30px;border:1px solid #ccc;padding:4px">'
+        '<a href="#">Products</a><ul class="sub" style="display:none">'
+        '<li><a href="#">Shoes</a></li><li><a href="#">Bags</a></li></ul></li></ul>'
+    )
+    r = await _find(page, html, "li.mi-p", "Products", description="Products menu item")
+    assert r is None
 
 
 def _numeric(rows):
@@ -653,7 +749,7 @@ def _numeric(rows):
 
 
 async def test_numeric_rows_stay_fast(page):
-    # no letter comes before any button, so every one reaches the whole-name clause
+    # 500 rows of Delete buttons: the one-control count refuses the tbody, and this times that count
     await page.set_content(_numeric(500))
     await page.evaluate("document.querySelector('tbody').scrollIntoView({block: 'center'})")
     data = await page.locator("tbody").evaluate(POINTED_DATA_JS)

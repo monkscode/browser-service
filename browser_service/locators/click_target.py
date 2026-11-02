@@ -12,15 +12,16 @@ the two click sites need; in every other case it returns None and the caller cha
 Found can never fall: any doubt (not a click, a control or a container with its own listener, a
 collection, a row-anchored or text-less step, no xpath, a stale or ambiguous xpath, two candidate
 controls, a control that hides its value, a failed read) is None. A name is matched by whole
-words (``\\p{M}`` keeps Devanagari words whole). The container must hold exactly one visible
-control (a row with a name link and a Delete button is left as today: the agent's expected text
-often names the row, not the control the step means). A control answers in one of two ways.
-Either its name holds the expected text, and the row shows that text no more often than the
-control does, in its text or an input value (so "Delete Alice" does not answer for a row "Alice,
-Smith"). Or its whole name lies inside the expected text (the agent reported the whole row, or
-only the control's name): then the step must hold that name, no letter may come before the
-control in the row, and the step must not name another element of the row or hold a run of the
-row's words longer than the control's name. The innermost match wins.
+words (``\\p{M}`` keeps Devanagari words whole). The container must hold exactly one control,
+hidden or shown, and an element that sets its own pointer cursor counts as one (a row with a
+name link and a Delete button is left as today, even when the button shows only on hover: the
+agent's expected text often names the row, not the control the step means). A control answers in
+one of two ways. Either its name holds the expected text, and the row shows that text no more
+often than the control does, in its text or an input value (so "Delete Alice" does not answer
+for a row "Alice, Smith"). Or its whole name lies inside the expected text (the agent reported
+the whole row, or only the control's name): then the step must hold that name, no letter may
+come before the control in the row, and the step must not name another element of the row or
+hold a run of the row's words longer than the control's name. The innermost match wins.
 
 Referenced by: agent/actions.py
 Depends on: locators/action_fit.py, locators/hidden_value.py
@@ -41,6 +42,7 @@ CONTROL_TAGS = frozenset(
 )
 
 # shortcut: a row whose name shows only in an image alt, a title or a CSS image is not counted, so a control named after it can answer for the row; upgrade if a real page shows it.
+# shortcut: an icon whose only click signals are a script listener and a pointer cursor set on hover is not counted, so its row can still be re-aimed at the name link; upgrade if a real page shows it.
 # The proven rule (bench/private/bs63/stress_opus/). HIDES(c) and HIDES(i) are resolved below, so
 # the block stays comparable byte for byte with the plan.
 INNER_CONTROL_JS = r"""
@@ -59,8 +61,9 @@ INNER_CONTROL_JS = r"""
     const shown = c => { const b = c.getBoundingClientRect(), s = getComputedStyle(c);
         return b.width > 1 && b.height > 1 && s.visibility !== 'hidden'
             && c.checkVisibility({opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true}); };
-    const ctl = Array.from(el.querySelectorAll(CONTROL)).filter(shown);
-    if (ctl.filter(c => !ctl.some(o => o !== c && c.contains(o))).length !== 1) return null;
+    const own = k => getComputedStyle(k).cursor === 'pointer' && getComputedStyle(k.parentElement).cursor !== 'pointer';
+    const ctl = Array.from(el.querySelectorAll('*')).filter(k => k.matches(CONTROL) || own(k));
+    if (ctl.filter((c, i) => !(ctl[i + 1] && c.contains(ctl[i + 1]))).length !== 1) return null;
     const name = c => [c.innerText || c.textContent || '', c.getAttribute('aria-label') || '',
         c.getAttribute('title') || '',
         ['button', 'submit', 'reset'].includes(c.type) ? (c.value || '') : '']

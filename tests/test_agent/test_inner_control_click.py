@@ -164,7 +164,8 @@ async def test_candidate_on_li_ships_the_link(page, caplog):
     with caplog.at_level(logging.INFO, logger="browser_service.agent.actions"):
         out, _ = await _call(page, MENU, "li.mi-products", candidate_locator="li.mi-products")
 
-    assert out["found"] is True and out["inner_control"] is True
+    assert out["found"] is True
+    assert out["inner_control"] is True
     assert len(_signal_lines(caplog, SIGNAL)) == 1
     assert await _acts_after_click(page, MENU, out["best_locator"]) == ["products"]
 
@@ -178,7 +179,8 @@ async def test_no_candidate_ships_the_link(page, caplog):
     with caplog.at_level(logging.INFO, logger="browser_service.agent.actions"):
         out, _ = await _call(page, MENU, "li.mi-products")
 
-    assert out["found"] is True and out["inner_control"] is True
+    assert out["found"] is True
+    assert out["inner_control"] is True
     assert len(_signal_lines(caplog, SIGNAL)) == 1
     assert await _acts_after_click(page, MENU, out["best_locator"]) == ["products"]
 
@@ -194,7 +196,8 @@ async def test_whole_row_text_ships_the_link(page):
         expected_text="<caption> Defines a table caption",
     )
 
-    assert out["found"] is True and out["inner_control"] is True
+    assert out["found"] is True
+    assert out["inner_control"] is True
     assert await _acts_after_click(page, CAPTION, out["best_locator"]) == ["caption"]
 
 
@@ -318,7 +321,8 @@ async def test_right_candidate_on_the_link_is_not_refused(page):
         page, MENU, "li.mi-products", candidate_locator="role=menuitem >> text=Products"
     )
 
-    assert out["found"] is True and out["inner_control"] is True
+    assert out["found"] is True
+    assert out["inner_control"] is True
     assert await _acts_after_click(page, MENU, out["best_locator"]) == ["products"]
     assert kwargs["element_data"]["tagName"] == "li"
 
@@ -327,7 +331,8 @@ async def test_right_candidate_on_the_link_is_not_refused(page):
 async def test_in_frame_keeps_the_frame(page):
     out, _ = await _call(page, OUTER, "li.mi-products", frame=FRAME)
 
-    assert out["found"] is True and out["inner_control"] is True
+    assert out["found"] is True
+    assert out["inner_control"] is True
     assert out["best_locator"].startswith(f"{FRAME} >>> ")
     assert await _acts_after_click(page, OUTER, out["best_locator"], FRAME) == ["products"]
 
@@ -336,7 +341,8 @@ async def test_in_frame_keeps_the_frame(page):
 async def test_decoy_same_named_link_elsewhere(page):
     out, _ = await _call(page, MENU_WITH_FOOTER, "li.mi-products")
 
-    assert out["found"] is True and out["inner_control"] is True
+    assert out["found"] is True
+    assert out["inner_control"] is True
     assert await _acts_after_click(page, MENU_WITH_FOOTER, out["best_locator"]) == ["products"]
 
 

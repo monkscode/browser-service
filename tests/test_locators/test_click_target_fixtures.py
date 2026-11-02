@@ -85,7 +85,8 @@ async def test_inline_link_in_menuitem_li(page):
     r = await _find(page, MENU.format(inner='<a href="#">Products</a>'), "li", "Products")
     assert _tag(r) == "a"
     assert _text(r) == "Products"
-    assert r.x > 0 and r.y > 0
+    assert r.x > 0
+    assert r.y > 0
 
 
 async def test_inline_link_in_wide_td(page):

@@ -8,6 +8,7 @@ after an ACTION on the row, a word inside a longer word, two equal names, a hidd
 control, a container that is itself clickable, a password input.
 """
 
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -152,6 +153,19 @@ async def test_agent_reported_the_whole_row(page):
         "tr",
         "<caption> Defines a table caption",
         description="table row for the <caption> tag",
+    )
+    assert _tag(r) == "a"
+    assert _text(r) == "<caption>"
+
+
+async def test_expected_is_the_control_name(page):
+    # the row shows "caption" twice and the link once: only the whole-name clause answers
+    html = TABLE.format(
+        '<tr class="r-1"><td><a href="#">&lt;caption&gt;</a></td>'
+        '<td style="width:500px">Defines a table caption</td><td style="width:200px"></td></tr>'
+    )
+    r = await _find(
+        page, html, "tr.r-1", "<caption>", description="table row for the <caption> tag"
     )
     assert _tag(r) == "a"
     assert _text(r) == "<caption>"
@@ -534,6 +548,66 @@ async def test_step_names_another_element_of_the_row(page, html, pointed, expect
     # a one-word cell equal to the control's name holds no run longer than the name:
     # only the element check refuses these
     assert await _find(page, html, pointed, expected, description=step) is None
+
+
+EDIT_ICON = '<button aria-label="Edit">&#9998;</button>'
+DELETE_BUTTON = "<button>Delete</button>"
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        _row(f"{EDIT_ICON} {DELETE_BUTTON}", "Edit rights", "Allowed"),
+        TABLE.format(
+            f'<tr class="r-1"><td>{EDIT_ICON}</td><td>{DELETE_BUTTON}</td>'
+            '<td style="width:500px">Edit rights</td><td style="width:200px">Allowed</td></tr>'
+        ),
+    ],
+    ids=["two_candidates", "two_candidates_cells"],
+)
+async def test_two_candidates_stay_unanswered(page, html):
+    # both buttons carry a name the step holds; refusing Edit (the step names the Delete
+    # button beside it) must not leave Delete as the one answer
+    r = await _find(
+        page,
+        html,
+        "tr.r-1",
+        "Delete Edit rights Allowed",
+        description="table row for Edit and Delete",
+    )
+    assert r is None
+
+
+def _numeric(rows):
+    body = "".join(
+        f'<tr><td style="width:120px">{1000 + i}</td><td style="width:120px">{i}.50</td>'
+        '<td><button aria-label="Delete">&#128465;</button></td></tr>'
+        for i in range(rows)
+    )
+    return (
+        '<!DOCTYPE html><html><body style="margin:8px">'
+        f'<table style="width:600px"><tbody>{body}</tbody></table></body></html>'
+    )
+
+
+async def test_numeric_rows_stay_fast(page):
+    # no letter comes before any button, so every one reaches the whole-name clause
+    await page.set_content(_numeric(500))
+    await page.evaluate("document.querySelector('tbody').scrollIntoView({block: 'center'})")
+    data = await page.locator("tbody").evaluate(POINTED_DATA_JS)
+    start = time.perf_counter()
+    r = await find_inner_control(
+        page,
+        action="click",
+        expected_text="Delete row",
+        is_collection=None,
+        element_data=data,
+        description="table row with Delete",
+        row_anchor_text=None,
+    )
+    elapsed = time.perf_counter() - start
+    assert r is None
+    assert elapsed < 0.5, f"{elapsed:.2f} s"
 
 
 async def test_later_control_named_by_one_word(page):

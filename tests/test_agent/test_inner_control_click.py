@@ -229,6 +229,12 @@ REMOVE_ROW = (
     f'<tr class="r-1"><td>{_link("remove", "Remove")}</td>'
     '<td style="width:500px">Remove legacy login</td><td style="width:200px">Open</td></tr></table>'
 )
+EDIT_DELETE_ROW = (
+    f"{ACTS}<table>"
+    '<tr class="r-1"><td><button aria-label="Edit" onclick="window.__acts.push(\'edit\')">&#9998;'
+    "</button> <button onclick=\"window.__acts.push('delete')\">Delete</button></td>"
+    '<td style="width:500px">Edit rights</td><td style="width:200px">Allowed</td></tr></table>'
+)
 
 
 @chromium
@@ -256,8 +262,21 @@ REMOVE_ROW = (
                 element_description="table row for Delete",
             ),
         ),
+        (
+            EDIT_DELETE_ROW,
+            "tr.r-1",
+            dict(
+                expected_text="Delete Edit rights Allowed",
+                element_description="table row for Edit and Delete",
+            ),
+        ),
     ],
-    ids=["delete-beside-punctuation", "action-column-first", "one-word-name-cell"],
+    ids=[
+        "delete-beside-punctuation",
+        "action-column-first",
+        "one-word-name-cell",
+        "two_candidates",
+    ],
 )
 async def test_destructive_control_is_never_clicked(page, html, pointed, over):
     out, kwargs = await _call(page, html, pointed, candidate_locator=pointed, **over)

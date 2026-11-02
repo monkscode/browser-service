@@ -12,11 +12,13 @@ the two click sites need; in every other case it returns None and the caller cha
 Found can never fall: any doubt (not a click, a control or a container with its own listener, a
 collection, a row-anchored or text-less step, no xpath, a stale or ambiguous xpath, two candidate
 controls, a control that hides its value, a failed read) is None. A name is matched by whole
-words (``\\p{M}`` keeps Devanagari words whole). A control named by the expected text does
-not answer for the row when the row shows that text more often than the control does, in its
-text or an input value ("Delete Alice" for a row "Alice, Smith"). When the agent reported the
-whole row, the control must come first in it, and the step must not name another element of
-the row or hold more of the row's words than the control's own name. The innermost match wins.
+words (``\\p{M}`` keeps Devanagari words whole). A control answers in one of two ways. Either
+its name holds the expected text, and the row shows that text no more often than the control
+does, in its text or an input value (so "Delete Alice" does not answer for a row "Alice,
+Smith"). Or its whole name lies inside the expected text (the agent reported the whole row, or
+only the control's name): then the step must hold that name, no letter may come before the
+control in the row, and the step must not name another element of the row or hold a run of the
+row's words longer than the control's name. The innermost match wins.
 
 Referenced by: agent/actions.py
 Depends on: locators/action_fit.py, locators/hidden_value.py
@@ -75,14 +77,14 @@ INNER_CONTROL_JS = r"""
         return Array.from(el.querySelectorAll('*')).some(k => !k.contains(c) && !c.contains(k)
                 && words(shownText(k)).trim() !== '' && words(step).includes(words(shownText(k))))
             || rest.some((_, i) => i + n < rest.length && words(step).includes(' ' + rest.slice(i, i + n + 1).join(' ') + ' ')); };
-    const carries = c => { const w = words(name(c));
+    const carries = (c, last) => { const w = words(name(c));
         return ((norm(name(c)) === needle || (words(needle).trim() !== '' && w.includes(words(needle))))
                 && rowTimes <= count(shownText(c)))
-            || (w.trim() !== '' && words(needle).includes(w) && words(step).includes(w) && first(c) && !named(c)); };
+            || (w.trim() !== '' && words(needle).includes(w) && words(step).includes(w) && first(c) && !(last && named(c))); };
     const hits = Array.from(el.querySelectorAll(CONTROL))
-        .filter(c => !HIDES(c) && shown(c) && carries(c));
+        .filter(c => !HIDES(c) && shown(c) && carries(c, false));
     const inner = hits.filter(c => !hits.some(o => o !== c && c.contains(o)));
-    if (inner.length !== 1) return null;
+    if (inner.length !== 1 || !carries(inner[0], true)) return null;
     const c = inner[0], box = c.getBoundingClientRect();
     const top = el.ownerDocument.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
     if (top && !c.contains(top)) return null;

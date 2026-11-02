@@ -394,6 +394,17 @@ async def test_name_only_in_an_input_value(page):
     assert await _find(page, html, "tr", "Alice", description="table row for Alice") is None
 
 
+async def test_hidden_password_value_is_never_counted(page):
+    # a password input that is not shown holds "Alice": counted, the row would read "Alice" twice
+    html = (
+        '<table><tr><td style="width:600px">User</td><td><a href="#">Alice</a></td>'
+        '<td><input type="password" value="Alice" style="display:none"></td></tr></table>'
+    )
+    r = await _find(page, html, "tr", "Alice", description="table row for Alice")
+    assert _tag(r) == "a"
+    assert _text(r) == "Alice"
+
+
 @pytest.mark.parametrize(
     "first, name, rest, expected, step",
     [

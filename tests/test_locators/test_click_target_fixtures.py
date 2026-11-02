@@ -95,15 +95,14 @@ async def test_inline_link_in_wide_td(page):
     assert _tag(r) == "a"
 
 
-async def test_other_control_at_the_centre(page):
+async def test_other_control_at_the_centre_stays_unanswered(page):
+    # two visible controls in the container: no re-aim
     html = (
         '<div role="group" style="display:flex;width:200px">'
         '<button style="width:60px;margin:0">Express shipping</button>'
         '<button style="width:140px;margin:0">Standard shipping</button></div>'
     )
-    r = await _find(page, html, "div", "Express shipping")
-    assert _tag(r) == "button"
-    assert _text(r) == "Express shipping"
+    assert await _find(page, html, "div", "Express shipping") is None
 
 
 async def test_icon_link_named_by_aria_label(page):
@@ -172,7 +171,7 @@ async def test_expected_is_the_control_name(page):
     assert _text(r) == "<caption>"
 
 
-async def test_name_link_beside_an_action_link(page):
+async def test_name_link_beside_an_action_link_stays_unanswered(page):
     html = ROW.format(
         w=400,
         first='<a href="#">Order 1234</a>',
@@ -181,7 +180,7 @@ async def test_name_link_beside_an_action_link(page):
     r = await _find(
         page, html, "tr", "Order 1234 Shipped Cancel", description="table row for Order 1234"
     )
-    assert _text(r) == "Order 1234"
+    assert r is None
 
 
 async def test_menu_points_at_the_innermost(page):
@@ -189,12 +188,12 @@ async def test_menu_points_at_the_innermost(page):
     assert _tag(r) == "a", "never the dead li"
 
 
-async def test_two_links_the_exact_name_wins(page):
+async def test_exact_name_beside_a_longer_one_stays_unanswered(page):
     inner = '<a href="#" id="p">Products</a> <a href="#">Products sale</a>'
     r = await _find(
         page, MENU.format(inner=inner), "li", "Products", description="Products menu item"
     )
-    assert _text(r) == "Products"
+    assert r is None
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +578,57 @@ async def test_two_candidates_stay_unanswered(page, html):
     assert r is None
 
 
+BIN_DELETE = '<button aria-label="Delete">&#128465;</button>'
+
+
+def _t1(ctrl, name='<a href="#">Alice</a>', role="Admin", cls="r-a"):
+    return (
+        f'<tr class="{cls}"><td style="width:300px">{name}</td>'
+        f'<td style="width:400px">{role}</td><td>{ctrl}</td></tr>'
+    )
+
+
+T1_STEP = "Delete button in the row for Alice"
+
+
+@pytest.mark.parametrize(
+    "html, step",
+    [
+        (TABLE.format(_t1(BIN_DELETE)), T1_STEP),
+        (TABLE.format(_t1('<button title="Delete">&#128465;</button>')), T1_STEP),
+        (TABLE.format(_t1('<button><img alt="Delete" width="16" height="16"></button>')), T1_STEP),
+        (TABLE.format(_t1("<button>Delete</button>")), T1_STEP),
+        (
+            TABLE.format(_t1('<a href="#" aria-label="Edit">&#9998;</a>')),
+            "Edit icon link in the row for Alice",
+        ),
+        (
+            TABLE.format(
+                _t1(BIN_DELETE)
+                + _t1(BIN_DELETE, name='<a href="#">Bob</a>', role="User", cls="r-b")
+            ),
+            T1_STEP,
+        ),
+        (TABLE.format(_t1(BIN_DELETE)), "the trash icon in the row for Alice"),
+        (TABLE.format(_t1(BIN_DELETE)), "remove button in Alice's row"),
+    ],
+    ids=[
+        "t1_aria",
+        "t1_title",
+        "t1_img_alt",
+        "t1_visible_ctrl",
+        "t1_edit_icon",
+        "t1_two_rows",
+        "t1_trash",
+        "t1_remove",
+    ],
+)
+async def test_a_second_control_leaves_the_row_alone(page, html, step):
+    # the expected text names the row, the step means its other control: the Alice link
+    # must not answer
+    assert await _find(page, html, "tr.r-a", "Alice", description=step) is None
+
+
 def _numeric(rows):
     body = "".join(
         f'<tr><td style="width:120px">{1000 + i}</td><td style="width:120px">{i}.50</td>'
@@ -629,11 +679,10 @@ async def test_symbol_name_shown_twice(page):
     assert r is None
 
 
-async def test_hidden_value_is_not_counted(page):
-    # a password's value is not read, so it is not "the name shown elsewhere"
+async def test_password_input_beside_the_link_stays_unanswered(page):
+    # a control that hides its value still counts as a control, by its presence only
     inner = '<input type="password" value="Products" style="width:60px"> <a href="#">Products</a>'
-    r = await _find(page, MENU.format(inner=inner), "li", "Products")
-    assert _tag(r) == "a"
+    assert await _find(page, MENU.format(inner=inner), "li", "Products") is None
 
 
 async def test_cursor_pointer_on_the_container(page):
@@ -789,11 +838,12 @@ async def test_no_read_without_element_data(data):
 # is_answer and the shape of element_data
 # ---------------------------------------------------------------------------
 
-TWO_LINKS = MENU.format(inner='<a href="#" id="p">Products</a> <a href="#">Products sale</a>')
+# one control in the container, and a same-named link outside it so that "a" matches two
+LINK_AND_DECOY = MENU.format(inner='<a href="#" id="p">Products</a>') + '<a href="#">Products</a>'
 
 
 async def test_is_answer_true_for_the_control_false_for_its_container_and_for_two_matches(page):
-    r = await _find(page, TWO_LINKS, "li", "Products", description="Products menu item")
+    r = await _find(page, LINK_AND_DECOY, "li", "Products", description="Products menu item")
     assert r is not None
     assert await r.is_answer(page, "#p") is True
     assert await r.is_answer(page, "li") is False
@@ -802,10 +852,10 @@ async def test_is_answer_true_for_the_control_false_for_its_container_and_for_tw
 
 
 async def test_is_answer_false_when_the_page_went_away(page):
-    r = await _find(page, TWO_LINKS, "li", "Products", description="Products menu item")
+    r = await _find(page, LINK_AND_DECOY, "li", "Products", description="Products menu item")
     assert r is not None
     await page.goto("about:blank")
-    await page.set_content(TWO_LINKS)
+    await page.set_content(LINK_AND_DECOY)
     assert await r.is_answer(page, "#p") is False
 
 

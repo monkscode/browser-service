@@ -238,6 +238,17 @@ EDIT_DELETE_ROW = (
     "</button> <button onclick=\"window.__acts.push('delete')\">Delete</button></td>"
     '<td style="width:500px">Edit rights</td><td style="width:200px">Allowed</td></tr></table>'
 )
+T1_TWO_ROWS = (
+    f"{ACTS}<style>td,th{{border:1px solid #ccc;padding:6px}}</style>"
+    '<table style="width:900px;border-collapse:collapse"><thead><tr><th>Name</th><th>Info</th>'
+    "<th>Actions</th></tr></thead><tbody>"
+    f'<tr class="r-a"><td style="width:300px">{_link("profile-alice", "Alice")}</td>'
+    '<td style="width:400px">Admin</td><td><button aria-label="Delete" '
+    "onclick=\"window.__acts.push('delete-alice')\">&#128465;</button></td></tr>"
+    f'<tr class="r-b"><td style="width:300px">{_link("profile-bob", "Bob")}</td>'
+    '<td style="width:400px">User</td><td><button aria-label="Delete" '
+    "onclick=\"window.__acts.push('delete-bob')\">&#128465;</button></td></tr></tbody></table>"
+)
 
 
 @chromium
@@ -273,12 +284,18 @@ EDIT_DELETE_ROW = (
                 element_description="table row for Edit and Delete",
             ),
         ),
+        (
+            T1_TWO_ROWS,
+            "tr.r-a",
+            dict(expected_text="Alice", element_description="Delete button in the row for Alice"),
+        ),
     ],
     ids=[
         "delete-beside-punctuation",
         "action-column-first",
         "one-word-name-cell",
         "two_candidates",
+        "t1_two_rows",
     ],
 )
 async def test_destructive_control_is_never_clicked(page, html, pointed, over):

@@ -12,9 +12,11 @@ the two click sites need; in every other case it returns None and the caller cha
 Found can never fall: any doubt (not a click, a control or a container with its own listener, a
 collection, a row-anchored or text-less step, no xpath, a stale or ambiguous xpath, two candidate
 controls, a control that hides its value, a failed read) is None. A name is matched by whole
-words (``\\p{M}`` keeps Devanagari words whole). A control answers in one of two ways. Either
-its name holds the expected text, and the row shows that text no more often than the control
-does, in its text or an input value (so "Delete Alice" does not answer for a row "Alice,
+words (``\\p{M}`` keeps Devanagari words whole). The container must hold exactly one visible
+control (a row with a name link and a Delete button is left as today: the agent's expected text
+often names the row, not the control the step means). A control answers in one of two ways.
+Either its name holds the expected text, and the row shows that text no more often than the
+control does, in its text or an input value (so "Delete Alice" does not answer for a row "Alice,
 Smith"). Or its whole name lies inside the expected text (the agent reported the whole row, or
 only the control's name): then the step must hold that name, no letter may come before the
 control in the row, and the step must not name another element of the row or hold a run of the
@@ -57,6 +59,8 @@ INNER_CONTROL_JS = r"""
     const shown = c => { const b = c.getBoundingClientRect(), s = getComputedStyle(c);
         return b.width > 1 && b.height > 1 && s.visibility !== 'hidden'
             && c.checkVisibility({opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true}); };
+    const ctl = Array.from(el.querySelectorAll(CONTROL)).filter(shown);
+    if (ctl.filter(c => !ctl.some(o => o !== c && c.contains(o))).length !== 1) return null;
     const name = c => [c.innerText || c.textContent || '', c.getAttribute('aria-label') || '',
         c.getAttribute('title') || '',
         ['button', 'submit', 'reset'].includes(c.type) ? (c.value || '') : '']

@@ -1,27 +1,23 @@
 """
 The one control a click on a dead container means (bs #63, owner-approved 2026-10-30).
 
-The agent sometimes points at a container (a menu ``<li>``, a table ``<td>`` or ``<tr>``)
-whose centre is not on the link inside it: a click at the centre lands on dead space and does
-nothing, while the generated ``Click`` on the container's locator does the same. This module
-answers one question from one bounded read on the pointed element: is there exactly ONE control
-inside it that the step names, that is visible and uncovered, and that does not hold the
-container's centre? If so it returns that control, with the element data and the centre point
+The agent sometimes points at a container (a menu ``<li>``, a table cell, a card heading) whose
+centre is not on the link inside it: a click at the centre lands on dead space and does nothing,
+while the generated ``Click`` on the container's locator does the same. This module answers one
+question from one bounded read on the pointed element: is the container a bare wrapper of
+exactly one control? If so it returns that control, with the element data and the centre point
 the two click sites need; in every other case it returns None and the caller changes nothing.
 
-Found can never fall: any doubt (not a click, a control or a container with its own listener, a
-collection, a row-anchored or text-less step, no xpath, a stale or ambiguous xpath, two candidate
-controls, a control that hides its value, a failed read) is None. A name is matched by whole
-words (``\\p{M}`` keeps Devanagari words whole). The container must hold exactly one control,
-hidden or shown, and an element that sets its own pointer cursor counts as one (a row with a
-name link and a Delete button is left as today, even when the button shows only on hover: the
-agent's expected text often names the row, not the control the step means). A control answers in
-one of two ways. Either its name holds the expected text, and the row shows that text no more
-often than the control does, in its text or an input value (so "Delete Alice" does not answer
-for a row "Alice, Smith"). Or its whole name lies inside the expected text (the agent reported
-the whole row, or only the control's name): then the step must hold that name, no letter may
-come before the control in the row, and the step must not name another element of the row or
-hold a run of the row's words longer than the control's name. The innermost match wins.
+The rule is an allowlist (owner decision D-J): the agent's expected text often names the row,
+not the control the step means, and a second control can hide in forms no read can list (shown
+only on hover, an icon wired by script, a shadow root). So the container must hold nothing else:
+one element child at every level down to the first control, no custom element or shadow root on
+the way, no text beside the control, and no control below it. The control must be visible and
+uncovered, must not hold the container's centre, and its name must hold the expected text on
+whole words (``\\p{M}`` keeps Devanagari words whole). Found can never fall: any doubt (not a
+click, a control or a container with its own listener, a collection, a row-anchored or text-less
+step, no xpath, a stale or ambiguous xpath, a control that hides its value, a failed read) is
+None.
 
 Referenced by: agent/actions.py
 Depends on: locators/action_fit.py, locators/hidden_value.py
@@ -41,12 +37,11 @@ CONTROL_TAGS = frozenset(
     {"a", "button", "input", "select", "textarea", "label", "summary", "option"}
 )
 
-# shortcut: a row whose name shows only in an image alt, a title or a CSS image is not counted, so a control named after it can answer for the row; upgrade if a real page shows it.
-# shortcut: an icon whose only click signals are a script listener and a pointer cursor set on hover is not counted, so its row can still be re-aimed at the name link; upgrade if a real page shows it.
-# The proven rule (bench/private/bs63/stress_opus/). HIDES(c) and HIDES(i) are resolved below, so
-# the block stays comparable byte for byte with the plan.
+# shortcut: a click listener on the document around a bare wrapper cannot be read, so the inner control is clicked though the wrapper was the target; upgrade if a real page shows it.
+# The measured rule (bench/private/bs63/build_review/, m4_*). HIDES(c) is resolved below, so the
+# block stays comparable byte for byte with the plan.
 INNER_CONTROL_JS = r"""
-(el, {needle, step}) => {
+(el, needle) => {
     const TAGS = new Set(['a', 'button', 'input', 'select', 'textarea', 'label', 'summary', 'option']);
     if (TAGS.has(el.tagName.toLowerCase())) return null;
     const CONTROL = 'a, button, input:not([type="hidden"]), select, textarea, summary, [onclick], [role="button"], '
@@ -61,38 +56,17 @@ INNER_CONTROL_JS = r"""
     const shown = c => { const b = c.getBoundingClientRect(), s = getComputedStyle(c);
         return b.width > 1 && b.height > 1 && s.visibility !== 'hidden'
             && c.checkVisibility({opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true}); };
-    const own = k => getComputedStyle(k).cursor === 'pointer' && getComputedStyle(k.parentElement).cursor !== 'pointer';
-    const ctl = Array.from(el.querySelectorAll('*')).filter(k => k.matches(CONTROL) || own(k));
-    if (ctl.filter((c, i) => !(ctl[i + 1] && c.contains(ctl[i + 1]))).length !== 1) return null;
-    const name = c => [c.innerText || c.textContent || '', c.getAttribute('aria-label') || '',
-        c.getAttribute('title') || '',
+    let c = el;
+    do { if (c.children.length !== 1 || c.shadowRoot || c.tagName.includes('-')) return null; c = c.children[0]; } while (!c.matches(CONTROL));
+    const shownText = e => norm(e.innerText || e.textContent || '');
+    if (HIDES(c) || !shown(c) || shownText(el) !== shownText(c) || c.querySelector(CONTROL)) return null;
+    const name = [c.innerText || c.textContent || '', c.getAttribute('aria-label') || '', c.getAttribute('title') || '',
         ['button', 'submit', 'reset'].includes(c.type) ? (c.value || '') : '']
         .concat(Array.from(c.querySelectorAll('img[alt]')).map(i => i.alt)).join(' ');
     const words = s => ' ' + (s || '').toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ').trim() + ' ';
-    const shownText = e => norm(e.innerText || e.textContent || '');
-    const dbl = s => ' ' + s.split(' ').join('  ') + ' ';
-    const times = (s, n) => dbl(s).split(dbl(n)).length - 1;
-    const wordy = words(needle).trim();
-    const count = s => wordy ? times(words(s).trim(), wordy) : times(norm(s), needle);
-    const rowText = [shownText(el)].concat(Array.from(el.querySelectorAll('input:not([type="hidden"]), textarea'))
-        .filter(i => !HIDES(i) && !['button', 'submit', 'reset'].includes(i.type)).map(i => i.value)).join(' ');
-    const rowTimes = count(rowText);
-    const first = c => { const g = el.ownerDocument.createRange(); g.setStart(el, 0); g.setEndBefore(c);
-        return !/\p{L}/u.test(g.toString()); };
-    const named = c => { const n = words(name(c)).trim().split(' ').length, own = words(shownText(c)).trim();
-        const rest = words(shownText(el)).trim().split(' ').slice(own ? own.split(' ').length : 0);
-        return Array.from(el.querySelectorAll('*')).some(k => !k.contains(c) && !c.contains(k)
-                && words(shownText(k)).trim() !== '' && words(step).includes(words(shownText(k))))
-            || rest.some((_, i) => i + n < rest.length && words(step).includes(' ' + rest.slice(i, i + n + 1).join(' ') + ' ')); };
-    const carries = (c, last) => { const w = words(name(c));
-        return ((norm(name(c)) === needle || (words(needle).trim() !== '' && w.includes(words(needle))))
-                && rowTimes <= count(shownText(c)))
-            || (w.trim() !== '' && words(needle).includes(w) && words(step).includes(w) && first(c) && !(last && named(c))); };
-    const hits = Array.from(el.querySelectorAll(CONTROL))
-        .filter(c => !HIDES(c) && shown(c) && carries(c, false));
-    const inner = hits.filter(c => !hits.some(o => o !== c && c.contains(o)));
-    if (inner.length !== 1 || !carries(inner[0], true)) return null;
-    const c = inner[0], box = c.getBoundingClientRect();
+    const w = words(name), n = words(needle);
+    if (norm(name) !== needle && !(n.trim() !== '' && w.includes(n))) return null;
+    const box = c.getBoundingClientRect();
     const top = el.ownerDocument.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
     if (top && !c.contains(top)) return null;
     return Array.from(c.getClientRects()).some(b => cx >= b.left && cx <= b.right && cy >= b.top && cy <= b.bottom)
@@ -169,14 +143,12 @@ async def find_inner_control(
     expected_text: Optional[str],
     is_collection: Optional[bool],
     element_data: Optional[Dict[str, Any]],
-    description: Optional[str],
     row_anchor_text: Optional[str],
 ) -> Optional[InnerControl]:
     """The one control inside the pointed container that the step names, or None.
 
     ``element_data`` None or without an xpath = no re-aim (a bare candidate is not a door);
-    ``description`` is the step's description, the second witness for a name; ``row_anchor_text``
-    set = the agent named a row, which says nothing about the target.
+    ``row_anchor_text`` set = the agent named a row, which says nothing about the target.
     """
     if action != "click" or is_collection or row_anchor_text:
         return None
@@ -191,11 +163,7 @@ async def find_inner_control(
         pointed = search_root.locator(f"xpath={element_data['xpath']}")
         if await pointed.count() != 1:
             return None
-        found = await pointed.evaluate_handle(
-            INNER_CONTROL_JS,
-            {"needle": needle, "step": description or ""},
-            timeout=FIT_READ_TIMEOUT_MS,
-        )
+        found = await pointed.evaluate_handle(INNER_CONTROL_JS, needle, timeout=FIT_READ_TIMEOUT_MS)
         handle = found.as_element()
         if handle is None:
             return None

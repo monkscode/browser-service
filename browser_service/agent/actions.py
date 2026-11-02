@@ -632,7 +632,6 @@ def _through_inner_control(action):
                 expected_text=call.get("expected_text"),
                 is_collection=call.get("is_collection"),
                 element_data=call.get("element_data"),
-                description=call.get("element_description"),
                 row_anchor_text=call.get("row_anchor_text"),
             )
             result = (

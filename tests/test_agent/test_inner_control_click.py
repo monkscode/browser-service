@@ -186,8 +186,9 @@ async def test_no_candidate_ships_the_link(page, caplog):
 
 
 @chromium
-async def test_whole_row_text_ships_the_link(page):
-    out, _ = await _call(
+async def test_whole_row_text_keeps_todays_answer(page):
+    # two cells: not a bare wrapper, though the link is what the agent meant
+    out, kwargs = await _call(
         page,
         CAPTION,
         "tr.r-cap",
@@ -195,10 +196,10 @@ async def test_whole_row_text_ships_the_link(page):
         element_description="table row for the <caption> tag",
         expected_text="<caption> Defines a table caption",
     )
+    today = await find_unique_locator_action.__wrapped__(**kwargs)
 
-    assert out["found"] is True
-    assert out["inner_control"] is True
-    assert await _acts_after_click(page, CAPTION, out["best_locator"]) == ["caption"]
+    assert "inner_control" not in out
+    assert out["best_locator"] == today["best_locator"]
 
 
 @chromium
@@ -278,6 +279,22 @@ T1_HOVER_ICON_TWO_ROWS = (
     "<script>document.querySelectorAll('.del').forEach(d => d.addEventListener('click', "
     "() => window.__acts.push('delete-' + d.dataset.who)))</script>"
 )
+# T1's two rows with the Delete button in a custom element's open shadow root, no role and no
+# cursor on the host (bench/private/bs63/build_review/rr9_lib.py rr9_shadow_open_two)
+T1_SHADOW_TWO_ROWS = (
+    f"{ACTS}<style>td,th{{border:1px solid #ccc;padding:6px}}</style>"
+    '<table style="width:900px;border-collapse:collapse"><thead><tr><th>Name</th><th>Info</th>'
+    "<th>Actions</th></tr></thead><tbody>"
+    f'<tr class="r-a"><td style="width:300px">{_link("profile-alice", "Alice")}</td>'
+    '<td style="width:400px">Admin</td><td><x-del data-who="alice"></x-del></td></tr>'
+    f'<tr class="r-b"><td style="width:300px">{_link("profile-bob", "Bob")}</td>'
+    '<td style="width:400px">User</td><td><x-del data-who="bob"></x-del></td></tr></tbody></table>'
+    "<script>customElements.define('x-del', class extends HTMLElement { constructor() { super(); "
+    "const r = this.attachShadow({mode: 'open'}); "
+    'r.innerHTML = \'<button aria-label="Delete" style="cursor:pointer">&#128465;</button>\'; '
+    "r.querySelector('button').addEventListener('click', "
+    "() => window.__acts.push('delete-' + this.dataset.who)); } });</script>"
+)
 
 
 @chromium
@@ -328,6 +345,11 @@ T1_HOVER_ICON_TWO_ROWS = (
             "tr.r-a",
             dict(expected_text="Alice", element_description="Delete button in the row for Alice"),
         ),
+        (
+            T1_SHADOW_TWO_ROWS,
+            "tr.r-a",
+            dict(expected_text="Alice", element_description="Delete button in the row for Alice"),
+        ),
     ],
     ids=[
         "delete-beside-punctuation",
@@ -337,6 +359,7 @@ T1_HOVER_ICON_TWO_ROWS = (
         "t1_two_rows",
         "rr8_hover_opacity_two",
         "a_display_two",
+        "rr9_shadow_open_two",
     ],
 )
 async def test_destructive_control_is_never_clicked(page, html, pointed, over):

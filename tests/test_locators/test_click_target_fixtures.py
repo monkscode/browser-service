@@ -2,13 +2,12 @@
 The click-target detector on real Chromium (bs #63).
 
 Each test sets a small page, points at a container the way browser-use would (its absolute
-xpath), and asks ``find_inner_control`` for the one control the step names. The cases that
-must return None are the ones where a re-aim would click a wrong element: a control named
-after an ACTION on the row, a word inside a longer word, two equal names, a hidden or covered
-control, a container that is itself clickable, a password input.
+xpath), and asks ``find_inner_control`` for the one control the container wraps. The cases that
+must return None are the ones where a re-aim could click a wrong element: a container that is
+not a bare wrapper, a word inside a longer word, a hidden or covered control, a container that
+is itself clickable, a password input.
 """
 
-import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -49,7 +48,7 @@ async def page():
             await browser.close()
 
 
-async def _find(page, html, selector, expected, description=None, root=None, **over):
+async def _find(page, html, selector, expected, root=None, **over):
     """Set the page, point at ``selector``, ask for the inner control."""
     await page.set_content(html)
     root = root or page
@@ -59,7 +58,6 @@ async def _find(page, html, selector, expected, description=None, root=None, **o
         expected_text=expected,
         is_collection=None,
         element_data=data,
-        description=description,
         row_anchor_text=None,
     )
     kwargs.update(over)
@@ -95,16 +93,6 @@ async def test_inline_link_in_wide_td(page):
     assert _tag(r) == "a"
 
 
-async def test_other_control_at_the_centre_stays_unanswered(page):
-    # two visible controls in the container: no re-aim
-    html = (
-        '<div role="group" style="display:flex;width:200px">'
-        '<button style="width:60px;margin:0">Express shipping</button>'
-        '<button style="width:140px;margin:0">Standard shipping</button></div>'
-    )
-    assert await _find(page, html, "div", "Express shipping") is None
-
-
 async def test_icon_link_named_by_aria_label(page):
     html = ROW.format(
         w=600, first='<a href="#" aria-label="Edit"><svg width="16" height="16"></svg></a>', rest=""
@@ -112,6 +100,20 @@ async def test_icon_link_named_by_aria_label(page):
     r = await _find(page, html, "td", "Edit")
     assert _tag(r) == "a"
     assert r.element_data["ariaLabel"] == "Edit"
+
+
+@pytest.mark.parametrize(
+    "control, expected",
+    [
+        ('<a href="#" title="Edit"><svg width="16" height="16"></svg></a>', "Edit"),
+        ('<a href="#"><img alt="Edit" width="16" height="16"></a>', "Edit"),
+        ('<input type="submit" value="Save">', "Save"),
+    ],
+    ids=["title", "image-alt", "button-value"],
+)
+async def test_control_named_without_text(page, control, expected):
+    html = ROW.format(w=600, first=control, rest="")
+    assert await _find(page, html, "td", expected) is not None
 
 
 async def test_inside_a_frame(page):
@@ -141,64 +143,417 @@ async def test_link_text_holds_more(page):
     assert _tag(r) == "a"
 
 
-async def test_agent_reported_the_whole_row(page):
-    html = ROW.format(
-        w=300,
-        first='<a href="#">&lt;caption&gt;</a>',
-        rest="<td>Defines a table caption</td>",
+async def test_symbol_only_name(page):
+    # a name with no word to compare: only the exact comparison answers
+    html = ROW.format(w=600, first='<a href="#">→</a>', rest="")
+    assert _tag(await _find(page, html, "td", "→")) == "a"
+
+
+async def test_card_with_a_heading_link(page):
+    html = (
+        '<div style="display:flex;gap:20px"><div class="card c-nike" '
+        'style="width:300px;height:220px;border:1px solid #ccc">'
+        '<h3><a href="#">Nike Air Max 270</a></h3></div></div>'
     )
-    r = await _find(
-        page,
-        html,
-        "tr",
-        "<caption> Defines a table caption",
-        description="table row for the <caption> tag",
-    )
+    r = await _find(page, html, "div.c-nike", "Nike Air Max 270")
     assert _tag(r) == "a"
-    assert _text(r) == "<caption>"
 
 
-async def test_expected_is_the_control_name(page):
-    # the row shows "caption" twice and the link once: only the whole-name clause answers
-    html = TABLE.format(
-        '<tr class="r-1"><td><a href="#">&lt;caption&gt;</a></td>'
-        '<td style="width:500px">Defines a table caption</td><td style="width:200px"></td></tr>'
+async def test_one_cell_row(page):
+    html = (
+        '<table style="width:900px;border-collapse:collapse"><tbody><tr class="r-a">'
+        '<td style="width:900px;border:1px solid #ccc;padding:6px"><a href="#">Alice</a></td>'
+        "</tr></tbody></table>"
     )
-    r = await _find(
-        page, html, "tr.r-1", "<caption>", description="table row for the <caption> tag"
-    )
-    assert _tag(r) == "a"
-    assert _text(r) == "<caption>"
-
-
-async def test_name_link_beside_an_action_link_stays_unanswered(page):
-    html = ROW.format(
-        w=400,
-        first='<a href="#">Order 1234</a>',
-        rest='<td>Shipped</td><td><a href="#">Cancel</a></td>',
-    )
-    r = await _find(
-        page, html, "tr", "Order 1234 Shipped Cancel", description="table row for Order 1234"
-    )
-    assert r is None
-
-
-async def test_menu_points_at_the_innermost(page):
-    r = await _find(page, MENU.format(inner='<a href="#">Products</a>'), "ul", "Products")
-    assert _tag(r) == "a", "never the dead li"
-
-
-async def test_exact_name_beside_a_longer_one_stays_unanswered(page):
-    inner = '<a href="#" id="p">Products</a> <a href="#">Products sale</a>'
-    r = await _find(
-        page, MENU.format(inner=inner), "li", "Products", description="Products menu item"
-    )
-    assert r is None
+    assert _tag(await _find(page, html, "tr.r-a", "Alice")) == "a"
 
 
 # ---------------------------------------------------------------------------
 # Returns None: a re-aim could click a wrong element, or there is nothing to re-aim
 # ---------------------------------------------------------------------------
+
+TABLE = (
+    "<style>td,th{{border:1px solid #ccc;padding:6px}}</style>"
+    '<table style="width:900px;border-collapse:collapse"><thead><tr><th>Name</th><th>Info</th>'
+    "<th>Actions</th></tr></thead><tbody>{}</tbody></table>"
+)
+REMOVE = '<a href="#">Remove</a>'
+EDIT_ICON = '<button aria-label="Edit">&#9998;</button>'
+DELETE_BUTTON = "<button>Delete</button>"
+BIN_DELETE = '<button aria-label="Delete">&#128465;</button>'
+# The Delete control shown only while the row is hovered, or an icon whose click handler a script
+# attaches (bench/private/bs63/build_review: rr8_hoverlib.py, m3_hoverlib.py, m3_pages.py)
+TRASH_ICON = (
+    '<span class="del" data-who="alice" style="cursor:pointer;font-size:16px">&#128465;</span>'
+)
+QUIET_ICON = '<span class="del" data-who="alice" style="font-size:16px">&#128465;</span>'
+SR_ONLY = (
+    "<style>.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;"
+    "clip:rect(0,0,0,0);white-space:nowrap;border:0}</style>"
+)
+# The wrapper of the allowlist traps (bench/private/bs63/build_review/m4_traps.py)
+BOX = '<div class="w w-docs" style="width:400px;height:40px;border:1px solid #ccc">{}</div>'
+BIN_SVG = "<svg width='16' height='16'><rect width='16' height='16'/></svg>"
+
+
+def _row(a, b, c):
+    return TABLE.format(
+        f'<tr class="r-1"><td>{a}</td><td style="width:500px">{b}</td>'
+        f'<td style="width:200px">{c}</td></tr>'
+    )
+
+
+def _t1(ctrl, name='<a href="#">Alice</a>', role="Admin", cls="r-a", act=False):
+    td = '<td class="act">' if act else "<td>"
+    return (
+        f'<tr class="{cls}"><td style="width:300px">{name}</td>'
+        f'<td style="width:400px">{role}</td>{td}{ctrl}</td></tr>'
+    )
+
+
+def _t1_shadow(mode):
+    # rr9_lib.py: a custom element with no role and no cursor, a real button in its shadow root
+    return (
+        TABLE.format(_t1('<x-del data-who="alice"></x-del>'))
+        + "<script>customElements.define('x-del', class extends HTMLElement { constructor() { "
+        + f"super(); const r = this.attachShadow({{mode: '{mode}'}}); r.innerHTML = "
+        + '\'<button aria-label="Delete" style="cursor:pointer">&#128465;</button>\'; '
+        + "} });</script>"
+    )
+
+
+@pytest.mark.parametrize(
+    "html, pointed, expected",
+    [
+        (
+            '<div role="group" style="display:flex;width:200px">'
+            '<button style="width:60px;margin:0">Express shipping</button>'
+            '<button style="width:140px;margin:0">Standard shipping</button></div>',
+            "div",
+            "Express shipping",
+        ),
+        (
+            MENU.format(inner='<a href="#" id="p">Products</a> <a href="#">Products sale</a>'),
+            "li",
+            "Products",
+        ),
+        # the walk stops at the li (role menuitem), and the link is a control below it
+        (MENU.format(inner='<a href="#">Products</a>'), "ul", "Products"),
+        (
+            '<ul class="menu" style="list-style:none;padding:0;width:320px">'
+            '<li class="mi-p" style="width:300px;height:30px;border:1px solid #ccc;padding:4px">'
+            '<a href="#">Products</a><ul class="sub" style="display:none">'
+            '<li><a href="#">Shoes</a></li><li><a href="#">Bags</a></li></ul></li></ul>',
+            "li.mi-p",
+            "Products",
+        ),
+        (
+            MENU.format(
+                inner='<input type="password" value="Products" style="width:60px"> '
+                '<a href="#">Products</a>'
+            ),
+            "li",
+            "Products",
+        ),
+        (
+            ROW.format(
+                w=400,
+                first='<a href="#">Order 1234</a>',
+                rest='<td>Shipped</td><td><a href="#">Cancel</a></td>',
+            ),
+            "tr",
+            "Order 1234 Shipped Cancel",
+        ),
+        (
+            ROW.format(
+                w=200,
+                first="Order 1234",
+                rest="<td>Shipped</td><td><a href='#'>Cancel</a></td>",
+            ),
+            "tr",
+            "Order 1234 Shipped Cancel",
+        ),
+        (
+            ROW.format(
+                w=300,
+                first="Alice",
+                rest='<td>alice@x.io</td><td><button aria-label="Delete Alice">x</button></td>',
+            ),
+            "tr",
+            "Alice",
+        ),
+        (
+            ROW.format(
+                w=300,
+                first="Alice",
+                rest='<td>alice@x.io</td><td><input type="checkbox" aria-label="Select Alice"></td>',
+            ),
+            "tr",
+            "Alice",
+        ),
+        (
+            '<table><tr><td style="width:300px"><input value="Alice"></td>'
+            '<td style="width:400px">Active</td><td><button>Delete Alice</button></td></tr></table>',
+            "tr",
+            "Alice",
+        ),
+        (
+            '<table><tr><td style="width:600px">User</td><td><a href="#">Alice</a></td>'
+            '<td><input type="password" value="Alice" style="display:none"></td></tr></table>',
+            "tr",
+            "Alice",
+        ),
+        # the first control is the one the step means, and a multi-cell row still stays as today
+        (
+            TABLE.format(
+                '<tr class="r-1"><td><a href="#">&lt;caption&gt;</a></td>'
+                '<td style="width:500px">Defines a table caption</td>'
+                '<td style="width:200px"></td></tr>'
+            ),
+            "tr.r-1",
+            "<caption>",
+        ),
+        (_row("<button>Action</button>", "Alice", "Shipped"), "tr.r-1", "Action Alice Shipped"),
+        (
+            f'<div class="row" style="width:900px"><div class="cells" style="display:flex">'
+            f'<div>{REMOVE}</div><div style="width:500px">Remove legacy login</div>'
+            '<div style="width:200px">Open</div></div></div>',
+            "div.row",
+            "Remove Remove legacy login Open",
+        ),
+        (
+            f'<table style="width:900px"><tbody><tr><td>{REMOVE}</td><td style="width:500px">'
+            'Remove legacy login</td><td style="width:200px">Open</td></tr></tbody></table>',
+            "tbody",
+            "Remove Remove legacy login Open",
+        ),
+        (
+            _row(f"{EDIT_ICON} {DELETE_BUTTON}", "Edit rights", "Allowed"),
+            "tr.r-1",
+            "Delete Edit rights Allowed",
+        ),
+        (
+            TABLE.format(
+                f'<tr class="r-1"><td>{EDIT_ICON}</td><td>{DELETE_BUTTON}</td>'
+                '<td style="width:500px">Edit rights</td><td style="width:200px">Allowed</td></tr>'
+            ),
+            "tr.r-1",
+            "Delete Edit rights Allowed",
+        ),
+        # the expected text names the row, the step means its other control: never the Alice link
+        (TABLE.format(_t1(BIN_DELETE)), "tr.r-a", "Alice"),
+        (
+            TABLE.format(_t1('<button><img alt="Delete" width="16" height="16"></button>')),
+            "tr.r-a",
+            "Alice",
+        ),
+        (
+            TABLE.format(
+                _t1(BIN_DELETE)
+                + _t1(BIN_DELETE, name='<a href="#">Bob</a>', role="User", cls="r-b")
+            ),
+            "tr.r-a",
+            "Alice",
+        ),
+        (
+            "<style>.act{opacity:0} tr:hover .act{opacity:1}</style>"
+            + TABLE.format(_t1(BIN_DELETE, act=True)),
+            "tr.r-a",
+            "Alice",
+        ),
+        (
+            "<style>.act{visibility:hidden} tr:hover .act{visibility:visible}</style>"
+            + TABLE.format(_t1(BIN_DELETE, act=True)),
+            "tr.r-a",
+            "Alice",
+        ),
+        (
+            "<style>.act button{display:none} tr:hover .act button{display:inline}</style>"
+            + TABLE.format(_t1(BIN_DELETE, act=True)),
+            "tr.r-a",
+            "Alice",
+        ),
+        (TABLE.format(_t1(TRASH_ICON)), "tr.r-a", "Alice"),
+        (
+            TABLE.format(
+                _t1(
+                    '<svg class="del" data-who="alice" width="16" height="16" '
+                    'style="cursor:pointer"><rect width="16" height="16"/></svg>'
+                )
+            ),
+            "tr.r-a",
+            "Alice",
+        ),
+        (
+            "<style>.act .del{display:none} tr:hover .act .del{display:inline}</style>"
+            + TABLE.format(_t1(TRASH_ICON, act=True)),
+            "tr.r-a",
+            "Alice",
+        ),
+        (
+            "<style>.act{opacity:0} tr:hover .act{opacity:1}</style>"
+            + TABLE.format(
+                _t1(
+                    '<i class="del" data-who="alice" '
+                    'style="cursor:pointer;font-style:normal;font-size:16px">&#128465;</i>',
+                    act=True,
+                )
+            ),
+            "tr.r-a",
+            "Alice",
+        ),
+        (
+            SR_ONLY
+            + TABLE.format(
+                _t1(
+                    "a@x",
+                    name='<input type="checkbox" class="sr-only" aria-label="Select row"> '
+                    '<a href="#">Alice</a>',
+                )
+            ),
+            "tr.r-a",
+            "Alice",
+        ),
+        # the same row with a Delete control no count can see (rr9_lib.py, m3_pages.py,
+        # m3_hoverlib.py): the reason the rule became an allowlist
+        (_t1_shadow("open"), "tr.r-a", "Alice"),
+        (_t1_shadow("closed"), "tr.r-a", "Alice"),
+        (
+            TABLE.format(
+                _t1(
+                    '<span class="del" tabindex="0" aria-label="Delete" data-who="alice" '
+                    'style="font-size:16px">&#128465;</span>'
+                )
+            ),
+            "tr.r-a",
+            "Alice",
+        ),
+        (
+            TABLE.format(_t1('<label for="del-alice">Delete</label>'))
+            + '<input type="checkbox" id="del-alice" style="display:none" data-who="alice">',
+            "tr.r-a",
+            "Alice",
+        ),
+        (
+            "<style>td.act::before{content:'\\1F5D1';cursor:pointer;font-size:16px}</style>"
+            + TABLE.format(_t1("", act=True)),
+            "tr.r-a",
+            "Alice",
+        ),
+        (TABLE.format(_t1(QUIET_ICON)), "tr.r-a", "Alice"),
+        (
+            "<style>.del:hover{cursor:pointer}</style>" + TABLE.format(_t1(QUIET_ICON, act=True)),
+            "tr.r-a",
+            "Alice",
+        ),
+        (
+            "<style>.act{opacity:0} tr:hover .act{opacity:1} .del:hover{cursor:pointer}</style>"
+            + TABLE.format(_t1(QUIET_ICON, act=True)),
+            "tr.r-a",
+            "Alice",
+        ),
+        # a closed root reads shadowRoot null: only the hyphen in the tag name refuses the host
+        (
+            BOX.format('<x-it data-who="alice"><a href="#">Alice</a></x-it>')
+            + "<script>customElements.define('x-it', class extends HTMLElement { "
+            "connectedCallback() { const r = this.attachShadow({mode: 'closed'}); r.innerHTML = "
+            f'`<slot></slot> <button aria-label="Delete" style="cursor:pointer">{BIN_SVG}'
+            "</button>`; } });</script>",
+            "div.w-docs",
+            "Alice",
+        ),
+        (
+            BOX.format(f'<a href="#">Alice <button aria-label="Delete">{BIN_SVG}</button></a>'),
+            "div.w-docs",
+            "Alice",
+        ),
+        # the expected text holds the wrapped name, and the real button sits elsewhere
+        (
+            BOX.format("<button>Save</button>") + '<button class="draft">Save as draft</button>',
+            "div.w-docs",
+            "Save as draft",
+        ),
+        (
+            ROW.format(
+                w=600,
+                first='<a href="#" aria-label="Alice" style="display:inline-block;width:120px">'
+                '<input type="password" value="Alice" style="width:100px"></a>',
+                rest="",
+            ),
+            "td",
+            "Alice",
+        ),
+        # a plain div hosts the shadow root: its tag name has no hyphen, only shadowRoot refuses it
+        (
+            ROW.format(w=600, first='<div id="host"><a href="#">Alice</a></div>', rest="")
+            + "<script>document.getElementById('host').attachShadow({mode: 'open'}).innerHTML = "
+            "'<slot></slot> <button aria-label=\"Delete\">&#128465;</button>'</script>",
+            "td",
+            "Alice",
+        ),
+        (
+            '<p style="width:600px">Read the <a href="#">docs</a> now</p>',
+            "p",
+            "docs",
+        ),
+    ],
+    ids=[
+        "two-buttons",
+        "two-links",
+        "role-on-the-item",
+        "hidden-submenu",
+        "password-beside-the-link",
+        "name-link-and-action-link",
+        "text-then-action-link",
+        "text-then-action-button",
+        "text-then-checkbox",
+        "name-in-an-input-value",
+        "hidden-password-input",
+        "name-link-first",
+        "button-first",
+        "nested-cells",
+        "tbody-one-row",
+        "two-buttons-in-a-cell",
+        "two-buttons-in-two-cells",
+        "t1_aria",
+        "t1_img_alt",
+        "t1_two_rows",
+        "rr8_hover_opacity",
+        "rr8_hover_visibility",
+        "rr8_hover_display",
+        "rr8_icon_span",
+        "rr8_icon_svg",
+        "a_display",
+        "a_i_opacity",
+        "m3_sronly_select",
+        "rr9_shadow_open",
+        "rr9_shadow_closed",
+        "rr9_tabindex_icon",
+        "rr9_label_for",
+        "rr9_pseudo_icon",
+        "m3_icon_nocursor",
+        "m3h_b_hover_cursor",
+        "m3h_c_hidden_hover_cursor",
+        "m4_closed_slot",
+        "m4_control_in_link",
+        "m4_part_of_expected",
+        "password-input-below-the-link",
+        "shadow-root-on-a-div",
+        "text-beside-the-control",
+    ],
+)
+async def test_a_non_wrapper_stays_unanswered(page, html, pointed, expected):
+    assert await _find(page, html, pointed, expected) is None
+
+
+async def test_row_reported_whole_keeps_todays_answer(page):
+    # two cells: not a bare wrapper, though the link is what the agent meant
+    html = ROW.format(
+        w=300,
+        first='<a href="#">&lt;caption&gt;</a>',
+        rest="<td>Defines a table caption</td>",
+    )
+    assert await _find(page, html, "tr", "<caption> Defines a table caption") is None
 
 
 async def test_block_link_fills_the_container(page):
@@ -211,40 +566,6 @@ async def test_block_link_fills_the_container(page):
     assert r is None
 
 
-async def test_two_controls_same_name(page):
-    inner = '<a href="#">Products</a> <a href="#">Products</a>'
-    assert await _find(page, MENU.format(inner=inner), "li", "Products") is None
-
-
-async def test_action_link_is_not_the_row(page):
-    html = ROW.format(
-        w=200,
-        first="Order 1234",
-        rest="<td>Shipped</td><td><a href='#'>Cancel</a></td>",
-    )
-    r = await _find(
-        page, html, "tr", "Order 1234 Shipped Cancel", description="table row for order 1234"
-    )
-    assert r is None, "it must never pick Cancel"
-
-
-@pytest.mark.parametrize(
-    "control",
-    ['<button aria-label="Delete Alice">x</button>', '<a href="#">Delete Alice</a>'],
-    ids=["button-aria-label", "visible-link"],
-)
-async def test_action_named_after_the_row(page, control):
-    html = ROW.format(w=300, first="Alice", rest=f"<td>alice@x.io</td><td>{control}</td>")
-    r = await _find(page, html, "tr", "Alice", description="table row for Alice")
-    assert r is None
-
-
-async def test_checkbox_named_after_the_row(page):
-    control = '<input type="checkbox" aria-label="Select Alice">'
-    html = ROW.format(w=300, first="Alice", rest=f"<td>alice@x.io</td><td>{control}</td>")
-    assert await _find(page, html, "tr", "Alice", description="table row for Alice") is None
-
-
 async def test_expander_named_after_the_item(page):
     html = (
         '<ul style="width:300px"><li role="treeitem" style="width:300px">Reports '
@@ -253,61 +574,32 @@ async def test_expander_named_after_the_item(page):
     assert await _find(page, html, "li", "Reports") is None
 
 
-async def test_word_shared_by_row_name_and_action(page):
-    html = ROW.format(
-        w=300, first="Remove legacy login", rest="<td>Open</td><td><a href='#'>Remove</a></td>"
-    )
-    r = await _find(
-        page,
-        html,
-        "tr",
-        "Remove legacy login Open Remove",
-        description="table row for Remove legacy login",
-    )
-    assert r is None
-
-
 async def test_expected_inside_a_longer_word(page):
     html = ROW.format(w=600, first='<a href="#">Credit memo</a>', rest="")
     assert await _find(page, html, "td", "Edit") is None
 
 
 async def test_word_inside_a_longer_word(page):
-    html = ROW.format(w=300, first="Cancelled order 77", rest="<td><a href='#'>Cancel</a></td>")
-    r = await _find(
-        page,
-        html,
-        "tr",
-        "Cancelled order 77 Cancel",
-        description="table row for the Cancelled order",
-    )
-    assert r is None
+    html = ROW.format(w=600, first='<a href="#">Cancelled order 77</a>', rest="")
+    assert await _find(page, html, "td", "Cancel") is None
 
 
 async def test_devanagari_word_stays_whole(page):
     rad = "रद्द"
     ridi = rad + "ी"
-    # the link is the FIRST text of the row, so `first(c)` holds; the step does not hold the other
-    # cell's whole text, so `named` does not refuse either: only `\p{M}` keeps the word whole
-    html = f"<table><tr><td><a href='#'>{rad}</a></td><td style='width:500px'>{ridi} scrap</td></tr></table>"
-    r = await _find(
-        page,
-        html,
-        "tr",
-        f"{rad} {ridi} scrap",
-        description=f"table row for {ridi}",
-    )
-    assert r is None
+    # only `\p{M}` keeps the longer word whole: without it both end in the same letters
+    html = ROW.format(w=600, first=f'<a href="#">{ridi} scrap</a>', rest="")
+    assert await _find(page, html, "td", rad) is None
 
 
-async def test_symbol_only_name(page):
-    html = ROW.format(w=300, first="Next page", rest="<td><a href='#'>→</a></td>")
-    r = await _find(page, html, "tr", "Next page →", description="table row for next page →")
-    assert r is None
+async def test_symbols_never_match_as_blank_words(page):
+    html = ROW.format(w=600, first='<a href="#">←</a>', rest="")
+    assert await _find(page, html, "td", "→") is None
 
 
 async def test_hidden_control(page):
-    inner = '<a href="#" style="display:none">Products</a><span>Products</span>'
+    # opacity hides the link from the eye only: the hit test and the text still see it
+    inner = '<span style="opacity:0"><a href="#">Products</a></span>'
     assert await _find(page, MENU.format(inner=inner), "li", "Products") is None
 
 
@@ -326,13 +618,13 @@ async def test_clipped_control(page, html):
 
 
 async def test_control_under_a_cover(page):
+    # the cover sits outside the wrapper: only the hit test at the control's centre sees it
     html = (
         '<div style="position:relative;width:300px;height:100px">'
-        '<a href="#" style="position:absolute;top:0;left:0">Order details</a>'
-        '<a href="#" aria-label="" style="position:absolute;top:0;left:0;width:100%;height:100%"></a>'
-        "</div>"
+        '<div class="w" style="height:100px"><a href="#">Order details</a></div>'
+        '<div style="position:absolute;inset:0"></div></div>'
     )
-    assert await _find(page, html, "div", "Order details") is None
+    assert await _find(page, html, "div.w", "Order details") is None
 
 
 async def test_control_below_the_fold(page):
@@ -360,436 +652,10 @@ async def test_cursor_pointer_on_the_cells_below_the_fold(page):
     assert await _find(page, html, "tr", "Alice") is None
 
 
-@pytest.mark.parametrize(
-    "cells, name",
-    [
-        (
-            '<td style="width:300px">Alice, Smith</td><td style="width:400px">alice@x.io</td>'
-            '<td><button aria-label="Delete Alice">x</button></td>',
-            "Alice",
-        ),
-        (
-            '<td style="width:300px">(Alice)</td><td style="width:400px">alice@x.io</td>'
-            '<td><a href="#">Delete Alice</a></td>',
-            "Alice",
-        ),
-        (
-            '<td style="width:400px">Order 1234: Shipped</td><td style="width:200px">2026-10-30</td>'
-            '<td><a href="#">Cancel Order 1234</a></td>',
-            "Order 1234",
-        ),
-    ],
-    ids=["comma", "parenthesis", "colon"],
-)
-async def test_name_beside_punctuation(page, cells, name):
-    html = f"<table><tr>{cells}</tr></table>"
-    assert await _find(page, html, "tr", name, description=f"table row for {name}") is None
-
-
-async def test_name_only_in_an_input_value(page):
-    html = (
-        '<table><tr><td style="width:300px"><input value="Alice"></td>'
-        '<td style="width:400px">Active</td><td><button>Delete Alice</button></td></tr></table>'
-    )
-    assert await _find(page, html, "tr", "Alice", description="table row for Alice") is None
-
-
-async def test_hidden_password_input_counts_as_a_second_control(page):
-    # a password input that is not shown still counts as a control: the row holds two (the link
-    # and the input), so it is left as today
-    html = (
-        '<table><tr><td style="width:600px">User</td><td><a href="#">Alice</a></td>'
-        '<td><input type="password" value="Alice" style="display:none"></td></tr></table>'
-    )
-    r = await _find(page, html, "tr", "Alice", description="table row for Alice")
-    assert r is None
-
-
-async def test_hidden_password_value_is_never_counted(page):
-    # the link's only content is a password input holding "Alice" (one control: the innermost).
-    # Counted, the value would make the cell read "Alice" once more than the link shows, and the
-    # step does not hold "Alice", so nothing would answer; skipped, the link answers by its label
-    first = (
-        '<a href="#" aria-label="Alice" style="display:inline-block;width:120px">'
-        '<input type="password" value="Alice" style="width:100px"></a>'
-    )
-    html = ROW.format(w=600, first=first, rest="")
-    r = await _find(page, html, "td", "Alice", description="the link in the first cell")
-    assert _tag(r) == "a"
-
-
-@pytest.mark.parametrize(
-    "first, name, rest, expected, step",
-    [
-        (
-            '<a href="#">Remove</a>',
-            "Remove legacy login",
-            "Open",
-            "Remove Remove legacy login Open",
-            "table row for Remove legacy login",
-        ),
-        (
-            '<a href="#">Close</a>',
-            "Will Close",
-            "Admin",
-            "Close Will Close Admin",
-            "table row for Will Close",
-        ),
-        (
-            "<button>Action</button>",
-            "Order 1234",
-            "Shipped",
-            "Action Order 1234 Shipped",
-            "table row for Order 1234 (action: click)",
-        ),
-    ],
-    ids=["remove", "close", "action"],
-)
-async def test_action_column_first(page, first, name, rest, expected, step):
-    html = (
-        f'<table><tr><td>{first}</td><td style="width:500px">{name}</td>'
-        f'<td style="width:200px">{rest}</td></tr></table>'
-    )
-    assert await _find(page, html, "tr", expected, description=step) is None
-
-
-TABLE = (
-    "<style>td,th{{border:1px solid #ccc;padding:6px}}</style>"
-    '<table style="width:900px;border-collapse:collapse"><thead><tr><th>Name</th><th>Info</th>'
-    "<th>Actions</th></tr></thead><tbody>{}</tbody></table>"
-)
-REMOVE = '<a href="#">Remove</a>'
-
-
-@pytest.mark.parametrize(
-    "html, pointed, expected",
-    [
-        (  # the name cell holds more than the step names
-            TABLE.format(
-                f'<tr class="r-1"><td>{REMOVE}</td><td style="width:500px">Remove legacy login #12</td>'
-                '<td style="width:200px">Open</td></tr>'
-            ),
-            "tr.r-1",
-            "Remove Remove legacy login #12 Open",
-        ),
-        (  # the same cells one wrapper down
-            f'<div class="row" style="width:900px"><div class="cells" style="display:flex"><div>{REMOVE}</div>'
-            '<div style="width:500px">Remove legacy login</div><div style="width:200px">Open</div></div></div>',
-            "div.row",
-            "Remove Remove legacy login Open",
-        ),
-        (  # a one-row tbody
-            f'<table style="width:900px"><tbody><tr><td>{REMOVE}</td><td style="width:500px">'
-            'Remove legacy login</td><td style="width:200px">Open</td></tr></tbody></table>',
-            "tbody",
-            "Remove Remove legacy login Open",
-        ),
-    ],
-    ids=["cell-holds-more", "nested-wrapper", "tbody-one-row"],
-)
-async def test_step_holds_part_of_a_cell(page, html, pointed, expected):
-    r = await _find(page, html, pointed, expected, description="table row for Remove legacy login")
-    assert r is None
-
-
-def _row(a, b, c):
-    return TABLE.format(
-        f'<tr class="r-1"><td>{a}</td><td style="width:500px">{b}</td>'
-        f'<td style="width:200px">{c}</td></tr>'
-    )
-
-
-def _wrapped(a, b, c):
-    return (
-        '<div class="row" style="width:900px"><div class="cells" style="display:flex">'
-        f'<div>{a}</div><div style="width:500px">{b}</div><div style="width:200px">{c}</div>'
-        "</div></div>"
-    )
-
-
-def _tbody(a, b, c):
-    return (
-        '<table style="width:900px"><tbody><tr>'
-        f'<td>{a}</td><td style="width:500px">{b}</td><td style="width:200px">{c}</td>'
-        "</tr></tbody></table>"
-    )
-
-
-DELETE = '<a href="#">Delete</a>'
-ACTION = "<button>Action</button>"
-
-
-@pytest.mark.parametrize(
-    "html, pointed, expected, step",
-    [
-        (
-            _row(DELETE, "Delete", "Allowed"),
-            "tr.r-1",
-            "Delete Delete Allowed",
-            "table row for Delete",
-        ),
-        (
-            _row(REMOVE, "Remove", "Open"),
-            "tr.r-1",
-            "Remove Remove Open",
-            "table row for Remove",
-        ),
-        (
-            _row(DELETE, "Allowed", "Delete"),
-            "tr.r-1",
-            "Delete Allowed Delete",
-            "table row for Delete",
-        ),
-        (
-            _row(ACTION, "Alice", "Shipped"),
-            "tr.r-1",
-            "Action Alice Shipped",
-            "table row for Alice (action: click)",
-        ),
-        (
-            _wrapped(DELETE, "Delete", "Allowed"),
-            "div.row",
-            "Delete Delete Allowed",
-            "table row for Delete",
-        ),
-        (
-            _tbody(DELETE, "Delete", "Allowed"),
-            "tbody",
-            "Delete Delete Allowed",
-            "table row for Delete",
-        ),
-    ],
-    ids=[
-        "delete-named-delete",
-        "remove-named-remove",
-        "delete-name-last",
-        "action-one-word",
-        "wrapper-one-word",
-        "tbody-one-word",
-    ],
-)
-async def test_step_names_another_element_of_the_row(page, html, pointed, expected, step):
-    # a one-word cell equal to the control's name holds no run longer than the name:
-    # only the element check refuses these
-    assert await _find(page, html, pointed, expected, description=step) is None
-
-
-EDIT_ICON = '<button aria-label="Edit">&#9998;</button>'
-DELETE_BUTTON = "<button>Delete</button>"
-
-
-@pytest.mark.parametrize(
-    "html",
-    [
-        _row(f"{EDIT_ICON} {DELETE_BUTTON}", "Edit rights", "Allowed"),
-        TABLE.format(
-            f'<tr class="r-1"><td>{EDIT_ICON}</td><td>{DELETE_BUTTON}</td>'
-            '<td style="width:500px">Edit rights</td><td style="width:200px">Allowed</td></tr>'
-        ),
-    ],
-    ids=["two_candidates", "two_candidates_cells"],
-)
-async def test_two_candidates_stay_unanswered(page, html):
-    # both buttons carry a name the step holds; refusing Edit (the step names the Delete
-    # button beside it) must not leave Delete as the one answer
-    r = await _find(
-        page,
-        html,
-        "tr.r-1",
-        "Delete Edit rights Allowed",
-        description="table row for Edit and Delete",
-    )
-    assert r is None
-
-
-BIN_DELETE = '<button aria-label="Delete">&#128465;</button>'
-
-
-def _t1(ctrl, name='<a href="#">Alice</a>', role="Admin", cls="r-a", act=False):
-    td = '<td class="act">' if act else "<td>"
-    return (
-        f'<tr class="{cls}"><td style="width:300px">{name}</td>'
-        f'<td style="width:400px">{role}</td>{td}{ctrl}</td></tr>'
-    )
-
-
-T1_STEP = "Delete button in the row for Alice"
-# The Delete control shown only while the row is hovered, or an icon whose click handler a script
-# attaches (bench/private/bs63/build_review: rr8_hoverlib.py, m3_hoverlib.py, m3_pages.py)
-TRASH_ICON = (
-    '<span class="del" data-who="alice" style="cursor:pointer;font-size:16px">&#128465;</span>'
-)
-SR_ONLY = (
-    "<style>.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;"
-    "clip:rect(0,0,0,0);white-space:nowrap;border:0}</style>"
-)
-
-
-@pytest.mark.parametrize(
-    "html, step",
-    [
-        (TABLE.format(_t1(BIN_DELETE)), T1_STEP),
-        (TABLE.format(_t1('<button title="Delete">&#128465;</button>')), T1_STEP),
-        (TABLE.format(_t1('<button><img alt="Delete" width="16" height="16"></button>')), T1_STEP),
-        (TABLE.format(_t1("<button>Delete</button>")), T1_STEP),
-        (
-            TABLE.format(_t1('<a href="#" aria-label="Edit">&#9998;</a>')),
-            "Edit icon link in the row for Alice",
-        ),
-        (
-            TABLE.format(
-                _t1(BIN_DELETE)
-                + _t1(BIN_DELETE, name='<a href="#">Bob</a>', role="User", cls="r-b")
-            ),
-            T1_STEP,
-        ),
-        (TABLE.format(_t1(BIN_DELETE)), "the trash icon in the row for Alice"),
-        (TABLE.format(_t1(BIN_DELETE)), "remove button in Alice's row"),
-        (
-            "<style>.act{opacity:0} tr:hover .act{opacity:1}</style>"
-            + TABLE.format(_t1(BIN_DELETE, act=True)),
-            T1_STEP,
-        ),
-        (
-            "<style>.act{visibility:hidden} tr:hover .act{visibility:visible}</style>"
-            + TABLE.format(_t1(BIN_DELETE, act=True)),
-            T1_STEP,
-        ),
-        (
-            "<style>.act button{display:none} tr:hover .act button{display:inline}</style>"
-            + TABLE.format(_t1(BIN_DELETE, act=True)),
-            T1_STEP,
-        ),
-        (TABLE.format(_t1(TRASH_ICON)), T1_STEP),
-        (
-            TABLE.format(
-                _t1(
-                    '<svg class="del" data-who="alice" width="16" height="16" '
-                    'style="cursor:pointer"><rect width="16" height="16"/></svg>'
-                )
-            ),
-            T1_STEP,
-        ),
-        (
-            "<style>.act .del{display:none} tr:hover .act .del{display:inline}</style>"
-            + TABLE.format(_t1(TRASH_ICON, act=True)),
-            T1_STEP,
-        ),
-        (
-            "<style>.act{opacity:0} tr:hover .act{opacity:1}</style>"
-            + TABLE.format(
-                _t1(
-                    '<i class="del" data-who="alice" '
-                    'style="cursor:pointer;font-style:normal;font-size:16px">&#128465;</i>',
-                    act=True,
-                )
-            ),
-            T1_STEP,
-        ),
-        (
-            SR_ONLY
-            + TABLE.format(
-                _t1(
-                    "a@x",
-                    name='<input type="checkbox" class="sr-only" aria-label="Select row"> '
-                    '<a href="#">Alice</a>',
-                )
-            ),
-            "Select row checkbox for Alice",
-        ),
-    ],
-    ids=[
-        "t1_aria",
-        "t1_title",
-        "t1_img_alt",
-        "t1_visible_ctrl",
-        "t1_edit_icon",
-        "t1_two_rows",
-        "t1_trash",
-        "t1_remove",
-        "rr8_hover_opacity",
-        "rr8_hover_visibility",
-        "rr8_hover_display",
-        "rr8_icon_span",
-        "rr8_icon_svg",
-        "a_display",
-        "a_i_opacity",
-        "m3_sronly_select",
-    ],
-)
-async def test_a_second_control_leaves_the_row_alone(page, html, step):
-    # the expected text names the row, the step means its other control: the Alice link
-    # must not answer
-    assert await _find(page, html, "tr.r-a", "Alice", description=step) is None
-
-
-async def test_menu_item_with_a_hidden_submenu_stays_unanswered(page):
-    # the hidden submenu's two links count as controls, so the item holds three and is left as
-    # today, though the step means the shown link (the price of counting hidden controls)
-    html = (
-        '<ul class="menu" style="list-style:none;padding:0;width:320px">'
-        '<li class="mi-p" style="width:300px;height:30px;border:1px solid #ccc;padding:4px">'
-        '<a href="#">Products</a><ul class="sub" style="display:none">'
-        '<li><a href="#">Shoes</a></li><li><a href="#">Bags</a></li></ul></li></ul>'
-    )
-    r = await _find(page, html, "li.mi-p", "Products", description="Products menu item")
-    assert r is None
-
-
-def _numeric(rows):
-    body = "".join(
-        f'<tr><td style="width:120px">{1000 + i}</td><td style="width:120px">{i}.50</td>'
-        '<td><button aria-label="Delete">&#128465;</button></td></tr>'
-        for i in range(rows)
-    )
-    return (
-        '<!DOCTYPE html><html><body style="margin:8px">'
-        f'<table style="width:600px"><tbody>{body}</tbody></table></body></html>'
-    )
-
-
-async def test_numeric_rows_stay_fast(page):
-    # 500 rows of Delete buttons: the one-control count refuses the tbody, and this times that count
-    await page.set_content(_numeric(500))
-    await page.evaluate("document.querySelector('tbody').scrollIntoView({block: 'center'})")
-    data = await page.locator("tbody").evaluate(POINTED_DATA_JS)
-    start = time.perf_counter()
-    r = await find_inner_control(
-        page,
-        action="click",
-        expected_text="Delete row",
-        is_collection=None,
-        element_data=data,
-        description="table row with Delete",
-        row_anchor_text=None,
-    )
-    elapsed = time.perf_counter() - start
-    assert r is None
-    assert elapsed < 0.5, f"{elapsed:.2f} s"
-
-
-async def test_later_control_named_by_one_word(page):
-    # only `first(c)` refuses this page: the link is not the row's first text
-    html = TABLE.format(
-        '<tr class="r-1"><td style="width:400px">Legacy login</td><td style="width:300px">Open</td>'
-        f"<td>{REMOVE}</td></tr>"
-    )
-    r = await _find(
-        page, html, "tr.r-1", "Legacy login Open Remove", description="table row for Remove"
-    )
-    assert r is None
-
-
 async def test_symbol_name_shown_twice(page):
-    # a row showing "→" twice: only the plain-string branch of `count` sees it (no word to count)
+    # the row shows "→" beside the link: the link's exact name does not excuse the text
     r = await _find(page, MENU.format(inner='→ <a href="#">→</a>'), "li", "→")
     assert r is None
-
-
-async def test_password_input_beside_the_link_stays_unanswered(page):
-    # a control that hides its value still counts as a control, by its presence only
-    inner = '<input type="password" value="Products" style="width:60px"> <a href="#">Products</a>'
-    assert await _find(page, MENU.format(inner=inner), "li", "Products") is None
 
 
 async def test_cursor_pointer_on_the_container(page):
@@ -842,7 +708,6 @@ async def test_stale_xpath_is_left_alone(page):
         expected_text="Products",
         is_collection=None,
         element_data={"tagName": "li", "xpath": "html[1]/body[1]/ul[9]/li[1]"},
-        description=None,
         row_anchor_text=None,
     )
     assert r is None
@@ -862,7 +727,6 @@ async def test_pointed_xpath_matches_two(page):
         expected_text="Products",
         is_collection=None,
         element_data={"tagName": "li", "xpath": "//li"},
-        description=None,
         row_anchor_text=None,
     )
     assert r is None
@@ -877,7 +741,6 @@ async def test_read_failure_is_none():
         expected_text="Products",
         is_collection=None,
         element_data={"tagName": "li", "xpath": "html[1]/body[1]/li[1]"},
-        description=None,
         row_anchor_text=None,
     )
     assert r is None
@@ -897,7 +760,6 @@ async def _no_read(**over):
         expected_text="Products",
         is_collection=None,
         element_data=dict(LI_DATA),
-        description=None,
         row_anchor_text=None,
     )
     kwargs.update(over)
@@ -950,7 +812,7 @@ LINK_AND_DECOY = MENU.format(inner='<a href="#" id="p">Products</a>') + '<a href
 
 
 async def test_is_answer_true_for_the_control_false_for_its_container_and_for_two_matches(page):
-    r = await _find(page, LINK_AND_DECOY, "li", "Products", description="Products menu item")
+    r = await _find(page, LINK_AND_DECOY, "li", "Products")
     assert r is not None
     assert await r.is_answer(page, "#p") is True
     assert await r.is_answer(page, "li") is False
@@ -959,7 +821,7 @@ async def test_is_answer_true_for_the_control_false_for_its_container_and_for_tw
 
 
 async def test_is_answer_false_when_the_page_went_away(page):
-    r = await _find(page, LINK_AND_DECOY, "li", "Products", description="Products menu item")
+    r = await _find(page, LINK_AND_DECOY, "li", "Products")
     assert r is not None
     await page.goto("about:blank")
     await page.set_content(LINK_AND_DECOY)

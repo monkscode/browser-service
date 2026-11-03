@@ -59,6 +59,36 @@ class TestExtractDomNodeAttributes:
         assert result["dataTestId"] == "search-input"
         assert result["type"] == "text"
         assert result["xpath"] == "/html/body/form/input"
+        assert result["hasClickListener"] is False
+
+    # --- bs #63: a listener on the node, its parent or its grandparent ---
+
+    @staticmethod
+    def _chain(*listeners):
+        """A node whose parent chain carries ``listeners`` (own, parent, grandparent, ...)."""
+        nodes = [MagicMock(attributes={}, node_name="TR", xpath="") for _ in listeners]
+        for node, value in zip(nodes, listeners):
+            node.has_js_click_listener = value
+        for child, parent in zip(nodes, nodes[1:]):
+            child.parent_node = parent
+        nodes[-1].parent_node = None
+        return nodes[0]
+
+    def test_click_listener_true_only_when_true(self):
+        fn = self._get_fn()
+        assert fn(self._chain(True))["hasClickListener"] is True
+        assert fn(self._chain(False))["hasClickListener"] is False
+        absent = MagicMock(spec=["attributes", "node_name", "xpath", "parent_node"])
+        absent.attributes, absent.node_name, absent.xpath, absent.parent_node = {}, "TR", "", None
+        assert fn(absent)["hasClickListener"] is False
+        # a MagicMock attribute is truthy and must not count
+        assert fn(MagicMock(attributes={}, node_name="TR", xpath=""))["hasClickListener"] is False
+
+    def test_click_listener_counts_the_parent_and_grandparent(self):
+        fn = self._get_fn()
+        assert fn(self._chain(False, True))["hasClickListener"] is True  # tbody above a tr
+        assert fn(self._chain(False, False, True))["hasClickListener"] is True  # table above a tr
+        assert fn(self._chain(False, False, False, True))["hasClickListener"] is False
 
     def test_missing_attributes_default_empty(self):
         """Missing attributes default to empty string."""

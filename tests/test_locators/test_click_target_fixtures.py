@@ -215,6 +215,24 @@ async def test_a_page_naming_an_element_host_still_answers(page, extra):
     assert _tag(r) == "a"
 
 
+@pytest.mark.parametrize(
+    "inner",
+    [
+        '<form><fieldset name="parentElement" style="border:0;margin:0;padding:0">'
+        '<a href="#">Track</a></fieldset></form>',
+        '<form><button name="parentElement">Track</button></form>',
+    ],
+    ids=["fieldset_parentElement", "button_parentElement"],
+)
+async def test_a_form_field_shadowing_the_xpath_climb_is_refused(page, inner):
+    # a form between the wrapper and the control holds a field named parentElement: the form's
+    # parentElement is that field, so the climb that builds the control's xpath circles; the
+    # 1,000-step bound makes it throw and the click takes today's path (f10_test_inner_form_probe.py)
+    html = "<!DOCTYPE html>" + BOX.format(inner)
+    r = await asyncio.wait_for(_find(page, html, "div.w-docs", "Track"), timeout=10)
+    assert r is None
+
+
 # ---------------------------------------------------------------------------
 # Returns None: a re-aim could click a wrong element, or there is nothing to re-aim
 # ---------------------------------------------------------------------------

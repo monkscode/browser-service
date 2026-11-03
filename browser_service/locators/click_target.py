@@ -39,6 +39,7 @@ CONTROL_TAGS = frozenset(
 )
 
 # shortcut: a second click target no read can see (a closed shadow root, a click target around the wrapper that no read names such as a card wired only by script or marked only by role=treeitem or tabindex, an element defined after detection, a script-wired icon inside the control, a click listener on the document or on any element between the wrapper and the control) is not seen, so the inner control is clicked, the same click as when the agent points at the control itself; upgrade if a real page shows it.
+# shortcut: a form field named after a DOM property (parentNode, parentElement, assignedSlot) can mislead a walk, which then clicks the inner control; both walks are bounded, so it never hangs; upgrade if a real page shows it.
 # The measured rule (bench/private/bs63/build_review/, m4_*). HIDES(c) is resolved below, so the
 # block stays comparable byte for byte with the plan.
 INNER_CONTROL_JS = r"""
@@ -83,7 +84,8 @@ INNER_CONTROL_JS = r"""
 ELEMENT_DATA_JS = """
 c => {
     const parts = [];
-    for (let n = c; n && n.nodeType === 1; n = n.parentElement) {
+    for (let n = c, k = 0; n && n.nodeType === 1; n = n.parentElement) {
+        if (++k > 1000) throw new Error('the xpath walk passed 1000 steps');
         let i = 1;
         for (let s = n.previousElementSibling; s; s = s.previousElementSibling) {
             if (s.tagName === n.tagName) i++;

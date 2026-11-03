@@ -17,8 +17,8 @@ depth), and no control or label around it (across shadow boundaries). The contro
 visible and uncovered, must not hold the container's centre, and its name must hold the expected
 text on whole words (``\\p{M}`` keeps Devanagari words whole). Found can never fall: any doubt
 (not a click, a control or a container with its own listener, a collection, a row-anchored or
-text-less step, no xpath, a stale or ambiguous xpath, a control that hides its value, a failed
-read) is None.
+text-less step, no xpath, a stale or ambiguous xpath, a control that hides its value, a walk up
+of more than 1,000 steps, a failed read) is None.
 
 Referenced by: agent/actions.py
 Depends on: locators/action_fit.py, locators/hidden_value.py
@@ -61,7 +61,7 @@ INNER_CONTROL_JS = r"""
     do { if (c.children.length !== 1 || c.shadowRoot || c.tagName.includes('-')) return null; c = c.children[0]; } while (!c.matches(CONTROL));
     const deep = n => Array.from(n.querySelectorAll('*')).some(k => k.shadowRoot && (k.shadowRoot.querySelector(CONTROL) || deep(k.shadowRoot)));
     if (c.shadowRoot || c.tagName.includes('-') || deep(c)) return null;
-    for (let p = el; (p = p.assignedSlot || p.parentElement || (p.parentNode && p.parentNode.host)); ) if (p.matches(CONTROL + ', label')) return null;
+    for (let p = el, i = 0; (p = p.assignedSlot || p.parentElement || (p.parentNode && p.parentNode.nodeType === 11 && p.parentNode.host)); ) if (++i > 1000 || p.matches(CONTROL + ', label')) return null;
     const shownText = e => norm(e.innerText || e.textContent || '');
     if (HIDES(c) || !shown(c) || shownText(el) !== shownText(c) || c.querySelector(CONTROL)) return null;
     const name = [c.innerText || c.textContent || '', c.getAttribute('aria-label') || '', c.getAttribute('title') || '',

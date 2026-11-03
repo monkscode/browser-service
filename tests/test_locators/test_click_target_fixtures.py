@@ -8,6 +8,7 @@ not a bare wrapper, a word inside a longer word, a hidden or covered control, a 
 is itself clickable, a password input.
 """
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -199,6 +200,19 @@ async def test_slot_plain_frame_returns_the_link(page):
     # a wrapper slotted into a shadow root with no control around it is still a bare wrapper
     html = f"<x-frame>{TRACK}</x-frame>" + X_FRAME_DEF
     assert _tag(await _find(page, html, "div.w-docs", "Track")) == "a"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    ['<form name="host"></form>', '<img name="host" width="1" height="1">'],
+    ids=["form_name_host", "img_name_host"],
+)
+async def test_a_page_naming_an_element_host_still_answers(page, extra):
+    # one element named "host" is document.host: the walk up must not step from <html> to it
+    # (rr12_hostloop.py); bounded, so a loop fails the test instead of blocking the suite
+    html = "<!DOCTYPE html>" + TRACK + extra
+    r = await asyncio.wait_for(_find(page, html, "div.w-docs", "Track"), timeout=10)
+    assert _tag(r) == "a"
 
 
 # ---------------------------------------------------------------------------
@@ -875,6 +889,29 @@ async def test_pointed_xpath_matches_two(page):
         is_collection=None,
         element_data={"tagName": "li", "xpath": "//li"},
         row_anchor_text=None,
+    )
+    assert r is None
+
+
+@pytest.mark.parametrize("prop", ["parentElement", "assignedSlot"])
+async def test_a_form_field_shadowing_a_walk_property_is_refused(page, prop):
+    # the field overrides that property of its form, so the walk circles between the form and the
+    # field until the cap; POINTED_DATA_JS walks parentElement too, so the data is literal
+    await page.set_content(
+        f'<!DOCTYPE html><form><input type="hidden" name="{prop}">{TRACK}</form>'
+    )
+    xpath = "html[1]/body[1]/form[1]/div[1]"
+    assert await page.locator(f"xpath={xpath}").count() == 1
+    r = await asyncio.wait_for(
+        find_inner_control(
+            page,
+            action="click",
+            expected_text="Track",
+            is_collection=None,
+            element_data={"tagName": "div", "xpath": xpath},
+            row_anchor_text=None,
+        ),
+        timeout=10,
     )
     assert r is None
 

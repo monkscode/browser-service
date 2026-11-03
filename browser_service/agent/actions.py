@@ -610,7 +610,7 @@ async def _reaimed(action, call, inner, search_root, frame) -> Optional[Dict[str
 def _through_inner_control(action):
     """Aim a click at the one control inside a dead container (bs #63).
 
-    When the agent pointed at a container whose centre misses the control the step names,
+    When the agent pointed at a bare wrapper whose centre misses its one control,
     run ``action`` once as if it had indexed that control. The answer stands only when it is
     found and its locator resolves to exactly that control; otherwise the caller gets what
     today's call returns. Any failure here is the same: today's call.

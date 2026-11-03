@@ -168,6 +168,25 @@ async def test_one_cell_row(page):
     assert _tag(await _find(page, html, "tr.r-a", "Alice")) == "a"
 
 
+@pytest.mark.parametrize(
+    "icon, script",
+    [
+        ("<x-icon>&#9733;</x-icon>", ""),
+        (
+            "<x-ion>&#9733;</x-ion>",
+            "<script>customElements.define('x-ion', class extends HTMLElement { "
+            "connectedCallback() { this.attachShadow({mode: 'open'}).innerHTML = "
+            '\'<svg width="12" height="12"></svg>\'; } });</script>',
+        ),
+    ],
+    ids=["rr10_n_icon_element", "rr10_n_icon_element_root"],
+)
+async def test_custom_icon_inside_the_link(page, icon, script):
+    # an icon element in the link (mat-icon: no root; ion-icon: an open root with no control)
+    html = BOX.format(f'<a href="#">{icon} Alice</a>') + script
+    assert _tag(await _find(page, html, "div.w-docs", "Alice")) == "a"
+
+
 # ---------------------------------------------------------------------------
 # Returns None: a re-aim could click a wrong element, or there is nothing to re-aim
 # ---------------------------------------------------------------------------
@@ -220,6 +239,19 @@ def _t1_shadow(mode):
         + '\'<button aria-label="Delete" style="cursor:pointer">&#128465;</button>\'; '
         + "} });</script>"
     )
+
+
+# rr10_lib.py host_control: the wrapper's one control is itself a shadow host, a Delete button in
+# its open root
+HOST = (
+    '<{0} role="link" class="h" style="display:inline-block;width:150px;height:30px" '
+    'data-who="alice">Alice</{0}>'
+)
+HOST_ROOT = (
+    "const r = h.attachShadow({mode: 'open'}); r.innerHTML = `<slot></slot> "
+    '<button aria-label="Delete" style="cursor:pointer;position:absolute;margin-left:90px">'
+    f"{BIN_SVG}</button>`;"
+)
 
 
 @pytest.mark.parametrize(
@@ -496,6 +528,39 @@ def _t1_shadow(mode):
             "p",
             "docs",
         ),
+        # the control hides a second one in a shadow root, or sits inside one (rr10_lib.py)
+        (
+            BOX.format(HOST.format("x-rw"))
+            + "<script>customElements.define('x-rw', class extends HTMLElement { "
+            "connectedCallback() { const h = this; " + HOST_ROOT + " } });</script>",
+            "div.w-docs",
+            "Alice",
+        ),
+        (
+            BOX.format(HOST.format("div"))
+            + "<script>document.querySelectorAll('.h').forEach(h => { "
+            + HOST_ROOT
+            + " })</script>",
+            "div.w-docs",
+            "Alice",
+        ),
+        (
+            BOX.format('<a href="#">Alice Johnson <x-del data-who="alice"></x-del></a>')
+            + "<script>customElements.define('x-del', class extends HTMLElement { "
+            "connectedCallback() { const r = this.attachShadow({mode: 'open'}); "
+            'r.innerHTML = `<button aria-label="Delete" style="cursor:pointer">'
+            f"{BIN_SVG}</button>`; }} }});</script>",
+            "div.w-docs",
+            "Alice Johnson",
+        ),
+        (
+            '<div class="card" onclick="void 0" '
+            'style="width:500px;padding:10px;margin-bottom:6px;border:1px solid #999">'
+            + BOX.format('<a href="#">Track</a>')
+            + "</div>",
+            "div.w-docs",
+            "Track",
+        ),
     ],
     ids=[
         "two-buttons",
@@ -540,6 +605,10 @@ def _t1_shadow(mode):
         "password-input-below-the-link",
         "shadow-root-on-a-div",
         "text-beside-the-control",
+        "rr10_host_control_x_open",
+        "rr10_host_control_div_open",
+        "rr10_shadow_in_link",
+        "rr10_inside_onclick",
     ],
 )
 async def test_a_non_wrapper_stays_unanswered(page, html, pointed, expected):

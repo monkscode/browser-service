@@ -295,6 +295,19 @@ T1_SHADOW_TWO_ROWS = (
     "r.querySelector('button').addEventListener('click', "
     "() => window.__acts.push('delete-' + this.dataset.who)); } });</script>"
 )
+# The wrapper inside a card with its own onclick, two cards (rr10_lib.py rr10_inside_onclick_two):
+# the card is the target, so its click records nothing; the Track link is the wrong click
+CARD = (
+    '<div class="card" onclick="void 0" '
+    'style="width:500px;padding:10px;margin-bottom:6px;border:1px solid #999">'
+    '<div class="w w-{0}" style="width:400px;height:40px;border:1px solid #ccc;margin-bottom:6px">'
+    "{1}</div></div>"
+)
+INSIDE_ONCLICK_TWO = (
+    ACTS
+    + CARD.format("docs", _link("track-alice", "Track"))
+    + CARD.format("blog", _link("track-bob", "Track"))
+)
 
 
 @chromium
@@ -350,6 +363,11 @@ T1_SHADOW_TWO_ROWS = (
             "tr.r-a",
             dict(expected_text="Alice", element_description="Delete button in the row for Alice"),
         ),
+        (
+            INSIDE_ONCLICK_TWO,
+            "div.w-docs",
+            dict(expected_text="Track", element_description="the Track order card"),
+        ),
     ],
     ids=[
         "delete-beside-punctuation",
@@ -360,6 +378,7 @@ T1_SHADOW_TWO_ROWS = (
         "rr8_hover_opacity_two",
         "a_display_two",
         "rr9_shadow_open_two",
+        "rr10_inside_onclick_two",
     ],
 )
 async def test_destructive_control_is_never_clicked(page, html, pointed, over):

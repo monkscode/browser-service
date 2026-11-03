@@ -12,12 +12,12 @@ The rule is an allowlist (owner decision D-J): the agent's expected text often n
 not the control the step means, and a second control can hide in forms no read can list (shown
 only on hover, an icon wired by script, a shadow root). So the container must hold nothing else:
 one element child at every level down to the first control, no custom element or shadow root on
-the way, no text beside the control, and no control below it. The control must be visible and
-uncovered, must not hold the container's centre, and its name must hold the expected text on
-whole words (``\\p{M}`` keeps Devanagari words whole). Found can never fall: any doubt (not a
-click, a control or a container with its own listener, a collection, a row-anchored or text-less
-step, no xpath, a stale or ambiguous xpath, a control that hides its value, a failed read) is
-None.
+the way, no text beside the control, no control below it (a shadow root's included), and no
+control around it. The control must be visible and uncovered, must not hold the container's
+centre, and its name must hold the expected text on whole words (``\\p{M}`` keeps Devanagari
+words whole). Found can never fall: any doubt (not a click, a control or a container with its
+own listener, a collection, a row-anchored or text-less step, no xpath, a stale or ambiguous
+xpath, a control that hides its value, a failed read) is None.
 
 Referenced by: agent/actions.py
 Depends on: locators/action_fit.py, locators/hidden_value.py
@@ -37,7 +37,7 @@ CONTROL_TAGS = frozenset(
     {"a", "button", "input", "select", "textarea", "label", "summary", "option"}
 )
 
-# shortcut: a click listener on the document around a bare wrapper cannot be read, so the inner control is clicked though the wrapper was the target; upgrade if a real page shows it.
+# shortcut: a second click target no read can see (a closed shadow root on a plain element, a script-wired icon inside the control, a click listener on the document or on any element between the wrapper and the control) is not seen, so the inner control is clicked; upgrade if a real page shows it.
 # The measured rule (bench/private/bs63/build_review/, m4_*). HIDES(c) is resolved below, so the
 # block stays comparable byte for byte with the plan.
 INNER_CONTROL_JS = r"""
@@ -58,6 +58,8 @@ INNER_CONTROL_JS = r"""
             && c.checkVisibility({opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true}); };
     let c = el;
     do { if (c.children.length !== 1 || c.shadowRoot || c.tagName.includes('-')) return null; c = c.children[0]; } while (!c.matches(CONTROL));
+    if (c.shadowRoot || c.tagName.includes('-') || Array.from(c.querySelectorAll('*')).some(k => k.shadowRoot && k.shadowRoot.querySelector(CONTROL))) return null;
+    if (el.parentElement && el.parentElement.closest(CONTROL)) return null;
     const shownText = e => norm(e.innerText || e.textContent || '');
     if (HIDES(c) || !shown(c) || shownText(el) !== shownText(c) || c.querySelector(CONTROL)) return null;
     const name = [c.innerText || c.textContent || '', c.getAttribute('aria-label') || '', c.getAttribute('title') || '',
@@ -145,7 +147,7 @@ async def find_inner_control(
     element_data: Optional[Dict[str, Any]],
     row_anchor_text: Optional[str],
 ) -> Optional[InnerControl]:
-    """The one control inside the pointed container that the step names, or None.
+    """The one control of the pointed bare wrapper, or None.
 
     ``element_data`` None or without an xpath = no re-aim (a bare candidate is not a door);
     ``row_anchor_text`` set = the agent named a row, which says nothing about the target.

@@ -178,13 +178,27 @@ async def test_one_cell_row(page):
             "connectedCallback() { this.attachShadow({mode: 'open'}).innerHTML = "
             '\'<svg width="12" height="12"></svg>\'; } });</script>',
         ),
+        (
+            '<ion-icon name="star" role="img" aria-label="star"></ion-icon>',
+            "<script>customElements.define('ion-icon', class extends HTMLElement { "
+            "connectedCallback() { this.attachShadow({mode: 'open'}).innerHTML = "
+            '\'<div class="icon-inner"><svg viewBox="0 0 512 512" width="12" height="12">'
+            '<path d="M0 0h512v512H0z"/></svg></div>\'; } });</script>',
+        ),
     ],
-    ids=["rr10_n_icon_element", "rr10_n_icon_element_root"],
+    ids=["rr10_n_icon_element", "rr10_n_icon_element_root", "rr11_ion_icon_in_link"],
 )
 async def test_custom_icon_inside_the_link(page, icon, script):
-    # an icon element in the link (mat-icon: no root; ion-icon: an open root with no control)
-    html = BOX.format(f'<a href="#">{icon} Alice</a>') + script
+    # an icon element in the link (mat-icon: no root; ion-icon: an open root with no control);
+    # standards mode, as measured: in quirks mode the ion-icon's block root moves the link's centre
+    html = "<!DOCTYPE html>" + BOX.format(f'<a href="#">{icon} Alice</a>') + script
     assert _tag(await _find(page, html, "div.w-docs", "Alice")) == "a"
+
+
+async def test_slot_plain_frame_returns_the_link(page):
+    # a wrapper slotted into a shadow root with no control around it is still a bare wrapper
+    html = f"<x-frame>{TRACK}</x-frame>" + X_FRAME_DEF
+    assert _tag(await _find(page, html, "div.w-docs", "Track")) == "a"
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +266,23 @@ HOST_ROOT = (
     '<button aria-label="Delete" style="cursor:pointer;position:absolute;margin-left:90px">'
     f"{BIN_SVG}</button>`;"
 )
+# rr11_lib.py slot_card: the Track wrapper slotted into a custom element's open shadow root that
+# wraps the slot in a click target; X_FRAME_DEF's root holds only the slot (fix round 9's pins)
+TRACK = BOX.format('<a href="#">Track</a>')
+CARD_CSS = "width:500px;padding:10px;margin-bottom:6px;border:1px solid #999"
+X_FRAME_DEF = (
+    "<script>customElements.define('x-frame', class extends HTMLElement { connectedCallback() { "
+    "this.attachShadow({mode: 'open'}).innerHTML = '<div><slot></slot></div>'; } });</script>"
+)
+
+
+def _slot_card(open_tag, close_tag):
+    return (
+        f'<x-card data-who="alice">{TRACK}</x-card>'
+        "<script>customElements.define('x-card', class extends HTMLElement { connectedCallback() { "
+        f"this.attachShadow({{mode: 'open'}}).innerHTML = `{open_tag}<slot></slot>{close_tag}`; "
+        "} });</script>"
+    )
 
 
 @pytest.mark.parametrize(
@@ -561,6 +592,48 @@ HOST_ROOT = (
             "div.w-docs",
             "Track",
         ),
+        # a control or label around the wrapper across a shadow boundary, a control two shadow
+        # roots below the link (rr11_lib.py)
+        (
+            _slot_card(
+                f'<button style="display:block;{CARD_CSS};background:none;font:inherit;'
+                'text-align:left">',
+                "</button>",
+            ),
+            "div.w-docs",
+            "Track",
+        ),
+        (
+            _slot_card(f'<div role="button" tabindex="0" style="{CARD_CSS}">', "</div>"),
+            "div.w-docs",
+            "Track",
+        ),
+        (
+            BOX.format('<a href="#">Alice Johnson <x-outer data-who="alice"></x-outer></a>')
+            + "<script>customElements.define('x-inner', class extends HTMLElement { "
+            "connectedCallback() { const r = this.attachShadow({mode: 'open'}); "
+            'r.innerHTML = `<button aria-label="Delete" style="cursor:pointer">'
+            f"{BIN_SVG}</button>`; }} }}); "
+            "customElements.define('x-outer', class extends HTMLElement { connectedCallback() { "
+            "const r = this.attachShadow({mode: 'open'}); "
+            'r.innerHTML = `<x-inner data-who="${this.dataset.who}"></x-inner>`; } });</script>',
+            "div.w-docs",
+            "Alice Johnson",
+        ),
+        (
+            f'<label class="lb" style="display:block;{CARD_CSS}"><input type="checkbox"> '
+            + BOX.format('<a href="#">Terms</a>')
+            + "</label>",
+            "div.w-docs",
+            "Terms",
+        ),
+        # pin: the card is reached only through the frame's shadow host
+        (
+            f'<div class="card" onclick="void 0" style="{CARD_CSS}"><x-frame>{TRACK}</x-frame></div>'
+            + X_FRAME_DEF,
+            "div.w-docs",
+            "Track",
+        ),
     ],
     ids=[
         "two-buttons",
@@ -609,6 +682,11 @@ HOST_ROOT = (
         "rr10_host_control_div_open",
         "rr10_shadow_in_link",
         "rr10_inside_onclick",
+        "rr11_slot_in_button",
+        "rr11_slot_in_rolebutton",
+        "rr11_nested_shadow_in_link",
+        "rr11_label_around",
+        "slot_frame_in_onclick",
     ],
 )
 async def test_a_non_wrapper_stays_unanswered(page, html, pointed, expected):

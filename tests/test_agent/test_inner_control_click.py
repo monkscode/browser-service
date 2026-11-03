@@ -308,6 +308,23 @@ INSIDE_ONCLICK_TWO = (
     + CARD.format("docs", _link("track-alice", "Track"))
     + CARD.format("blog", _link("track-bob", "Track"))
 )
+# The wrapper slotted into a custom element whose open shadow root wraps the slot in a <button>,
+# two cards (rr11_lib.py rr11_slot_in_button_two): the card is the target, so its click records
+# nothing; the Track link is the wrong click
+SLOT_CARD = (
+    '<x-card data-who="{0}"><div class="w w-{1}" '
+    'style="width:400px;height:40px;border:1px solid #ccc;margin-bottom:6px">{2}</div></x-card>'
+)
+SLOT_IN_BUTTON_TWO = (
+    ACTS
+    + SLOT_CARD.format("alice", "docs", _link("track-alice", "Track"))
+    + SLOT_CARD.format("bob", "blog", _link("track-bob", "Track"))
+    + "<script>customElements.define('x-card', class extends HTMLElement { connectedCallback() { "
+    "const r = this.attachShadow({mode: 'open'}); "
+    'r.innerHTML = `<button style="display:block;width:500px;padding:10px;margin-bottom:6px;'
+    'border:1px solid #999;background:none;font:inherit;text-align:left"><slot></slot></button>`; '
+    "r.firstElementChild.addEventListener('click', e => { e.preventDefault(); }); } });</script>"
+)
 
 
 @chromium
@@ -368,6 +385,11 @@ INSIDE_ONCLICK_TWO = (
             "div.w-docs",
             dict(expected_text="Track", element_description="the Track order card"),
         ),
+        (
+            SLOT_IN_BUTTON_TWO,
+            "div.w-docs",
+            dict(expected_text="Track", element_description="the Track order card"),
+        ),
     ],
     ids=[
         "delete-beside-punctuation",
@@ -379,6 +401,7 @@ INSIDE_ONCLICK_TWO = (
         "a_display_two",
         "rr9_shadow_open_two",
         "rr10_inside_onclick_two",
+        "rr11_slot_in_button_two",
     ],
 )
 async def test_destructive_control_is_never_clicked(page, html, pointed, over):

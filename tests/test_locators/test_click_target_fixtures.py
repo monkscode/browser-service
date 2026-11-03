@@ -1036,3 +1036,53 @@ async def test_element_data_keys_match_the_indexed_shape(page):
     expected = set(_extract_dom_node_attributes(MagicMock())) | {"textContent"}
     assert set(r.element_data) == expected
     assert r.element_data["xpath"].startswith("html[1]/body[1]/ul[1]/li[1]/a[1]")
+
+
+async def test_a_form_field_shadowing_the_sibling_count_is_refused(page):
+    # a form field named previousElementSibling (pure HTML) makes the control's sibling count
+    # circle; _find's pointed-data script has the same loop, so the data is literal (rr14_probe.py S1)
+    await page.set_content(
+        '<!DOCTYPE html><form id="f1"></form><input form="f1" name="previousElementSibling">'
+        + BOX.format('<a href="#">Track</a>')
+    )
+    r = await asyncio.wait_for(
+        find_inner_control(
+            page,
+            action="click",
+            expected_text="Track",
+            is_collection=None,
+            element_data={"tagName": "div", "xpath": "html[1]/body[1]/div[1]"},
+            row_anchor_text=None,
+        ),
+        timeout=10,
+    )
+    assert r is None
+
+
+_FACE = (
+    "<script>class XC extends HTMLElement{static formAssociated=true;get length(){return 1}};"
+    "customElements.define('x-c',XC)</script>"
+    + BOX.format('<form><x-c name="children"></x-c><a href="#">Track</a></form>')
+    + "<script>document.querySelector('x-c')[0]=document.querySelector('div.w')</script>"
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # pure HTML, but its wrapper has no box, so the agent cannot point at it; the others need a page script
+        '<select form="f" name="children" size="3"><option>'
+        + BOX.format('<form id="f"><a href="#">Track</a></form>')
+        + "</option></select>",
+        _FACE,
+        "<script>Object.defineProperty(Element.prototype,'children',"
+        "{get(){return {length:1,0:this}},configurable:true})</script>"
+        + BOX.format('<a href="#">Track</a>'),
+    ],
+    ids=["select_children_parser", "face_children", "proto_children"],
+)
+async def test_a_descent_that_leads_back_up_is_refused(page, body):
+    r = await asyncio.wait_for(
+        _find(page, "<!DOCTYPE html>" + body, "div.w-docs", "Track"), timeout=10
+    )
+    assert r is None

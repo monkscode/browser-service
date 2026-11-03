@@ -607,6 +607,12 @@ async def _reaimed(action, call, inner, search_root, frame) -> Optional[Dict[str
     return result
 
 
+# shortcut: a page script whose DOM property itself loops forever hangs any script that reads it, today's too; this limit frees the caller, not the tab; upgrade if a real page shows it.
+INNER_CONTROL_TIMEOUT_S = (
+    2.0  # the read takes about 0.02 s; FIT_READ_TIMEOUT_MS (1 s) bounds only finding the element
+)
+
+
 def _through_inner_control(action):
     """Aim a click at the one control inside a dead container (bs #63).
 
@@ -626,13 +632,16 @@ def _through_inner_control(action):
         try:
             frame = call.get("iframe_context")
             search_root = page.frame_locator(frame) if frame else page
-            inner = await find_inner_control(
-                search_root,
-                action=call.get("action"),
-                expected_text=call.get("expected_text"),
-                is_collection=call.get("is_collection"),
-                element_data=call.get("element_data"),
-                row_anchor_text=call.get("row_anchor_text"),
+            inner = await asyncio.wait_for(
+                find_inner_control(
+                    search_root,
+                    action=call.get("action"),
+                    expected_text=call.get("expected_text"),
+                    is_collection=call.get("is_collection"),
+                    element_data=call.get("element_data"),
+                    row_anchor_text=call.get("row_anchor_text"),
+                ),
+                timeout=INNER_CONTROL_TIMEOUT_S,
             )
             result = (
                 await _reaimed(action, call, inner, search_root, frame)

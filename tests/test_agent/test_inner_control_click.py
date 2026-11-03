@@ -9,6 +9,7 @@ demand) and the registration wiring with ``_do_interaction`` replaced at its sea
 Only the Chromium tests carry the ``integration`` marker; the module has no ``pytestmark``.
 """
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -609,6 +610,21 @@ async def test_no_control_calls_once():
     assert out == {"found": True, "best_locator": "x"}
     assert len(calls) == 1
     assert calls[0] == {**CALL, "is_collection": None, "row_anchor_text": None}
+
+
+async def test_a_read_that_never_returns_keeps_todays_answer():
+    # a page whose own script hangs the tab: the read is cut off and today's call answers
+    async def never(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    fake, calls = _fake_action([{"found": False, "today": True}])
+    with patch(
+        "browser_service.agent.actions.find_inner_control", new=AsyncMock(side_effect=never)
+    ):
+        out = await asyncio.wait_for(_through_inner_control(fake)(**CALL), timeout=5)
+
+    assert out == {"found": False, "today": True}
+    assert len(calls) == 1
 
 
 async def test_page_none_goes_straight_to_the_action():

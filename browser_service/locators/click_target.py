@@ -17,8 +17,8 @@ depth), and no control or label around it (across shadow boundaries). The contro
 visible and uncovered, must not hold the container's centre, and its name must hold the expected
 text on whole words (``\\p{M}`` keeps Devanagari words whole). Found can never fall: any doubt
 (not a click, a control or a container with its own listener, a collection, a row-anchored or
-text-less step, no xpath, a stale or ambiguous xpath, a control that hides its value, a walk up
-of more than 1,000 steps, a failed read) is None.
+text-less step, no xpath, a stale or ambiguous xpath, a control that hides its value, a walk
+of more than 1,000 steps up or down, a failed read) is None.
 
 Referenced by: agent/actions.py
 Depends on: locators/action_fit.py, locators/hidden_value.py
@@ -39,7 +39,7 @@ CONTROL_TAGS = frozenset(
 )
 
 # shortcut: a second click target no read can see (a closed shadow root, a click target around the wrapper that no read names such as a card wired only by script or marked only by role=treeitem or tabindex, an element defined after detection, a script-wired icon inside the control, a click listener on the document or on any element between the wrapper and the control) is not seen, so the inner control is clicked, the same click as when the agent points at the control itself; upgrade if a real page shows it.
-# shortcut: a form field named after a DOM property (parentNode, parentElement, assignedSlot) can mislead a walk, which then clicks the inner control; both walks are bounded, so it never hangs; upgrade if a real page shows it.
+# shortcut: a form field or a page script that renames a DOM property (parentNode, parentElement, assignedSlot, previousElementSibling, children) can mislead a walk, which then clicks the inner control; every walk is bounded, so it never hangs; upgrade if a real page shows it.
 # The measured rule (bench/private/bs63/build_review/, m4_*). HIDES(c) is resolved below, so the
 # block stays comparable byte for byte with the plan.
 INNER_CONTROL_JS = r"""
@@ -58,8 +58,8 @@ INNER_CONTROL_JS = r"""
     const shown = c => { const b = c.getBoundingClientRect(), s = getComputedStyle(c);
         return b.width > 1 && b.height > 1 && s.visibility !== 'hidden'
             && c.checkVisibility({opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true}); };
-    let c = el;
-    do { if (c.children.length !== 1 || c.shadowRoot || c.tagName.includes('-')) return null; c = c.children[0]; } while (!c.matches(CONTROL));
+    let c = el, d = 0;
+    do { if (++d > 1000 || c.children.length !== 1 || c.shadowRoot || c.tagName.includes('-')) return null; c = c.children[0]; } while (!c.matches(CONTROL));
     const deep = n => Array.from(n.querySelectorAll('*')).some(k => k.shadowRoot && (k.shadowRoot.querySelector(CONTROL) || deep(k.shadowRoot)));
     if (c.shadowRoot || c.tagName.includes('-') || deep(c)) return null;
     for (let p = el, i = 0; (p = p.assignedSlot || p.parentElement || (p.parentNode && p.parentNode.nodeType === 11 && p.parentNode.host)); ) if (++i > 1000 || p.matches(CONTROL + ', label')) return null;
@@ -87,7 +87,8 @@ c => {
     for (let n = c, k = 0; n && n.nodeType === 1; n = n.parentElement) {
         if (++k > 1000) throw new Error('the xpath walk passed 1000 steps');
         let i = 1;
-        for (let s = n.previousElementSibling; s; s = s.previousElementSibling) {
+        for (let s = n.previousElementSibling, j = 0; s; s = s.previousElementSibling) {
+            if (++j > 100000) throw new Error('the sibling count passed 100000 steps');
             if (s.tagName === n.tagName) i++;
         }
         parts.unshift(n.tagName.toLowerCase() + '[' + i + ']');

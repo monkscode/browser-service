@@ -428,11 +428,30 @@ async def _indexed_element_misfit(
     return await check_action_fit(search_root, f"xpath={xpath}", action, expected_text)
 
 
+async def _same_element(search_root, result, candidate, action) -> bool:
+    """A stability demotion may change the locator, never the element: the replacement must resolve to the
+    candidate's node (for a click, a node inside it). Unreadable = not the same (the candidate stands)."""
+    if search_root is None:
+        return True
+    try:
+        cand = await search_root.locator(candidate["best_locator"]).element_handle(timeout=1000)
+        return bool(
+            await search_root.locator(result["best_locator"]).evaluate(
+                "(e, [c, inside]) => e === c || (inside && c.contains(e))",
+                [cand, action == "click"],
+                timeout=1000,
+            )
+        )
+    except Exception:
+        return False
+
+
 async def _settle_action_fit(
     result: Dict[str, Any],
     fallback_result: Optional[Dict[str, Any]],
     run_cascade,
     action: str,
+    search_root=None,
 ) -> Dict[str, Any]:
     """Pick the answer once fit mode has run — never worse than today (E2).
 
@@ -449,8 +468,11 @@ async def _settle_action_fit(
     if fallback_result is not None:
         if result.get("found") and (
             fallback_result.get("action_fit") == "misfit"
-            or stability_rank(result.get("stability") or STABLE)
-            < stability_rank(fallback_result.get("stability") or STABLE)
+            or (
+                stability_rank(result.get("stability") or STABLE)
+                < stability_rank(fallback_result.get("stability") or STABLE)
+                and await _same_element(search_root, result, fallback_result, action)
+            )
         ):
             return result
         return fallback_result
@@ -1449,7 +1471,9 @@ async def find_unique_locator_action(
                 )
                 result = {"found": False, "error": f"fit-mode cascade raised {type(e).__name__}"}
             if action:
-                result = await _settle_action_fit(result, _fallback_result, _run_cascade, action)
+                result = await _settle_action_fit(
+                    result, _fallback_result, _run_cascade, action, search_context
+                )
                 result = await apply_read_target_policy(
                     search_context,
                     result,

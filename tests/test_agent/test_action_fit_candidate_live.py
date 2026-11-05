@@ -166,3 +166,55 @@ async def test_todo_candidate_wins_over_an_unfit_index(page, action_fit_on, cand
     else:
         assert out["best_locator"] == candidate
     assert "buy milk" in await page.locator(out["best_locator"]).inner_text()
+
+
+# bs #58 D1: a stability demotion may change the locator, never the element.
+ICON_ONLY_PAGE = (
+    '<form id="mainForm"><a id="mainForm:j_idt45" href="#" class="ui-commandlink">'
+    '<i style="display:inline-block;width:20px;height:20px;background:#888"></i></a></form>'
+    "<p><button>Delete</button></p>"
+)
+ICON_TITLED_PAGE = ICON_ONLY_PAGE.replace('href="#"', 'href="#" title="Save"').replace(
+    "Delete", "Remove"
+)
+
+
+async def _click_icon_link(page, html, expected):
+    await page.set_content(html)
+    x, y = await _center(page, '[id="mainForm:j_idt45"]')
+    return await find_unique_locator_action(
+        x=x,
+        y=y,
+        element_id="elem_1",
+        element_description="icon link",
+        expected_text=expected,
+        candidate_locator="id=mainForm:j_idt45",
+        element_data={
+            "tagName": "a",
+            "id": "mainForm:j_idt45",
+            "className": "ui-commandlink",
+            "textContent": "",
+            "xpath": "/html[1]/body[1]/form[1]/a[1]",
+        },
+        page=page,
+        is_collection=False,
+        action="click",
+    )
+
+
+async def test_demoted_icon_link_candidate_stands_when_the_replacement_is_another_element(
+    page, action_fit_on
+):
+    out = await _click_icon_link(page, ICON_ONLY_PAGE, "Delete")
+    assert out["found"] is True
+    assert out["best_locator"] == "id=mainForm:j_idt45"
+    assert out["stability"] == "volatile"
+
+
+async def test_demoted_icon_link_candidate_yields_to_the_same_element_by_its_title(
+    page, action_fit_on
+):
+    out = await _click_icon_link(page, ICON_TITLED_PAGE, "Save")
+    assert out["best_locator"] == 'role=link[name="Save"]'
+    assert out["stability"] == "stable"
+    assert await page.locator(out["best_locator"]).get_attribute("id") == "mainForm:j_idt45"

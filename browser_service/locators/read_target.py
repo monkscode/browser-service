@@ -459,22 +459,29 @@ async def _confirmed_node(handle, observed: str) -> Tuple[Any, Optional[List[Any
 PIXEL_SOURCE = "screen point read as pixels"
 
 
+async def _only_match_holds(search_context, observed: str, handle) -> bool:
+    """G1: exactly one element shows the observed text AND the element under the pixel point lies inside it. #31 confirms by a wider rule than get_by_text (case-folded, direct text, attributes), so a count alone would let a near-twin under the point be confirmed silently."""
+    # exact=True: whole text, whitespace-normalised, case-sensitive; the smallest element holding it.
+    only = search_context.get_by_text(observed, exact=True)
+    if await only.count() != 1:
+        return False
+    return bool(await only.evaluate("(m, h) => m.contains(h)", handle, timeout=FIT_READ_TIMEOUT_MS))
+
+
 async def _pixel_source(
     search_context, observed: str, pixel_point: Tuple[float, float]
 ) -> Optional[Tuple[str, Any]]:
-    """The element under the agent's raw point read as screen pixels — only when exactly one element on the page shows the observed text, so a second element with the same text can never be confirmed silently (bs #75 G1)."""
+    """The element under the agent's raw point read as screen pixels — only when it lies inside the one element that shows the observed text, so another element with the same text can never be confirmed silently (bs #75 G1). Any failure is no source: today's refusal."""
     try:
-        # exact=True: whole text, whitespace-normalised, case-sensitive; the smallest element holding it.
-        if (
-            not observed.strip()
-            or await search_context.get_by_text(observed, exact=True).count() != 1
-        ):
+        if not observed.strip():
             return None
         js_handle = await search_context.evaluate_handle(
             ELEMENT_FROM_POINT_JS, [pixel_point[0], pixel_point[1]]
         )
         handle = js_handle.as_element()
-        return (PIXEL_SOURCE, handle) if handle else None
+        if handle is None or not await _only_match_holds(search_context, observed, handle):
+            return None
+        return PIXEL_SOURCE, handle
     except Exception as e:
         logger.info(f"   ⚠️ Read-address: pixel point lookup failed: {e}")
         return None

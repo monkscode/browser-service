@@ -91,11 +91,15 @@ async def test_a_grid_read_confirmed_today_never_reads_the_pixel_source(page):
 
 
 async def test_a_pixel_point_showing_other_text_is_still_refused(page):
-    await page.set_content(MESSAGE_ONCE)
-    other = await _centre(page, "#box")
+    """The pixel point is on a THIRD element (neither the message nor the grid box), so the test fails if the pixel source confirms it."""
+    await page.set_content(
+        MESSAGE_ONCE + '<p id="third" class="abs" style="left:100px;top:600px">Footer</p>'
+    )
+    other = await _centre(page, "#third")
     verdict = await resolve_read_address(page, "Access granted", None, GRID, pixel_point=other)
     assert "unconfirmed" in verdict
-    assert "cart total" in verdict["unconfirmed"]
+    assert "cart total" in verdict["unconfirmed"]  # the grid point's reason
+    assert "footer" not in verdict["unconfirmed"]  # G1 withheld the source: outside the one match
 
 
 async def test_g1_same_text_twice_keeps_the_refusal(page):
@@ -105,6 +109,11 @@ async def test_g1_same_text_twice_keeps_the_refusal(page):
     pixel = await _centre(page, "#b")
     verdict = await resolve_read_address(page, "$10", None, grid, pixel_point=pixel)
     assert "unconfirmed" in verdict, verdict
+    # Control: with G1 bypassed the same page confirms card b, so the refusal above is G1's.
+    with patch.object(read_target, "_only_match_holds", new=AsyncMock(return_value=True)):
+        bypassed = await resolve_read_address(page, "$10", None, grid, pixel_point=pixel)
+    assert bypassed["source"] == "screen point read as pixels"
+    assert bypassed["locator"] == "id=b"
 
 
 async def test_g1_same_text_once_is_confirmed(page):
@@ -201,3 +210,42 @@ class _P:
 )
 def test_pixel_point_rules(params, scaled, expected):
     assert _pixel_point(params, scaled[0], scaled[1], *VIEWPORT) == expected
+
+
+NEAR_TWINS = [
+    # direct-text twin: #31 reads the <p>'s own text "$10", get_by_text does not count it
+    ("$10", '<p id="b" class="abs" style="left:400px;top:300px">$10 <small>/mo</small></p>'),
+    # casefold twin: #31 casefolds, get_by_text(exact=True) is case-sensitive
+    ("Access granted", '<p id="b" class="abs" style="left:400px;top:300px">ACCESS GRANTED</p>'),
+]
+
+
+@pytest.mark.parametrize("observed, twin_html", NEAR_TWINS)
+async def test_g1_a_near_twin_under_the_pixel_point_stays_refused(page, observed, twin_html):
+    """I1: get_by_text counts the one exact match (#a) but #31 would also confirm the twin #b under the pixel point."""
+    await page.set_content(
+        STYLE
+        + f'<p id="a" class="abs" style="left:100px;top:600px">{observed}</p>'
+        + twin_html
+        + '<div id="box" class="abs">Sort by</div>'
+    )
+    assert await page.get_by_text(observed, exact=True).count() == 1
+    verdict = await resolve_read_address(
+        page, observed, None, await _centre(page, "#box"), pixel_point=await _centre(page, "#b")
+    )
+    assert "unconfirmed" in verdict, verdict
+
+
+async def test_g1_the_one_match_under_the_pixel_point_is_confirmed_beside_a_near_twin(page):
+    """The control of the near-twin tests: the pixel point on the one exact match (#a) confirms #a."""
+    await page.set_content(
+        STYLE
+        + '<p id="a" class="abs" style="left:100px;top:600px">$10</p>'
+        + NEAR_TWINS[0][1]
+        + '<div id="box" class="abs">Sort by</div>'
+    )
+    verdict = await resolve_read_address(
+        page, "$10", None, await _centre(page, "#box"), pixel_point=await _centre(page, "#a")
+    )
+    assert verdict["source"] == "screen point read as pixels"
+    assert await page.locator(verdict["locator"]).evaluate("el => el.id") == "a"

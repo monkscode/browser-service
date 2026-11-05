@@ -713,7 +713,9 @@ async def find_unique_locator_action(
     vision_framework_hint: Optional[str] = None,  # LLM's framework guess (any specialized type)
     row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
     action: Optional[str] = None,  # Step action (E2); None = today's behaviour (flag off)
-    vision_point: Optional[Tuple[int, int]] = None,  # Vision point before replacement (K v1 log)
+    vision_point: Optional[
+        Tuple[int, int]
+    ] = None,  # Read gate screen point: indexed = its box centre, else the scaled point (K log)
     pixel_point: Optional[
         Tuple[int, int]
     ] = None,  # Index-less read: raw point read as pixels (#75)

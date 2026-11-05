@@ -468,16 +468,19 @@ def _log_pixel_declined(pixel_point, reason: str, source: str = PIXEL_SOURCE) ->
         )
 
 
-async def _only_match_holds(search_context, observed: str, handle) -> Optional[str]:
-    """G1: exactly one element shows the observed text AND the element under the pixel point lies inside it. Returns None when it holds, else the reason. #31 confirms by a wider rule than get_by_text (case-folded, direct text, attributes), so a count alone would let a near-twin under the point be confirmed silently."""
+async def _only_match_holds(search_context, observed: str, handle) -> Tuple[Optional[str], Any]:
+    """G1: exactly one element shows the observed text AND the element under the pixel point lies inside it. Returns (None, the one match) when it holds, else (the reason, None). #31 confirms by a wider rule than get_by_text (case-folded, direct text, attributes), so a count alone would let a near-twin under the point be confirmed silently."""
     # exact=True: whole text, whitespace-normalised, case-sensitive; the smallest element holding it.
     only = search_context.get_by_text(observed, exact=True)
     shown = await only.count()
     if shown != 1:
-        return f"the text is shown {shown} times, not once"
-    if await only.evaluate("(m, h) => m.contains(h)", handle, timeout=FIT_READ_TIMEOUT_MS):
-        return None
-    return "the element under it is not inside the one element showing the text"
+        return f"the text is shown {shown} times, not once", None
+    if not await only.evaluate("(m, h) => m.contains(h)", handle, timeout=FIT_READ_TIMEOUT_MS):
+        return "the element under it is not inside the one element showing the text", None
+    match = await only.element_handle(timeout=FIT_READ_TIMEOUT_MS)
+    if match is None:
+        return "the exact-text match is no longer reachable", None
+    return None, match
 
 
 async def _pixel_source(
@@ -495,11 +498,12 @@ async def _pixel_source(
         if handle is None:
             _log_pixel_declined(pixel_point, "no element is under it")
             return None
-        reason = await _only_match_holds(search_context, observed, handle)
+        reason, match = await _only_match_holds(search_context, observed, handle)
         if reason:
             _log_pixel_declined(pixel_point, reason)
             return None
-        return PIXEL_SOURCE, handle
+        # The one match itself, never the descendant under the point: a labelled empty child would be confirmed and read ''.
+        return PIXEL_SOURCE, match
     except Exception as e:
         _log_pixel_declined(pixel_point, f"the lookup failed: {e}")
         return None

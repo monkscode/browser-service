@@ -57,6 +57,11 @@ def action_fit_on():
         yield
 
 
+async def _bypass_g1(_ctx, _observed, handle):
+    """G1 bypassed for a control: the guard holds and the element under the point is the source."""
+    return None, handle
+
+
 async def _centre(page, selector):
     box = await page.locator(selector).bounding_box()
     return (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
@@ -111,7 +116,7 @@ async def test_g1_same_text_twice_keeps_the_refusal(page):
     verdict = await resolve_read_address(page, "$10", None, grid, pixel_point=pixel)
     assert "unconfirmed" in verdict, verdict
     # Control: with G1 bypassed the same page confirms card b, so the refusal above is G1's.
-    with patch.object(read_target, "_only_match_holds", new=AsyncMock(return_value=None)):
+    with patch.object(read_target, "_only_match_holds", new=AsyncMock(side_effect=_bypass_g1)):
         bypassed = await resolve_read_address(page, "$10", None, grid, pixel_point=pixel)
     assert bypassed["source"] == "screen point read as pixels"
     assert bypassed["locator"] == "id=b"
@@ -253,6 +258,31 @@ async def test_g1_the_one_match_under_the_pixel_point_is_confirmed_beside_a_near
     assert await page.locator(verdict["locator"]).evaluate("el => el.id") == "a"
 
 
+LABELLED_CHILD = (
+    "<style>body{margin:0;font:16px/20px sans-serif} .abs{position:absolute;margin:0}"
+    " #box{left:1180px;top:80px;width:100px;height:60px} #msg{left:800px;top:100px}"
+    " #ic{display:inline-block;width:40px;height:20px;background:#ccc}</style>"
+    '<p id="msg" class="abs">Access granted<i id="ic" aria-label="Access granted"></i></p>'
+    '<div id="box" class="abs">Cart total</div>'
+)
+
+
+@pytest.mark.parametrize("target", ["#ic", "#msg"])
+async def test_the_pixel_address_is_the_one_match_never_its_labelled_child(page, caplog, target):
+    """CodeRabbit PR #81: an empty-rendered child whose aria-label equals the text was confirmed and addressed; it reads ''."""
+    await page.set_content(LABELLED_CHILD)
+    box = await page.locator(target).bounding_box()
+    # on the words for #msg, on the icon for #ic
+    point = (box["x"] + 10, box["y"] + box["height"] / 2)
+    under = await page.evaluate("([x, y]) => document.elementFromPoint(x, y).id", list(point))
+    assert under == target[1:]
+    verdict, text = await _log(page, caplog, "Access granted", await _centre(page, "#box"), point)
+    assert verdict["source"] == "screen point read as pixels"
+    assert verdict["locator"] != "id=ic"
+    assert await page.locator(verdict["locator"]).inner_text() == "Access granted"
+    assert "signal: read-address-pixel-point)" in text
+
+
 async def _log(page, caplog, observed, grid, pixel_point):
     with caplog.at_level("INFO", logger=read_target.logger.name):
         verdict = await resolve_read_address(page, observed, None, grid, pixel_point=pixel_point)
@@ -289,7 +319,7 @@ async def test_declined_pixel_read_is_logged_when_the_element_does_not_show_the_
     await page.set_content(
         MESSAGE_ONCE + '<p id="third" class="abs" style="left:100px;top:600px">Footer</p>'
     )
-    with patch.object(read_target, "_only_match_holds", new=AsyncMock(return_value=None)):
+    with patch.object(read_target, "_only_match_holds", new=AsyncMock(side_effect=_bypass_g1)):
         _, text = await _log(page, caplog, "Access granted", GRID, await _centre(page, "#third"))
     assert "signal: read-address-pixel-declined" in text
     assert "does not show the text" in text

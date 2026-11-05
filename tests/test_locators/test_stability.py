@@ -18,6 +18,7 @@ Evidence anchors (2026-07-06 log/bench audit):
 - tomselect-N (35 log hits, the original production incident) -> volatile.
 """
 
+import time
 from unittest.mock import patch
 
 import pytest
@@ -332,3 +333,110 @@ def test_is_volatile_attr_name(name, want):
     from browser_service.locators.stability import is_volatile_attr_name
 
     assert is_volatile_attr_name(name) is want
+
+
+# bs #58: framework counters in ANY segment of a value (JSF naming containers, UI5 view prefixes, ...).
+SEGMENT_VOLATILE = [
+    "j_idt45",
+    "mainForm:j_idt45",
+    "form:tbl:0:j_idt12",
+    "j_id12",
+    "j_id_7z",
+    "j_id__v_0",
+    "__button0",
+    "__xmlview0--saveBtn",
+    "container-app---__component0---main--__button3",
+    "myApp---main--item-__clone3",
+    "__BVID__23",
+    "rc_select_0",
+    "rc-tabs-1-tab-2",
+    "pr_id_3",
+    "pn_id_5",
+    "pv_id_7",
+    "el-id-1024-12",
+    "cdk-overlay-0",
+    "cdk-dialog-2",
+    "ui-id-5",
+    ":R1:",
+    ":R1:-label",
+    "«r1»",
+    "_R_17d_",
+    "_r_7d_",
+    "row-8f3a9c1d2e4f5a6b7c",
+    "item_0123456789ab",
+]
+
+SEGMENT_STABLE = [
+    "880667900",
+    "dt-search-0",
+    "mat-icon-button",
+    "embermail",
+    "myApp---main--saveBtn",
+    "saveBtn",
+    "j_username",
+    "j_password",
+    "j_idt",
+    "rc-select",
+    "ui-id",
+    "el-id-foo",
+    "cdk-column-col1",
+    "card__title2",
+    "table1",
+    "item-1",
+    "step-2",
+    "q1",
+    "__next",
+    "__section",
+    "abc-123def",
+    "color-ffffff",
+    "deadbeefcafe",
+    "mainForm:results:save",  # hand-written JSF segments: why the React colon form is start-only
+    "form:row1:name",
+    "app:region:panel",
+    "cdk-overlay-container",
+]
+
+
+class TestSegmentFrameworkIds:
+    @pytest.mark.parametrize("value", SEGMENT_VOLATILE)
+    def test_volatile_with_flag_on(self, value, action_fit_on):
+        assert score_stability("id", value) == VOLATILE
+
+    @pytest.mark.parametrize("value", SEGMENT_STABLE)
+    def test_stable_with_flag_on(self, value, action_fit_on):
+        assert score_stability("id", value) == STABLE
+
+    @pytest.mark.parametrize("value", ["j_idt45", "__BVID__23"])
+    def test_counter_in_name_is_volatile_too(self, value, action_fit_on):
+        assert score_stability("name", value) == VOLATILE
+
+    @pytest.mark.parametrize("value", ["j_idt45", "mainForm:j_idt45"])
+    def test_flag_off_keeps_todays_verdict(self, value, action_fit_off):
+        assert score_stability("id", value) == STABLE
+
+    def test_segments_false_keeps_todays_verdict(self, action_fit_on):
+        # the read gate (read_target._is_volatile_token) passes segments=False so its tokens do not change
+        assert score_stability("id", "j_idt45", segments=False) == STABLE
+        assert score_stability("id", "react-select-3-input", segments=False) == VOLATILE
+
+    @pytest.mark.parametrize("value", ["__a" + "1" * 30000 + "a", ":__a" * 7500])
+    def test_hostile_input_is_linear(self, value, action_fit_on):
+        start = time.perf_counter()
+        score_stability("id", value)
+        assert time.perf_counter() - start < 0.5
+
+    @pytest.mark.parametrize(
+        ("value", "want"),
+        [
+            ("__section2", VOLATILE),  # look-alike of UI5: accepted over-flag
+            ("user_pr_id_3", VOLATILE),  # "_" counts as a segment start
+            ("j_id-123", STABLE),  # Mojarra useFaceletsID with a negative hash is not matched
+            ("field-:r2:", STABLE),  # React id after a prefix: the colon form is start-only
+        ],
+    )
+    def test_stated_limits(self, value, want, action_fit_on):
+        assert score_stability("id", value) == want
+
+    def test_escaped_hash_locator_is_a_stated_limit(self, action_fit_on):
+        # item 2 of the evaluation: the escaped "#mainForm\:j_idt45" form is not unescaped before scoring
+        assert classify_locator(r"#mainForm\:j_idt45") == STABLE

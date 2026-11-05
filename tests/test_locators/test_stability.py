@@ -419,7 +419,10 @@ class TestSegmentFrameworkIds:
         assert score_stability("id", "j_idt45", segments=False) == STABLE
         assert score_stability("id", "react-select-3-input", segments=False) == VOLATILE
 
-    @pytest.mark.parametrize("value", ["__a" + "1" * 30000 + "a", ":__a" * 7500])
+    @pytest.mark.parametrize(
+        "value",
+        ["__a" + "1" * 30000 + "a", ":__a" * 7500, "-cdk-overlay" * 2500, "-cdk-menu" * 3333],
+    )
     def test_hostile_input_is_linear(self, value, action_fit_on):
         start = time.perf_counter()
         score_stability("id", value)

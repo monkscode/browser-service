@@ -110,7 +110,7 @@ _SEGMENT_ID_PATTERNS = tuple(
         _SEG + r"el-id-\d+-\d+",  # Element Plus
         _SEG
         + r"cdk-(?:overlay|dialog|accordion-child|drop-list|option|listbox|menu|stepper|describedby-message)"
-        r"-[a-z-]*\d+",  # Angular CDK
+        r"-[a-z-]{0,40}\d+",  # Angular CDK; bounded so it is linear, like UI5
         _SEG + r"ui-id-\d+",  # jQuery UI
         r"^:[rR][0-9a-z]+:",  # React 18 / 19.0 useId, client (:r1:) and server (:R1:); start only — searched
         # anywhere it flags hand-written JSF segments (mainForm:results:save, form:row1:name), plan check 2026-11-05
@@ -197,6 +197,11 @@ def _extended_rules() -> bool:
 _RANK = {STABLE: 0, VOLATILE: 1, POSITIONAL: 2}
 
 
+def _segment_counter(value: str, segments: bool) -> bool:
+    """True when ``segments`` is on and any segment pattern finds a framework counter in ``value``."""
+    return segments and any(p.search(value) for p in _SEGMENT_ID_PATTERNS)
+
+
 def score_stability(attr_name: str, value: str, segments: bool = True) -> str:
     """
     Classify an attribute VALUE as ``stable`` or ``volatile``.
@@ -220,7 +225,7 @@ def score_stability(attr_name: str, value: str, segments: bool = True) -> str:
         for pattern in _EXTENDED_FRAMEWORK_ID_PATTERNS:
             if pattern.match(value):
                 return VOLATILE
-        if segments and any(p.search(value) for p in _SEGMENT_ID_PATTERNS):
+        if _segment_counter(value, segments):
             return VOLATILE
 
     if _UUID_RE.fullmatch(value) or _HEX_HASH_RE.fullmatch(value):

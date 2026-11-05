@@ -29,6 +29,14 @@ Scoring rules are deliberately conservative — evidence from the
 - ``tomselect-N`` is ``volatile``: the original production incident
   (35 log hits); its hard-coded suppression in handlers/dropdown.py
   folds into this scorer.
+- bs #58 (ENABLE_ACTION_FIT): framework counters are found in ANY segment
+  of a value (``mainForm:j_idt45``, ``app---__component0---main--__button3``);
+  each family's generator was read from its own source (2026-11-05
+  evaluation).  ``segments=False`` keeps today's verdicts for the read gate
+  (its tokens are unchanged).  Stated limits: the React colon form is
+  start-only (hand-written ``a:b:c`` ids), ``__section2`` and ``user_pr_id_3``
+  over-flag, Mojarra's negative-hash ``j_id-123`` and escaped ``#a\\:j_idt1``
+  locators are not matched.
 
 Consumers: STEP-0/STEP-3 candidate ordering in smart_locator.py, the
 PHASE-2 re-ranker and priority forcer in tasks/workflow.py, handler
@@ -79,6 +87,39 @@ _EXTENDED_FRAMEWORK_ID_PATTERNS = (
     re.compile(r"mui-\d+"),  # MUI useId fallback
     re.compile(r"headlessui-"),  # Headless UI generated id
     re.compile(r"downshift-\d+"),  # Downshift instance counter
+)
+
+# bs #58: framework counters searched in every SEGMENT of a value, not only at its start. JSF nests them in
+# naming containers (mainForm:j_idt45), UI5 in view / component prefixes (app---__component0---main--__button3).
+# Each family's generator was read from its own source (2026-11-05 evaluation, bench/private/bs58/eval/t2/RESULT.md).
+_SEG = r"(?<![A-Za-z0-9])"
+_SEGMENT_ID_PATTERNS = tuple(
+    re.compile(p)
+    for p in (
+        _SEG + r"j_id(?:t\d+|\d+)",  # JSF Mojarra
+        _SEG + r"j_id(?:_[0-9a-z]+|__(?:v|rd)_\d+)",  # JSF MyFaces
+        # SAP UI5 (__button0, -__clone3); bounded so it is linear — the unbounded *? took 3.0 s on a 30k-char value
+        # (stress test F3); same verdicts on 2,990 values
+        r"(?<![A-Za-z0-9_])__[a-z][a-z0-9_.:]{0,40}?\d(?![A-Za-z0-9])",
+        _SEG + r"__BVID__\d+",  # Bootstrap-Vue
+        _SEG + r"rc_select_\d+",  # Ant Design select (rc-select 14)
+        _SEG + r"rc-tabs-\d+-",  # Ant Design tabs
+        _SEG + r"pr_id_\d+",  # PrimeReact / PrimeNG < 16.9
+        _SEG + r"pn_id_\d+",  # PrimeNG >= 16.9
+        _SEG + r"pv_id_\d+",  # PrimeVue
+        _SEG + r"el-id-\d+-\d+",  # Element Plus
+        _SEG
+        + r"cdk-(?:overlay|dialog|accordion-child|drop-list|option|listbox|menu|stepper|describedby-message)"
+        r"-[a-z-]{0,40}\d+",  # Angular CDK; bounded so it is linear, like UI5
+        _SEG + r"ui-id-\d+",  # jQuery UI
+        r"^:[rR][0-9a-z]+:",  # React 18 / 19.0 useId, client (:r1:) and server (:R1:); start only — searched
+        # anywhere it flags hand-written JSF segments (mainForm:results:save, form:row1:name), plan check 2026-11-05
+        r"«[rR][0-9a-z]+»",  # React 19.1 useId
+        _SEG + r"_[rR]_[0-9a-z]+_(?![A-Za-z0-9])",  # React 19.2 useId
+        # a separator, then 12+ hex holding a digit (also flags a 12+-digit decimal run mid-value, as
+        # _DIGIT_SUFFIX_RE does at the end)
+        r"(?<=[-_:.])(?=[0-9a-fA-F]*\d)[0-9a-fA-F]{12,}(?![0-9A-Za-z])",
+    )
 )
 
 # E2c: visible text longer than this is content, not a label (a product
@@ -156,7 +197,12 @@ def _extended_rules() -> bool:
 _RANK = {STABLE: 0, VOLATILE: 1, POSITIONAL: 2}
 
 
-def score_stability(attr_name: str, value: str) -> str:
+def _segment_counter(value: str, segments: bool) -> bool:
+    """True when ``segments`` is on and any segment pattern finds a framework counter in ``value``."""
+    return segments and any(p.search(value) for p in _SEGMENT_ID_PATTERNS)
+
+
+def score_stability(attr_name: str, value: str, segments: bool = True) -> str:
     """
     Classify an attribute VALUE as ``stable`` or ``volatile``.
 
@@ -164,6 +210,9 @@ def score_stability(attr_name: str, value: str) -> str:
     ``attr_name`` is part of the contract for future per-attribute rules
     but does not change the verdict today.  Position is a property of a
     locator, not of a value, so this never returns ``positional``.
+
+    ``segments=False`` skips the any-segment framework counters (bs #58) and
+    returns the verdict from before they existed; the read gate uses it.
     """
     if not value:
         return STABLE
@@ -176,6 +225,8 @@ def score_stability(attr_name: str, value: str) -> str:
         for pattern in _EXTENDED_FRAMEWORK_ID_PATTERNS:
             if pattern.match(value):
                 return VOLATILE
+        if _segment_counter(value, segments):
+            return VOLATILE
 
     if _UUID_RE.fullmatch(value) or _HEX_HASH_RE.fullmatch(value):
         return VOLATILE

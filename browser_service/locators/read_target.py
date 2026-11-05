@@ -183,7 +183,7 @@ def _is_volatile_token(kind: str, value: str) -> bool:
     """One verdict for a token: an attribute NAME by is_volatile_attr_name, a value by score_stability."""
     if kind == "attr-name":
         return is_volatile_attr_name(value)
-    return score_stability(kind, value) != STABLE
+    return score_stability(kind, value, segments=False) != STABLE
 
 
 STRUCTURAL_CANDIDATES_JS = """(el, volatile) => {

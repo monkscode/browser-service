@@ -18,10 +18,13 @@ static fixtures in ``locator_fixtures/``, marked integration.
 """
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from playwright.async_api import async_playwright
 
+from browser_service.agent.actions import find_unique_locator_action
+from browser_service.config import config
 from browser_service.locators.smart_locator import (
     _build_coordinate_strategies,
     _generate_locators_from_element_data,
@@ -244,3 +247,96 @@ async def test_bare_digit_id_stays_stable(page):
     assert result is not None and result["found"] is True
     assert result["best_locator"] == '[id="880667900"]'
     assert result["stability"] == "stable"
+
+
+# --- bs #58: framework counters in every id segment (real find_unique_locator_action) ---
+
+
+@pytest.fixture
+def action_fit_on():
+    with patch.object(config.locator, "enable_action_fit", True):
+        yield
+
+
+@pytest.fixture
+async def blank_page():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page_obj = await browser.new_page(viewport={"width": 1280, "height": 900})
+        try:
+            yield page_obj
+        finally:
+            await browser.close()
+
+
+async def _locate(page, selector, element_data, **kwargs):
+    box = await page.locator(selector).bounding_box()
+    return await find_unique_locator_action(
+        x=box["x"] + box["width"] / 2,
+        y=box["y"] + box["height"] / 2,
+        element_id="elem_1",
+        page=page,
+        element_data=element_data,
+        **kwargs,
+    )
+
+
+async def test_jsf_counter_id_is_shipped_marked_volatile(blank_page, action_fit_on):
+    """The t1 repro: a JSF id (j_idt45) and its twin name are both counters; the id still ships (found=true is
+    never lost) but is labelled volatile."""
+    await blank_page.set_content(
+        '<form><button id="j_idt45" name="j_idt45" type="button">Save</button>'
+        '<button id="j_idt46" name="j_idt46" type="button">Delete</button></form>'
+    )
+    r = await _locate(
+        blank_page,
+        "#j_idt45",
+        {"tagName": "button", "id": "j_idt45", "name": "j_idt45", "type": "button"},
+        element_description="Save button",
+        expected_text="Save",
+        action="click",
+    )
+    assert r["best_locator"] == "#j_idt45"
+    assert r["stability"] == "volatile"
+
+
+async def test_hand_written_id_stays_stable(blank_page, action_fit_on):
+    await blank_page.set_content(
+        '<form><button id="saveBtn" name="save" type="button">Save</button>'
+        '<button id="delBtn" name="delete" type="button">Delete</button></form>'
+    )
+    r = await _locate(
+        blank_page,
+        "#saveBtn",
+        {"tagName": "button", "id": "saveBtn", "name": "save", "type": "button"},
+        element_description="Save button",
+        expected_text="Save",
+        action="click",
+    )
+    assert r["best_locator"] == "#saveBtn"
+    assert r["stability"] == "stable"
+
+
+async def test_read_step_keeps_todays_address_and_labels_it_volatile(blank_page, action_fit_on):
+    """D2: the read gate scores its tokens with segments=False, so an all-generated page still ships today's
+    [id="j_idt5:j_idt30"] read address (no positional trade) — only the label changes to volatile."""
+    await blank_page.set_content(
+        '<form id="j_idt5"><div id="j_idt5:j_idt28"><span id="j_idt5:j_idt30">Order 1234 confirmed</span>'
+        '<span id="j_idt5:j_idt31">Status</span></div></form>'
+    )
+    r = await _locate(
+        blank_page,
+        '[id="j_idt5:j_idt30"]',
+        {
+            "xpath": "/html[1]/body[1]/form[1]/div[1]/span[1]",
+            "tagName": "span",
+            "id": "j_idt5:j_idt30",
+            "textContent": "Order 1234 confirmed",
+        },
+        element_description="order confirmation",
+        expected_text="Order 1234 confirmed",
+        candidate_locator='text="Order 1234 confirmed"',
+        action="get_text",
+    )
+    assert r["best_locator"] == '[id="j_idt5:j_idt30"]'
+    assert r["stability"] == "volatile"

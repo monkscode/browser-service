@@ -213,3 +213,85 @@ class TestCandidatePath:
         assert out["found"] is False
         assert out["error_type"] == "RuntimeError"
         assert cascade.await_count == 1  # re-raised into today's handler; no retry
+
+
+class _Handle:
+    """Stands in for a search root: locator(sel).element_handle() / .evaluate()."""
+
+    def __init__(self, same, raises=False):
+        self.same, self.raises, self.selectors = same, raises, []
+
+    def locator(self, selector):
+        self.selectors.append(selector)
+        return self
+
+    async def element_handle(self, **kwargs):
+        if self.raises:
+            raise TimeoutError("not unique or gone")
+        return object()
+
+    async def evaluate(self, js, arg, **kwargs):
+        return self.same
+
+
+class TestSameElementGuard:
+    """bs #58 D1: a strictly more stable answer replaces the candidate only on the same element."""
+
+    async def test_different_element_keeps_the_candidate(self):
+        run, _ = _cascade()
+        root = _Handle(same=False)
+        out = await _settle_action_fit(dict(FOUND_STABLE), dict(CAND_VOLATILE), run, "click", root)
+        assert out["best_locator"] == "id=react-select-3-option-2"
+        assert root.selectors == ["id=react-select-3-option-2", 'text="Blue"']
+
+    async def test_same_element_takes_the_stable_answer(self):
+        run, _ = _cascade()
+        out = await _settle_action_fit(
+            dict(FOUND_STABLE), dict(CAND_VOLATILE), run, "click", _Handle(same=True)
+        )
+        assert out["best_locator"] == 'text="Blue"'
+
+    async def test_unreadable_candidate_stands(self):
+        run, _ = _cascade()
+        out = await _settle_action_fit(
+            dict(FOUND_STABLE), dict(CAND_VOLATILE), run, "click", _Handle(same=True, raises=True)
+        )
+        assert out["best_locator"] == "id=react-select-3-option-2"
+
+    async def test_misfit_candidate_is_replaced_without_asking_the_guard(self):
+        run, _ = _cascade()
+        root = _Handle(same=False, raises=True)
+        out = await _settle_action_fit(
+            dict(FOUND_POSITIONAL), dict(CAND_MISFIT), run, "input", root
+        )
+        assert out["best_locator"] == "xpath=//div[3]"
+        assert root.selectors == []
+
+    async def test_a_kept_candidate_logs_the_reason(self, caplog):
+        run, _ = _cascade()
+        caplog.set_level("INFO", logger="browser_service.agent.actions")
+        await _settle_action_fit(
+            dict(FOUND_STABLE), dict(CAND_VOLATILE), run, "click", _Handle(same=False)
+        )
+        assert "(signal: demotion-kept-candidate)" in caplog.text
+        assert "different element" in caplog.text
+        caplog.clear()
+        await _settle_action_fit(
+            dict(FOUND_STABLE), dict(CAND_VOLATILE), run, "click", _Handle(same=True, raises=True)
+        )
+        assert "(signal: demotion-kept-candidate)" in caplog.text
+        assert "TimeoutError" in caplog.text
+        caplog.clear()
+        await _settle_action_fit(
+            dict(FOUND_STABLE), dict(CAND_VOLATILE), run, "click", _Handle(same=True)
+        )
+        assert "demotion-kept-candidate" not in caplog.text
+
+    async def test_a_frame_hop_is_stripped_before_the_search_root_reads(self):
+        run, _ = _cascade()
+        root = _Handle(same=True)
+        cand = {**CAND_VOLATILE, "best_locator": "iframe[id=f] >>> id=a"}
+        res = {**FOUND_STABLE, "best_locator": "iframe[id=f] >>> text=B"}
+        out = await _settle_action_fit(res, cand, run, "click", root, "iframe[id=f]")
+        assert out["best_locator"] == "iframe[id=f] >>> text=B"
+        assert root.selectors == ["id=a", "text=B"]

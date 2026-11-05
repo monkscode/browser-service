@@ -459,31 +459,49 @@ async def _confirmed_node(handle, observed: str) -> Tuple[Any, Optional[List[Any
 PIXEL_SOURCE = "screen point read as pixels"
 
 
-async def _only_match_holds(search_context, observed: str, handle) -> bool:
-    """G1: exactly one element shows the observed text AND the element under the pixel point lies inside it. #31 confirms by a wider rule than get_by_text (case-folded, direct text, attributes), so a count alone would let a near-twin under the point be confirmed silently."""
+def _log_pixel_declined(pixel_point, reason: str, source: str = PIXEL_SOURCE) -> None:
+    """One line when the pixel source was tried and declined, so a count of zero confirms can be read (bs #75). Other sources log nothing."""
+    if source == PIXEL_SOURCE:
+        logger.info(
+            f"   📎 READ ADDRESS: the agent's point read as pixels {pixel_point} was declined: "
+            f"{reason} (signal: read-address-pixel-declined)"
+        )
+
+
+async def _only_match_holds(search_context, observed: str, handle) -> Optional[str]:
+    """G1: exactly one element shows the observed text AND the element under the pixel point lies inside it. Returns None when it holds, else the reason. #31 confirms by a wider rule than get_by_text (case-folded, direct text, attributes), so a count alone would let a near-twin under the point be confirmed silently."""
     # exact=True: whole text, whitespace-normalised, case-sensitive; the smallest element holding it.
     only = search_context.get_by_text(observed, exact=True)
-    if await only.count() != 1:
-        return False
-    return bool(await only.evaluate("(m, h) => m.contains(h)", handle, timeout=FIT_READ_TIMEOUT_MS))
+    shown = await only.count()
+    if shown != 1:
+        return f"the text is shown {shown} times, not once"
+    if await only.evaluate("(m, h) => m.contains(h)", handle, timeout=FIT_READ_TIMEOUT_MS):
+        return None
+    return "the element under it is not inside the one element showing the text"
 
 
 async def _pixel_source(
     search_context, observed: str, pixel_point: Tuple[float, float]
 ) -> Optional[Tuple[str, Any]]:
-    """The element under the agent's raw point read as screen pixels — only when it lies inside the one element that shows the observed text, so another element with the same text can never be confirmed silently (bs #75 G1). Any failure is no source: today's refusal."""
+    """The element under the agent's raw point read as screen pixels — only when it lies inside the one element that shows the observed text, so another element with the same text can never be confirmed silently (bs #75 G1). Any failure is no source: today's refusal, logged with its reason."""
     try:
         if not observed.strip():
+            _log_pixel_declined(pixel_point, "there is no observed text")
             return None
         js_handle = await search_context.evaluate_handle(
             ELEMENT_FROM_POINT_JS, [pixel_point[0], pixel_point[1]]
         )
         handle = js_handle.as_element()
-        if handle is None or not await _only_match_holds(search_context, observed, handle):
+        if handle is None:
+            _log_pixel_declined(pixel_point, "no element is under it")
+            return None
+        reason = await _only_match_holds(search_context, observed, handle)
+        if reason:
+            _log_pixel_declined(pixel_point, reason)
             return None
         return PIXEL_SOURCE, handle
     except Exception as e:
-        logger.info(f"   ⚠️ Read-address: pixel point lookup failed: {e}")
+        _log_pixel_declined(pixel_point, f"the lookup failed: {e}")
         return None
 
 
@@ -514,6 +532,7 @@ async def resolve_read_address(
             if own is not None:
                 shown = next((t for t in own if t), "")
                 reasons.append(f"the {source} shows {_short(shown)!r}, not {_short(observed)!r}")
+            _log_pixel_declined(pixel_point, "the element under it does not show the text", source)
             continue
         address = await structural_address(search_context, node, observed)
         if address:
@@ -526,6 +545,7 @@ async def resolve_read_address(
         reasons.append(
             f"the {source} shows {_short(observed)!r} but has no unique address without that text"
         )
+        _log_pixel_declined(pixel_point, "it has no unique address without that text", source)
     return {"unconfirmed": "; ".join(reasons) or "the agent pointed at no element"}
 
 

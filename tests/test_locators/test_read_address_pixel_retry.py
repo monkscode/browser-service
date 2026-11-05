@@ -110,7 +110,7 @@ async def test_g1_same_text_twice_keeps_the_refusal(page):
     verdict = await resolve_read_address(page, "$10", None, grid, pixel_point=pixel)
     assert "unconfirmed" in verdict, verdict
     # Control: with G1 bypassed the same page confirms card b, so the refusal above is G1's.
-    with patch.object(read_target, "_only_match_holds", new=AsyncMock(return_value=True)):
+    with patch.object(read_target, "_only_match_holds", new=AsyncMock(return_value=None)):
         bypassed = await resolve_read_address(page, "$10", None, grid, pixel_point=pixel)
     assert bypassed["source"] == "screen point read as pixels"
     assert bypassed["locator"] == "id=b"
@@ -249,3 +249,82 @@ async def test_g1_the_one_match_under_the_pixel_point_is_confirmed_beside_a_near
     )
     assert verdict["source"] == "screen point read as pixels"
     assert await page.locator(verdict["locator"]).evaluate("el => el.id") == "a"
+
+
+async def _log(page, caplog, observed, grid, pixel_point):
+    with caplog.at_level("INFO", logger=read_target.logger.name):
+        verdict = await resolve_read_address(page, observed, None, grid, pixel_point=pixel_point)
+    return verdict, caplog.text
+
+
+async def test_declined_pixel_read_is_logged_when_the_text_is_shown_twice(page, caplog):
+    await page.set_content(PRICE_TWICE)
+    verdict, text = await _log(
+        page, caplog, "$10", await _centre(page, "#box"), await _centre(page, "#b")
+    )
+    assert "unconfirmed" in verdict
+    assert "signal: read-address-pixel-declined" in text
+    assert "shown 2 times" in text
+    assert "signal: read-address-pixel-point)" not in text
+
+
+async def test_declined_pixel_read_is_logged_when_the_point_is_outside_the_one_match(page, caplog):
+    await page.set_content(
+        STYLE
+        + '<p id="a" class="abs" style="left:100px;top:600px">$10</p>'
+        + '<p id="b" class="abs" style="left:400px;top:300px">Other</p>'
+        + '<div id="box" class="abs">Sort by</div>'
+    )
+    _, text = await _log(
+        page, caplog, "$10", await _centre(page, "#box"), await _centre(page, "#b")
+    )
+    assert "signal: read-address-pixel-declined" in text
+    assert "not inside the one element showing the text" in text
+
+
+async def test_declined_pixel_read_is_logged_when_the_element_does_not_show_the_text(page, caplog):
+    """G1 is bypassed (as in the M3 control) so the text check itself is what declines the third element."""
+    await page.set_content(
+        MESSAGE_ONCE + '<p id="third" class="abs" style="left:100px;top:600px">Footer</p>'
+    )
+    with patch.object(read_target, "_only_match_holds", new=AsyncMock(return_value=None)):
+        _, text = await _log(page, caplog, "Access granted", GRID, await _centre(page, "#third"))
+    assert "signal: read-address-pixel-declined" in text
+    assert "does not show the text" in text
+
+
+async def test_declined_pixel_read_is_logged_when_no_element_is_under_the_point(page, caplog):
+    await page.set_content(MESSAGE_ONCE)
+    _, text = await _log(page, caplog, "Access granted", GRID, (5000, 5000))
+    assert "signal: read-address-pixel-declined" in text
+    assert "no element is under it" in text
+
+
+async def test_declined_pixel_read_is_logged_when_the_lookup_fails(page, caplog):
+    await page.set_content(MESSAGE_ONCE)
+    with patch.object(page, "get_by_text", side_effect=RuntimeError("boom")):
+        _, text = await _log(page, caplog, "Access granted", GRID, RAW)
+    assert "signal: read-address-pixel-declined" in text
+    assert "boom" in text
+
+
+async def test_no_pixel_signal_when_an_earlier_source_confirms(page, caplog):
+    await page.set_content(MESSAGE_ONCE)
+    verdict, text = await _log(page, caplog, "Access granted", await _centre(page, "#msg"), GRID)
+    assert verdict["source"] == "screen point"
+    assert "read-address-pixel" not in text
+
+
+async def test_no_pixel_signal_without_a_pixel_point(page, caplog):
+    await page.set_content(MESSAGE_ONCE)
+    verdict, text = await _log(page, caplog, "Access granted", GRID, None)
+    assert "unconfirmed" in verdict
+    assert "read-address-pixel" not in text
+
+
+async def test_pixel_confirm_logs_no_decline(page, caplog):
+    await page.set_content(MESSAGE_ONCE)
+    verdict, text = await _log(page, caplog, "Access granted", GRID, RAW)
+    assert verdict["source"] == "screen point read as pixels"
+    assert "signal: read-address-pixel-point)" in text
+    assert "read-address-pixel-declined" not in text

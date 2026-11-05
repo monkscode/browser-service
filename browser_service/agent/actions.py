@@ -714,6 +714,9 @@ async def find_unique_locator_action(
     row_anchor_text: Optional[str] = None,  # Row-identifying datum from the QA step (G1/Task B)
     action: Optional[str] = None,  # Step action (E2); None = today's behaviour (flag off)
     vision_point: Optional[Tuple[int, int]] = None,  # Vision point before replacement (K v1 log)
+    pixel_point: Optional[
+        Tuple[int, int]
+    ] = None,  # Index-less read: raw point read as pixels (#75)
 ) -> Dict[str, Any]:
     """
     Custom action that agent can call to find and validate unique locator.
@@ -1231,6 +1234,7 @@ async def find_unique_locator_action(
                                     iframe_context,
                                     element_data=element_data,
                                     point=vision_point or (x, y),
+                                    pixel_point=pixel_point,
                                 )
                                 await _refresh_read_address_info(_accepted, search_root)
                                 await _stamp_resolved_tag(
@@ -1496,6 +1500,7 @@ async def find_unique_locator_action(
                     iframe_context,
                     element_data=element_data,
                     point=vision_point or (x, y),
+                    pixel_point=pixel_point,
                 )
                 await _refresh_read_address_info(result, search_context)
 

@@ -73,6 +73,10 @@ RESULT = {
 
 
 async def _vision_point(params, selector_map):
+    return (await _engine_kwargs(params, selector_map))["vision_point"]
+
+
+async def _engine_kwargs(params, selector_map):
     agent = FakeAgent()
     engine = AsyncMock(return_value=dict(RESULT))
     with (
@@ -91,7 +95,7 @@ async def _vision_point(params, selector_map):
             },
             browser_session=FakeBrowserSession(selector_map),
         )
-    return engine.await_args.kwargs["vision_point"]
+    return engine.await_args.kwargs
 
 
 async def test_indexed_call_uses_the_box_centre_not_the_scaled_raw_point():
@@ -112,3 +116,16 @@ async def test_index_less_call_keeps_the_scaled_point_even_when_step_a_found_a_b
     node = FakeNode(x=900, y=520, width=140, height=50)  # holds (960, 540); centre (970, 545)
     point = await _vision_point({"x": 500, "y": 500}, {3: node})
     assert point == (960, 540)
+
+
+async def test_index_less_call_hands_the_raw_point_as_pixels():
+    # raw (960, 122): scaled (1843, 131) differs, and (960, 122) lies inside 1920x1080
+    kwargs = await _engine_kwargs({"x": 960, "y": 122}, {})
+    assert kwargs["vision_point"] == (1843, 131)
+    assert kwargs["pixel_point"] == (960, 122)
+
+
+async def test_indexed_call_has_no_pixel_point():
+    node = FakeNode(x=826, y=334, width=100, height=40)
+    kwargs = await _engine_kwargs({"x": 876, "y": 354, "element_index": 7}, {7: node})
+    assert kwargs["pixel_point"] is None

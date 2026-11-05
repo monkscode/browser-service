@@ -298,6 +298,15 @@ def _keep_vision_on(agent) -> bool:
     return True
 
 
+def _pixel_point(params, scaled_x, scaled_y, viewport_w, viewport_h):
+    """bs #75: an index-less call's raw point read as screen pixels, or None when it has an index, lies outside the viewport or equals the scaled point."""
+    if params.element_index is not None:
+        return None
+    point = (int(params.x), int(params.y))
+    inside = 0 <= point[0] < viewport_w and 0 <= point[1] < viewport_h
+    return point if inside and point != (scaled_x, scaled_y) else None
+
+
 def _find_smallest_containing_element(selector_map, coords, viewport_area, skip_tag=None):
     """
     Find the selector_map element with the smallest bounding box containing coords.
@@ -1939,6 +1948,9 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                     vision_point=(final_x, final_y)
                     if params.element_index is not None
                     else (scaled_x, scaled_y),
+                    # bs #75: an index-less point the grid scaling may have mis-read; the read gate
+                    # tries it as pixels last. Off-screen or equal to the scaled point = no source.
+                    pixel_point=_pixel_point(params, scaled_x, scaled_y, viewport_w, viewport_h),
                 )
 
                 # Convert result to ActionResult format

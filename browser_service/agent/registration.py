@@ -1701,6 +1701,10 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                         logger.warning(f"   ⚠️ Could not get element by index: {e}")
                         logger.debug("   Full error:", exc_info=True)
 
+                # bs #75 E2: the index's OWN box centre, taken before STEP A can replace
+                # confirmed_coords with the box of whatever sits at the scaled point.
+                indexed_centre = confirmed_coords
+
                 # ========================================
                 # COORDINATE SCALING: Vision AI → Viewport Pixels
                 # ========================================
@@ -1943,11 +1947,9 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                     vision_framework_hint=params.framework_hint,  # LLM's framework guess (any specialized type)
                     row_anchor_text=params.row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
                     action=_step_action,  # E2 fitness + read-target rules (flag on only)
-                    # K v1 + read gate screen point: an indexed call's DOM box centre (final_x/y
-                    # already holds it), else the agent's raw point scaled as a 0-1000 grid point.
-                    vision_point=(final_x, final_y)
-                    if params.element_index is not None
-                    else (scaled_x, scaled_y),
+                    # K v1 + read gate screen point: the indexed element's own box centre, else
+                    # the agent's raw point scaled as a 0-1000 grid point (never STEP A's box).
+                    vision_point=(indexed_centre or (scaled_x, scaled_y)),
                     # bs #75: an index-less point the grid scaling may have mis-read; the read gate
                     # tries it as pixels last. Off-screen or equal to the scaled point = no source.
                     pixel_point=_pixel_point(params, scaled_x, scaled_y, viewport_w, viewport_h),

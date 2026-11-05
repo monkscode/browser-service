@@ -129,3 +129,9 @@ async def test_indexed_call_has_no_pixel_point():
     node = FakeNode(x=826, y=334, width=100, height=40)
     kwargs = await _engine_kwargs({"x": 876, "y": 354, "element_index": 7}, {7: node})
     assert kwargs["pixel_point"] is None
+
+
+async def test_index_missing_from_the_map_keeps_the_scaled_point_even_when_step_a_found_a_box():
+    node = FakeNode(x=900, y=520, width=140, height=50)  # holds (960, 540); centre (970, 545)
+    point = await _vision_point({"x": 500, "y": 500, "element_index": 7}, {3: node})
+    assert point == (960, 540)

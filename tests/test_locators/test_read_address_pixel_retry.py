@@ -73,7 +73,8 @@ async def test_geometry_of_the_fixture(page):
 async def test_pixel_only_page_is_refused_today_and_confirmed_with_the_pixel_point(page):
     await page.set_content(MESSAGE_ONCE)
     today = await resolve_read_address(page, "Access granted", None, GRID)
-    assert "unconfirmed" in today and "cart total" in today["unconfirmed"]
+    assert "unconfirmed" in today
+    assert "cart total" in today["unconfirmed"]
     verdict = await resolve_read_address(page, "Access granted", None, GRID, pixel_point=RAW)
     assert verdict["source"] == "screen point read as pixels"
     assert not carries_value(verdict["locator"], "Access granted")
@@ -155,7 +156,8 @@ async def test_flow_candidate_path_refused_today_confirmed_with_the_pixel_point(
     """Run 58919ce7's shape end to end: the agent's text candidate, the grid point on the wrong element."""
     await page.set_content(MESSAGE_ONCE)
     today = await _flow(page, None)
-    assert today["found"] is False and "read_address_unconfirmed" in today
+    assert today["found"] is False
+    assert "read_address_unconfirmed" in today
     result = await _flow(page, RAW)
     assert result["found"] is True
     assert result["read_address_source"] == "screen point read as pixels"

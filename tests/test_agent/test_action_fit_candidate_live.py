@@ -218,3 +218,37 @@ async def test_demoted_icon_link_candidate_yields_to_the_same_element_by_its_tit
     assert out["best_locator"] == 'role=link[name="Save"]'
     assert out["stability"] == "stable"
     assert await page.locator(out["best_locator"]).get_attribute("id") == "mainForm:j_idt45"
+
+
+async def test_demoted_icon_link_candidate_yields_to_the_same_element_inside_a_frame(
+    page, action_fit_on
+):
+    inner = ICON_TITLED_PAGE.replace('"', "'")
+    frame = 'iframe[id="f"]'
+    await page.set_content(
+        f'<iframe id="f" style="width:600px;height:300px" srcdoc="{inner}"></iframe>'
+    )
+    link = page.frame_locator(frame).locator('[id="mainForm:j_idt45"]')
+    await link.wait_for()
+    box = await link.bounding_box()
+    out = await find_unique_locator_action(
+        x=box["x"] + box["width"] / 2,
+        y=box["y"] + box["height"] / 2,
+        element_id="elem_1",
+        element_description="icon link",
+        expected_text="Save",
+        candidate_locator="id=mainForm:j_idt45",
+        element_data={
+            "tagName": "a",
+            "id": "mainForm:j_idt45",
+            "className": "ui-commandlink",
+            "textContent": "",
+            "xpath": "/html[1]/body[1]/form[1]/a[1]",
+        },
+        page=page,
+        iframe_context=frame,
+        is_collection=False,
+        action="click",
+    )
+    assert out["best_locator"] == f'{frame} >>> role=link[name="Save"]'
+    assert out["stability"] == "stable"

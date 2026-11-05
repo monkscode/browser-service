@@ -477,16 +477,14 @@ async def _only_match_holds(search_context, observed: str, handle) -> Tuple[Opti
         return f"the text is shown {shown} times, not once", None
     if not await only.evaluate("(m, h) => m.contains(h)", handle, timeout=FIT_READ_TIMEOUT_MS):
         return "the element under it is not inside the one element showing the text", None
-    match = await only.element_handle(timeout=FIT_READ_TIMEOUT_MS)
-    if match is None:
-        return "the exact-text match is no longer reachable", None
-    return None, match
+    # Raises (caught as "the lookup failed") if the match vanished; never returns None.
+    return None, await only.element_handle(timeout=FIT_READ_TIMEOUT_MS)
 
 
 async def _pixel_source(
     search_context, observed: str, pixel_point: Tuple[float, float]
 ) -> Optional[Tuple[str, Any]]:
-    """The element under the agent's raw point read as screen pixels — only when it lies inside the one element that shows the observed text, so another element with the same text can never be confirmed silently (bs #75 G1). Any failure is no source: today's refusal, logged with its reason."""
+    """The one element showing the observed text, when the element under the agent's raw point (read as screen pixels) lies inside it, so another element with the same text can never be confirmed silently (bs #75 G1). Any failure is no source: today's refusal, logged with its reason."""
     try:
         if not observed.strip():
             _log_pixel_declined(pixel_point, "there is no observed text")
@@ -526,7 +524,7 @@ async def resolve_read_address(
     point: Optional[Tuple[float, float]],
     pixel_point: Optional[Tuple[float, float]] = None,
 ) -> Dict[str, Any]:
-    """Confirm what the agent pointed at — the indexed element, then the element under its vision point, then (index-less, last, only when the text is shown once) the element under its raw point read as pixels — by its own texts (or a near ancestor's), and return its structural address, or {'unconfirmed': reason}."""
+    """Confirm what the agent pointed at — the indexed element, then the element under its vision point, then (index-less, last, only when the text is shown once) the one element showing the text when the element under its raw point read as pixels lies inside it — by its own texts (or a near ancestor's), and return its structural address, or {'unconfirmed': reason}."""
     reasons: List[str] = []
     async for source, handle in _all_sources(
         search_context, observed, element_data, point, pixel_point

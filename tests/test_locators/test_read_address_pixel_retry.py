@@ -279,6 +279,7 @@ async def test_the_pixel_address_is_the_one_match_never_its_labelled_child(page,
     verdict, text = await _log(page, caplog, "Access granted", await _centre(page, "#box"), point)
     assert verdict["source"] == "screen point read as pixels"
     assert verdict["locator"] != "id=ic"
+    assert await page.locator(verdict["locator"]).evaluate("el => el.id") == "msg"
     assert await page.locator(verdict["locator"]).inner_text() == "Access granted"
     assert "signal: read-address-pixel-point)" in text
 

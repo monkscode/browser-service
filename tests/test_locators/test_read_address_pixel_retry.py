@@ -1,0 +1,363 @@
+"""bs #75 E1: an index-less read the gate cannot confirm at the agent's point read as a 0-1000 grid point is tried once more at the raw point read as pixels — last, and only when exactly one element shows the observed text (G1).
+
+Viewport 1280x900. The agent's raw point is (960, 122) — the message "Access granted". Scaled as a grid
+point it is (int(960/1000*1280), int(122/1000*900)) = (1228, 109): the "Cart total" box, a different element.
+"""
+
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from playwright.async_api import async_playwright
+
+from browser_service.agent.actions import find_unique_locator_action
+from browser_service.agent.registration import _pixel_point
+from browser_service.config import config
+from browser_service.locators import read_target
+from browser_service.locators.read_target import carries_value, resolve_read_address
+
+pytestmark = pytest.mark.integration
+
+RAW = (960, 122)  # the agent's raw point; the message's centre
+GRID = (1228, 109)  # RAW scaled as a 0-1000 grid point on a 1280x900 viewport: the box
+VIEWPORT = (1280, 900)
+
+STYLE = (
+    "<style>body{margin:0} .abs{position:absolute;height:44px;margin:0}"
+    " #msg{left:900px;top:100px;width:120px} #box{left:1180px;top:80px;width:100px;height:60px}"
+    " #a{left:100px;top:300px;width:80px} #b{left:400px;top:300px;width:80px}</style>"
+)
+MESSAGE_ONCE = (
+    STYLE + '<p id="msg" class="abs">Access granted</p><div id="box" class="abs">Cart total</div>'
+)
+MESSAGE_TWICE = (
+    MESSAGE_ONCE + '<p id="twin" class="abs" style="left:100px;top:600px">Access granted</p>'
+)
+PRICE_TWICE = STYLE + (
+    '<p id="a" class="abs">$10</p><p id="b" class="abs">$10</p>'
+    '<div id="box" class="abs">Sort by</div>'
+)
+PRICE_ONCE = STYLE + '<p id="a" class="abs">$10</p><div id="box" class="abs">Sort by</div>'
+
+
+@pytest.fixture
+async def page():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        ctx = await browser.new_context(viewport={"width": VIEWPORT[0], "height": VIEWPORT[1]})
+        page_obj = await ctx.new_page()
+        try:
+            yield page_obj
+        finally:
+            await browser.close()
+
+
+@pytest.fixture
+def action_fit_on():
+    with patch.object(config.locator, "enable_action_fit", True):
+        yield
+
+
+async def _bypass_g1(_ctx, _observed, handle):
+    """G1 bypassed for a control: the guard holds and the element under the point is the source."""
+    return None, handle
+
+
+async def _centre(page, selector):
+    box = await page.locator(selector).bounding_box()
+    return (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+
+
+async def test_geometry_of_the_fixture(page):
+    """The positive case needs the grid point and the pixel point on different elements."""
+    await page.set_content(MESSAGE_ONCE)
+    on_grid = await page.evaluate("([x, y]) => document.elementFromPoint(x, y).id", list(GRID))
+    on_raw = await page.evaluate("([x, y]) => document.elementFromPoint(x, y).id", list(RAW))
+    assert (on_grid, on_raw) == ("box", "msg")
+
+
+async def test_pixel_only_page_is_refused_today_and_confirmed_with_the_pixel_point(page):
+    await page.set_content(MESSAGE_ONCE)
+    today = await resolve_read_address(page, "Access granted", None, GRID)
+    assert "unconfirmed" in today
+    assert "cart total" in today["unconfirmed"]
+    verdict = await resolve_read_address(page, "Access granted", None, GRID, pixel_point=RAW)
+    assert verdict["source"] == "screen point read as pixels"
+    assert not carries_value(verdict["locator"], "Access granted")
+    assert await page.locator(verdict["locator"]).inner_text() == "Access granted"
+
+
+async def test_a_grid_read_confirmed_today_never_reads_the_pixel_source(page):
+    await page.set_content(MESSAGE_ONCE)
+    with patch.object(read_target, "_pixel_source", new=AsyncMock()) as pixel:
+        verdict = await resolve_read_address(
+            page, "Access granted", None, await _centre(page, "#msg"), pixel_point=GRID
+        )
+    assert verdict["source"] == "screen point"
+    pixel.assert_not_awaited()
+
+
+async def test_a_pixel_point_showing_other_text_is_still_refused(page):
+    """The pixel point is on a THIRD element (neither the message nor the grid box), so the test fails if the pixel source confirms it."""
+    await page.set_content(
+        MESSAGE_ONCE + '<p id="third" class="abs" style="left:100px;top:600px">Footer</p>'
+    )
+    other = await _centre(page, "#third")
+    verdict = await resolve_read_address(page, "Access granted", None, GRID, pixel_point=other)
+    assert "unconfirmed" in verdict
+    assert "cart total" in verdict["unconfirmed"]  # the grid point's reason
+    assert "footer" not in verdict["unconfirmed"]  # G1 withheld the source: outside the one match
+
+
+async def test_g1_same_text_twice_keeps_the_refusal(page):
+    """Two cards show '$10'; the grid point is the sort box, the pixel point is card b: the wrong-element risk."""
+    await page.set_content(PRICE_TWICE)
+    grid = await _centre(page, "#box")
+    pixel = await _centre(page, "#b")
+    verdict = await resolve_read_address(page, "$10", None, grid, pixel_point=pixel)
+    assert "unconfirmed" in verdict, verdict
+    # Control: with G1 bypassed the same page confirms card b, so the refusal above is G1's.
+    with patch.object(read_target, "_only_match_holds", new=AsyncMock(side_effect=_bypass_g1)):
+        bypassed = await resolve_read_address(page, "$10", None, grid, pixel_point=pixel)
+    assert bypassed["source"] == "screen point read as pixels"
+    assert bypassed["locator"] == "id=b"
+
+
+async def test_g1_same_text_once_is_confirmed(page):
+    await page.set_content(PRICE_ONCE)
+    grid = await _centre(page, "#box")
+    pixel = await _centre(page, "#a")
+    verdict = await resolve_read_address(page, "$10", None, grid, pixel_point=pixel)
+    assert verdict["source"] == "screen point read as pixels"
+    assert await page.locator(verdict["locator"]).inner_text() == "$10"
+
+
+async def test_g1_a_lookup_failure_skips_the_source(page):
+    await page.set_content(MESSAGE_ONCE)
+    with patch.object(page, "get_by_text", side_effect=RuntimeError("boom")):
+        verdict = await resolve_read_address(page, "Access granted", None, GRID, pixel_point=RAW)
+    assert "unconfirmed" in verdict
+
+
+async def _flow(page, pixel_point, candidate="text=Access granted"):
+    return await find_unique_locator_action(
+        x=GRID[0],
+        y=GRID[1],
+        element_id="elem_1",
+        element_description="the message",
+        expected_text="Access granted",
+        candidate_locator=candidate,
+        element_data=None,
+        page=page,
+        is_collection=False,
+        action="get_text",
+        vision_point=GRID,
+        pixel_point=pixel_point,
+    )
+
+
+async def test_flow_candidate_path_refused_today_confirmed_with_the_pixel_point(
+    page, action_fit_on
+):
+    """Run 58919ce7's shape end to end: the agent's text candidate, the grid point on the wrong element."""
+    await page.set_content(MESSAGE_ONCE)
+    today = await _flow(page, None)
+    assert today["found"] is False
+    assert "read_address_unconfirmed" in today
+    result = await _flow(page, RAW)
+    assert result["found"] is True
+    assert result["read_address_source"] == "screen point read as pixels"
+    assert not carries_value(result["best_locator"], "Access granted")
+    assert await page.locator(result["best_locator"]).inner_text() == "Access granted"
+
+
+async def test_flow_candidate_path_same_text_twice_stays_refused(page, action_fit_on):
+    await page.set_content(MESSAGE_TWICE)
+    result = await _flow(page, RAW, candidate="text=Access granted >> nth=0")
+    assert result["found"] is False
+    assert "read_address_unconfirmed" in result
+
+
+async def test_flow_cascade_path_forwards_the_pixel_point(page, action_fit_on):
+    """The cascade path hands pixel_point to the gate (a real cascade here fails its own text check first)."""
+    from browser_service.agent import actions
+
+    await page.set_content(MESSAGE_ONCE)
+
+    async def passthrough(_ctx, result, *_args, **_kwargs):
+        return result
+
+    gate = AsyncMock(side_effect=passthrough)
+    with patch.object(actions, "apply_read_target_policy", new=gate):
+        await _flow(page, RAW, candidate=None)
+    assert gate.await_args.kwargs["pixel_point"] == RAW
+
+
+async def test_pixel_signal_is_logged_when_the_source_confirms(page, caplog):
+    await page.set_content(MESSAGE_ONCE)
+    with caplog.at_level("INFO", logger=read_target.logger.name):
+        await resolve_read_address(page, "Access granted", None, GRID, pixel_point=RAW)
+    assert "signal: read-address-pixel-point" in caplog.text
+
+
+class _P:
+    def __init__(self, x, y, element_index=None):
+        self.x, self.y, self.element_index = x, y, element_index
+
+
+@pytest.mark.parametrize(
+    "params, scaled, expected",
+    [
+        (_P(960, 122), (1228, 109), (960, 122)),  # index-less, inside, differs
+        (_P(960, 122, element_index=7), (1228, 109), None),  # indexed: no pixel source
+        (_P(1500, 122), (1920, 109), None),  # x outside the viewport
+        (_P(960, 950), (1228, 855), None),  # y outside the viewport
+        (_P(0, 0), (0, 0), None),  # equal to the scaled point
+        (_P(1280, 10), (1638, 9), None),  # x == viewport width is outside
+    ],
+)
+def test_pixel_point_rules(params, scaled, expected):
+    assert _pixel_point(params, scaled[0], scaled[1], *VIEWPORT) == expected
+
+
+NEAR_TWINS = [
+    # direct-text twin: #31 reads the <p>'s own text "$10", get_by_text does not count it
+    ("$10", '<p id="b" class="abs" style="left:400px;top:300px">$10 <small>/mo</small></p>'),
+    # casefold twin: #31 casefolds, get_by_text(exact=True) is case-sensitive
+    ("Access granted", '<p id="b" class="abs" style="left:400px;top:300px">ACCESS GRANTED</p>'),
+]
+
+
+@pytest.mark.parametrize("observed, twin_html", NEAR_TWINS)
+async def test_g1_a_near_twin_under_the_pixel_point_stays_refused(page, observed, twin_html):
+    """I1: get_by_text counts the one exact match (#a) but #31 would also confirm the twin #b under the pixel point."""
+    await page.set_content(
+        STYLE
+        + f'<p id="a" class="abs" style="left:100px;top:600px">{observed}</p>'
+        + twin_html
+        + '<div id="box" class="abs">Sort by</div>'
+    )
+    assert await page.get_by_text(observed, exact=True).count() == 1
+    verdict = await resolve_read_address(
+        page, observed, None, await _centre(page, "#box"), pixel_point=await _centre(page, "#b")
+    )
+    assert "unconfirmed" in verdict, verdict
+
+
+async def test_g1_the_one_match_under_the_pixel_point_is_confirmed_beside_a_near_twin(page):
+    """The control of the near-twin tests: the pixel point on the one exact match (#a) confirms #a."""
+    await page.set_content(
+        STYLE
+        + '<p id="a" class="abs" style="left:100px;top:600px">$10</p>'
+        + NEAR_TWINS[0][1]
+        + '<div id="box" class="abs">Sort by</div>'
+    )
+    verdict = await resolve_read_address(
+        page, "$10", None, await _centre(page, "#box"), pixel_point=await _centre(page, "#a")
+    )
+    assert verdict["source"] == "screen point read as pixels"
+    assert await page.locator(verdict["locator"]).evaluate("el => el.id") == "a"
+
+
+LABELLED_CHILD = (
+    "<style>body{margin:0;font:16px/20px sans-serif} .abs{position:absolute;margin:0}"
+    " #box{left:1180px;top:80px;width:100px;height:60px} #msg{left:800px;top:100px}"
+    " #ic{display:inline-block;width:40px;height:20px;background:#ccc}</style>"
+    '<p id="msg" class="abs">Access granted<i id="ic" aria-label="Access granted"></i></p>'
+    '<div id="box" class="abs">Cart total</div>'
+)
+
+
+@pytest.mark.parametrize("target", ["#ic", "#msg"])
+async def test_the_pixel_address_is_the_one_match_never_its_labelled_child(page, caplog, target):
+    """CodeRabbit PR #81: an empty-rendered child whose aria-label equals the text was confirmed and addressed; it reads ''."""
+    await page.set_content(LABELLED_CHILD)
+    box = await page.locator(target).bounding_box()
+    # on the words for #msg, on the icon for #ic
+    point = (box["x"] + 10, box["y"] + box["height"] / 2)
+    under = await page.evaluate("([x, y]) => document.elementFromPoint(x, y).id", list(point))
+    assert under == target[1:]
+    verdict, text = await _log(page, caplog, "Access granted", await _centre(page, "#box"), point)
+    assert verdict["source"] == "screen point read as pixels"
+    assert verdict["locator"] != "id=ic"
+    assert await page.locator(verdict["locator"]).evaluate("el => el.id") == "msg"
+    assert await page.locator(verdict["locator"]).inner_text() == "Access granted"
+    assert "signal: read-address-pixel-point)" in text
+
+
+async def _log(page, caplog, observed, grid, pixel_point):
+    with caplog.at_level("INFO", logger=read_target.logger.name):
+        verdict = await resolve_read_address(page, observed, None, grid, pixel_point=pixel_point)
+    return verdict, caplog.text
+
+
+async def test_declined_pixel_read_is_logged_when_the_text_is_shown_twice(page, caplog):
+    await page.set_content(PRICE_TWICE)
+    verdict, text = await _log(
+        page, caplog, "$10", await _centre(page, "#box"), await _centre(page, "#b")
+    )
+    assert "unconfirmed" in verdict
+    assert "signal: read-address-pixel-declined" in text
+    assert "shown 2 times" in text
+    assert "signal: read-address-pixel-point)" not in text
+
+
+async def test_declined_pixel_read_is_logged_when_the_point_is_outside_the_one_match(page, caplog):
+    await page.set_content(
+        STYLE
+        + '<p id="a" class="abs" style="left:100px;top:600px">$10</p>'
+        + '<p id="b" class="abs" style="left:400px;top:300px">Other</p>'
+        + '<div id="box" class="abs">Sort by</div>'
+    )
+    _, text = await _log(
+        page, caplog, "$10", await _centre(page, "#box"), await _centre(page, "#b")
+    )
+    assert "signal: read-address-pixel-declined" in text
+    assert "not inside the one element showing the text" in text
+
+
+async def test_declined_pixel_read_is_logged_when_the_element_does_not_show_the_text(page, caplog):
+    """G1 is bypassed (as in the M3 control) so the text check itself is what declines the third element."""
+    await page.set_content(
+        MESSAGE_ONCE + '<p id="third" class="abs" style="left:100px;top:600px">Footer</p>'
+    )
+    with patch.object(read_target, "_only_match_holds", new=AsyncMock(side_effect=_bypass_g1)):
+        _, text = await _log(page, caplog, "Access granted", GRID, await _centre(page, "#third"))
+    assert "signal: read-address-pixel-declined" in text
+    assert "does not show the text" in text
+
+
+async def test_declined_pixel_read_is_logged_when_no_element_is_under_the_point(page, caplog):
+    await page.set_content(MESSAGE_ONCE)
+    _, text = await _log(page, caplog, "Access granted", GRID, (5000, 5000))
+    assert "signal: read-address-pixel-declined" in text
+    assert "no element is under it" in text
+
+
+async def test_declined_pixel_read_is_logged_when_the_lookup_fails(page, caplog):
+    await page.set_content(MESSAGE_ONCE)
+    with patch.object(page, "get_by_text", side_effect=RuntimeError("boom")):
+        _, text = await _log(page, caplog, "Access granted", GRID, RAW)
+    assert "signal: read-address-pixel-declined" in text
+    assert "boom" in text
+
+
+async def test_no_pixel_signal_when_an_earlier_source_confirms(page, caplog):
+    await page.set_content(MESSAGE_ONCE)
+    verdict, text = await _log(page, caplog, "Access granted", await _centre(page, "#msg"), GRID)
+    assert verdict["source"] == "screen point"
+    assert "read-address-pixel" not in text
+
+
+async def test_no_pixel_signal_without_a_pixel_point(page, caplog):
+    await page.set_content(MESSAGE_ONCE)
+    verdict, text = await _log(page, caplog, "Access granted", GRID, None)
+    assert "unconfirmed" in verdict
+    assert "read-address-pixel" not in text
+
+
+async def test_pixel_confirm_logs_no_decline(page, caplog):
+    await page.set_content(MESSAGE_ONCE)
+    verdict, text = await _log(page, caplog, "Access granted", GRID, RAW)
+    assert verdict["source"] == "screen point read as pixels"
+    assert "signal: read-address-pixel-point)" in text
+    assert "read-address-pixel-declined" not in text

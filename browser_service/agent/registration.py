@@ -298,6 +298,15 @@ def _keep_vision_on(agent) -> bool:
     return True
 
 
+def _pixel_point(params, scaled_x, scaled_y, viewport_w, viewport_h):
+    """bs #75: an index-less call's raw point read as screen pixels, or None when it has an index, lies outside the viewport or equals the scaled point."""
+    if params.element_index is not None:
+        return None
+    point = (int(params.x), int(params.y))
+    inside = 0 <= point[0] < viewport_w and 0 <= point[1] < viewport_h
+    return point if inside and point != (scaled_x, scaled_y) else None
+
+
 def _find_smallest_containing_element(selector_map, coords, viewport_area, skip_tag=None):
     """
     Find the selector_map element with the smallest bounding box containing coords.
@@ -1692,6 +1701,10 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                         logger.warning(f"   ⚠️ Could not get element by index: {e}")
                         logger.debug("   Full error:", exc_info=True)
 
+                # bs #75 E2: the index's OWN box centre, taken before STEP A can replace
+                # confirmed_coords with the box of whatever sits at the scaled point.
+                indexed_centre = confirmed_coords
+
                 # ========================================
                 # COORDINATE SCALING: Vision AI → Viewport Pixels
                 # ========================================
@@ -1934,7 +1947,12 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                     vision_framework_hint=params.framework_hint,  # LLM's framework guess (any specialized type)
                     row_anchor_text=params.row_anchor_text,  # Row-scoped rescue for per-row actions (G1)
                     action=_step_action,  # E2 fitness + read-target rules (flag on only)
-                    vision_point=(scaled_x, scaled_y),  # K v1: logged on every K accept
+                    # K v1 + read gate screen point: the indexed element's own box centre, else
+                    # the agent's raw point scaled as a 0-1000 grid point (never STEP A's box).
+                    vision_point=(indexed_centre or (scaled_x, scaled_y)),
+                    # bs #75: an index-less point the grid scaling may have mis-read; the read gate
+                    # tries it as pixels last. Off-screen or equal to the scaled point = no source.
+                    pixel_point=_pixel_point(params, scaled_x, scaled_y, viewport_w, viewport_h),
                 )
 
                 # Convert result to ActionResult format

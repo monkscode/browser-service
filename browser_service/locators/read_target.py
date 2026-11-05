@@ -456,27 +456,98 @@ async def _confirmed_node(handle, observed: str) -> Tuple[Any, Optional[List[Any
     return (node, chain[0]) if node is not None else (None, None)
 
 
+PIXEL_SOURCE = "screen point read as pixels"
+
+
+def _log_pixel_declined(pixel_point, reason: str, source: str = PIXEL_SOURCE) -> None:
+    """One line when the pixel source was tried and declined, so a count of zero confirms can be read (bs #75). Other sources log nothing."""
+    if source == PIXEL_SOURCE:
+        logger.info(
+            f"   📎 READ ADDRESS: the agent's point read as pixels {pixel_point} was declined: "
+            f"{reason} (signal: read-address-pixel-declined)"
+        )
+
+
+async def _only_match_holds(search_context, observed: str, handle) -> Tuple[Optional[str], Any]:
+    """G1: exactly one element shows the observed text AND the element under the pixel point lies inside it. Returns (None, the one match) when it holds, else (the reason, None). #31 confirms by a wider rule than get_by_text (case-folded, direct text, attributes), so a count alone would let a near-twin under the point be confirmed silently."""
+    # exact=True: whole text, whitespace-normalised, case-sensitive; the smallest element holding it.
+    only = search_context.get_by_text(observed, exact=True)
+    shown = await only.count()
+    if shown != 1:
+        return f"the text is shown {shown} times, not once", None
+    if not await only.evaluate("(m, h) => m.contains(h)", handle, timeout=FIT_READ_TIMEOUT_MS):
+        return "the element under it is not inside the one element showing the text", None
+    # Raises (caught as "the lookup failed") if the match vanished; never returns None.
+    return None, await only.element_handle(timeout=FIT_READ_TIMEOUT_MS)
+
+
+async def _pixel_source(
+    search_context, observed: str, pixel_point: Tuple[float, float]
+) -> Optional[Tuple[str, Any]]:
+    """The one element showing the observed text, when the element under the agent's raw point (read as screen pixels) lies inside it, so another element with the same text can never be confirmed silently (bs #75 G1). Any failure is no source: today's refusal, logged with its reason."""
+    try:
+        if not observed.strip():
+            _log_pixel_declined(pixel_point, "there is no observed text")
+            return None
+        js_handle = await search_context.evaluate_handle(
+            ELEMENT_FROM_POINT_JS, [pixel_point[0], pixel_point[1]]
+        )
+        handle = js_handle.as_element()
+        if handle is None:
+            _log_pixel_declined(pixel_point, "no element is under it")
+            return None
+        reason, match = await _only_match_holds(search_context, observed, handle)
+        if reason:
+            _log_pixel_declined(pixel_point, reason)
+            return None
+        # The one match itself, never the descendant under the point: a labelled empty child would be confirmed and read ''.
+        return PIXEL_SOURCE, match
+    except Exception as e:
+        _log_pixel_declined(pixel_point, f"the lookup failed: {e}")
+        return None
+
+
+async def _all_sources(search_context, observed, element_data, point, pixel_point):
+    for pair in await _pointed_sources(search_context, element_data, point):
+        yield pair
+    # Lazy and last: a read confirmed by an earlier source never touches the pixel source.
+    if pixel_point is not None:
+        pixel = await _pixel_source(search_context, observed, pixel_point)
+        if pixel is not None:
+            yield pixel
+
+
 async def resolve_read_address(
     search_context,
     observed: str,
     element_data: Optional[Dict[str, Any]],
     point: Optional[Tuple[float, float]],
+    pixel_point: Optional[Tuple[float, float]] = None,
 ) -> Dict[str, Any]:
-    """Confirm what the agent pointed at — the indexed element, then the element under its vision point — by its own texts (or a near ancestor's), and return its structural address, or {'unconfirmed': reason}."""
+    """Confirm what the agent pointed at — the indexed element, then the element under its vision point, then (index-less, last, only when the text is shown once) the one element showing the text when the element under its raw point read as pixels lies inside it — by its own texts (or a near ancestor's), and return its structural address, or {'unconfirmed': reason}."""
     reasons: List[str] = []
-    for source, handle in await _pointed_sources(search_context, element_data, point):
+    async for source, handle in _all_sources(
+        search_context, observed, element_data, point, pixel_point
+    ):
         node, own = await _confirmed_node(handle, observed)
         if node is None:
             if own is not None:
                 shown = next((t for t in own if t), "")
                 reasons.append(f"the {source} shows {_short(shown)!r}, not {_short(observed)!r}")
+            _log_pixel_declined(pixel_point, "the element under it does not show the text", source)
             continue
         address = await structural_address(search_context, node, observed)
         if address:
+            if source == PIXEL_SOURCE:
+                logger.info(
+                    f"   📎 READ ADDRESS: the agent's point read as pixels {pixel_point} "
+                    f"shows {_short(observed)!r} (signal: read-address-pixel-point)"
+                )
             return {**address, "source": source}
         reasons.append(
             f"the {source} shows {_short(observed)!r} but has no unique address without that text"
         )
+        _log_pixel_declined(pixel_point, "it has no unique address without that text", source)
     return {"unconfirmed": "; ".join(reasons) or "the agent pointed at no element"}
 
 
@@ -502,11 +573,14 @@ async def _check_read_address(
     expected_text: Optional[str],
     element_data: Optional[Dict[str, Any]],
     point: Optional[Tuple[float, float]],
+    pixel_point: Optional[Tuple[float, float]] = None,
 ) -> Optional[Dict[str, Any]]:
     """The page-touching half of the gate: None when the locator sits in a shadow root, else the resolver's verdict."""
     if await _in_shadow_root(search_context, locator):
         return None
-    return await resolve_read_address(search_context, expected_text or "", element_data, point)
+    return await resolve_read_address(
+        search_context, expected_text or "", element_data, point, pixel_point
+    )
 
 
 async def apply_read_target_policy(
@@ -517,6 +591,7 @@ async def apply_read_target_policy(
     iframe_context: Optional[str] = None,
     element_data: Optional[Dict[str, Any]] = None,
     point: Optional[Tuple[float, float]] = None,
+    pixel_point: Optional[Tuple[float, float]] = None,
 ) -> Dict[str, Any]:
     """On a READ step, replace a found locator that carries the value being read with the pointed element's structural address, or return found=False with the reason."""
     if action not in READ_ACTIONS or not result.get("found") or iframe_context:
@@ -535,7 +610,9 @@ async def apply_read_target_policy(
     # into a spurious not-found.
     try:
         verdict = await asyncio.wait_for(
-            _check_read_address(search_context, locator, expected_text, element_data, point),
+            _check_read_address(
+                search_context, locator, expected_text, element_data, point, pixel_point
+            ),
             timeout=budget,
         )
     except asyncio.TimeoutError:

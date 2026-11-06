@@ -2,7 +2,6 @@
 Unit tests for browser_service.locators.smart_locator.
 
 Tests deterministic helper functions that have no Playwright dependency:
-  - _escape_css_selector()
   - is_dropdown_element()
   - Priority constants are ordered correctly
 """
@@ -20,56 +19,9 @@ from browser_service.locators.smart_locator import (
     PRIORITY_TEST_ID,
     PRIORITY_TEXT,
     PRIORITY_XPATH_TEXT,
-    _escape_css_selector,
     _is_collection_element,
     is_dropdown_element,
 )
-
-
-class TestEscapeCssSelector:
-    """Tests for _escape_css_selector()."""
-
-    def test_alphanumeric_unchanged(self):
-        assert _escape_css_selector("submitButton") == "submitButton"
-
-    def test_hyphen_preserved(self):
-        assert _escape_css_selector("my-button") == "my-button"
-
-    def test_underscore_preserved(self):
-        assert _escape_css_selector("my_button") == "my_button"
-
-    def test_colon_escaped(self):
-        result = _escape_css_selector("btn:primary")
-        assert "\\:" in result
-
-    def test_dot_escaped(self):
-        result = _escape_css_selector("btn.active")
-        assert "\\." in result
-
-    def test_bracket_escaped(self):
-        result = _escape_css_selector("btn[0]")
-        assert "\\[" in result
-
-    def test_empty_string_returns_empty(self):
-        assert _escape_css_selector("") == ""
-
-    def test_whitespace_only_returns_empty(self):
-        assert _escape_css_selector("   ") == ""
-
-    def test_none_returns_empty(self):
-        assert _escape_css_selector(None) == ""
-
-    def test_multi_word_class_returns_empty(self):
-        """Classes with spaces (multi-word) cannot be used in simple CSS — return empty."""
-        assert _escape_css_selector("foo bar") == ""
-
-    def test_numbers_are_kept(self):
-        result = _escape_css_selector("btn123")
-        assert result == "btn123"
-
-    def test_parenthesis_escaped(self):
-        result = _escape_css_selector("fn()")
-        assert "\\(" in result
 
 
 class TestIsDropdownElement:

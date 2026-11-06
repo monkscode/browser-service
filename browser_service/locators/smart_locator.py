@@ -12,6 +12,7 @@ import re
 from typing import Any, Optional
 
 from browser_service.locators.action_fit import check_action_fit
+from browser_service.locators.css_tokens import css_class, css_id
 from browser_service.locators.frame_locator import add_frame, apply_frame_to_result, strip_frame
 from browser_service.locators.hidden_value import (
     HIDES_VALUE_JS,
@@ -88,34 +89,6 @@ DROPDOWN_KEYWORDS = ["dropdown", "select", "combobox", "multiselect", "picker", 
 # for the element to count as "the one the vision model saw". Shared by
 # multi-match disambiguation and the text-singleton identity check (A5).
 COORD_DISTANCE_THRESHOLD = 100
-
-
-def _escape_css_selector(value: str) -> str:
-    """
-    Escape special characters in CSS selectors.
-
-    Handles characters that have special meaning in CSS selectors
-    (like :, ., [, ], etc.) by escaping them with backslash.
-
-    Args:
-        value: The CSS selector value to escape (e.g., class name, id)
-
-    Returns:
-        Escaped string safe for use in CSS selectors, or empty string if invalid
-    """
-    if not value or not value.strip():
-        return ""
-    # CSS escape special characters: : . [ ] ( ) etc
-    result = ""
-    for char in value:
-        if char.isalnum() or char in "-_":
-            result += char
-        elif char == " ":
-            logger.debug(f"Skipping multi-word class in CSS escape: '{value}'")
-            return ""  # Multi-word classes should be handled separately
-        else:
-            result += f"\\{char}"  # CSS escape
-    return result
 
 
 def is_dropdown_element(element_data: dict, element_description: Optional[str] = None) -> bool:
@@ -311,10 +284,9 @@ def _generate_attribute_css(element_data: dict) -> list[dict]:
         semantic_patterns = ["input", "select", "dropdown", "combo", "multiselect", "picker"]
         for cls in classes.split():
             if any(p in cls.lower() for p in semantic_patterns):
-                escaped_cls = _escape_css_selector(cls)
-                if not escaped_cls:
+                locator = css_class(cls)
+                if not locator:
                     continue  # Skip invalid class names
-                locator = f".{escaped_cls}"
                 candidates.append(
                     {
                         "locator": locator,
@@ -2868,13 +2840,13 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
         input_type = element_data.get("type", "")
 
         # Build CSS selector using parent context
-        escaped_parent_id = _escape_css_selector(parent_id)
-        if escaped_parent_id and tag_name:
+        parent_id_css = css_id(parent_id)
+        if parent_id_css and tag_name:
             # Use parent id + tag name (e.g., "#formContainer input")
-            css_locator = f"#{escaped_parent_id} {tag_name}"
+            css_locator = f"{parent_id_css} {tag_name}"
             if input_type:
                 # Be more specific for inputs (e.g., "#formContainer input[type='text']")
-                css_locator = f'#{escaped_parent_id} {tag_name}[type="{input_type}"]'
+                css_locator = f'{parent_id_css} {tag_name}[type="{input_type}"]'
             locator_candidates.append(
                 {
                     "locator": css_locator,
@@ -2889,11 +2861,11 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
         elif parent_class and tag_name:
             # Use first significant class from parent (escape special chars)
             first_class = parent_class.split()[0] if " " in parent_class else parent_class
-            escaped_class = _escape_css_selector(first_class)
-            if escaped_class:
-                css_locator = f".{escaped_class} {tag_name}"
+            class_css = css_class(first_class)
+            if class_css:
+                css_locator = f"{class_css} {tag_name}"
                 if input_type:
-                    css_locator = f'.{escaped_class} {tag_name}[type="{input_type}"]'
+                    css_locator = f'{class_css} {tag_name}[type="{input_type}"]'
                 locator_candidates.append(
                     {
                         "locator": css_locator,
@@ -3718,13 +3690,13 @@ def _build_coordinate_strategies(element_data: dict) -> list[dict]:
     # md:flex) — escape both, skip when unescapable (same as STEP 0).
     if element_data["parentId"] and element_data["className"]:
         first_class = element_data["className"].split()[0] if element_data["className"] else ""
-        escaped_parent_id = _escape_css_selector(element_data["parentId"])
-        escaped_class = _escape_css_selector(first_class)
-        if escaped_parent_id and escaped_class:
+        parent_id_css = css_id(element_data["parentId"])
+        class_css = css_class(first_class)
+        if parent_id_css and class_css:
             locator_strategies.append(
                 {
                     "type": "css-parent-id",
-                    "locator": f"#{escaped_parent_id} {element_data['tagName']}.{escaped_class}",
+                    "locator": f"{parent_id_css} {element_data['tagName']}{class_css}",
                     "priority": PRIORITY_CSS_PARENT_ID,
                     "strategy": "CSS with parent ID context",
                 }
@@ -3735,12 +3707,12 @@ def _build_coordinate_strategies(element_data: dict) -> list[dict]:
         first_parent_class = (
             element_data["parentClass"].split()[0] if element_data["parentClass"] else ""
         )
-        escaped_parent_class = _escape_css_selector(first_parent_class)
-        if escaped_parent_class:
+        parent_class_css = css_class(first_parent_class)
+        if parent_class_css:
             locator_strategies.append(
                 {
                     "type": "css-nth-child",
-                    "locator": f".{escaped_parent_class} > {element_data['tagName']}:nth-child({element_data['siblingIndex']})",
+                    "locator": f"{parent_class_css} > {element_data['tagName']}:nth-child({element_data['siblingIndex']})",
                     "priority": PRIORITY_CSS_NTH_CHILD,
                     "strategy": "CSS with nth-child",
                 }
@@ -3749,12 +3721,12 @@ def _build_coordinate_strategies(element_data: dict) -> list[dict]:
     # Strategy 13: Simple CSS class (Priority 10)
     if element_data["className"]:
         first_class = element_data["className"].split()[0] if element_data["className"] else ""
-        escaped_class = _escape_css_selector(first_class)
-        if escaped_class:
+        class_css = css_class(first_class)
+        if class_css:
             locator_strategies.append(
                 {
                     "type": "css-class",
-                    "locator": f"{element_data['tagName']}.{escaped_class}",
+                    "locator": f"{element_data['tagName']}{class_css}",
                     "priority": PRIORITY_CSS_CLASS,
                     "strategy": "Simple CSS class",
                 }

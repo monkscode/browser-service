@@ -14,7 +14,7 @@ writes the token without any backslash:
 - a token that cannot be quoted safely returns "" and the caller skips that
   candidate (the old helper's contract for a token with a space).
 
-css_attr is the ONE place that writes a quoted attribute value, so bs #60
+css_attr is meant to be the one place that writes a quoted attribute value, so bs #60
 (names, text, titles inside "..." with a quote or a backslash) extends it
 here — quote-kind choice, the skip rules — without touching a #43 caller.
 

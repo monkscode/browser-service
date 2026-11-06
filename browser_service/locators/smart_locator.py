@@ -2859,7 +2859,7 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
             logger.info(f"   📋 Added parent-context CSS: {css_locator}")
 
         elif parent_class and tag_name:
-            # Use first significant class from parent (escape special chars)
+            # Use first significant class from parent (quoted when not plain)
             first_class = parent_class.split()[0] if " " in parent_class else parent_class
             class_css = css_class(first_class)
             if class_css:
@@ -3687,7 +3687,7 @@ def _build_coordinate_strategies(element_data: dict) -> list[dict]:
 
     # Strategy 11: CSS with parent ID context (Priority 8)
     # Raw id/class values can carry CSS meta characters (Tailwind w-1/2,
-    # md:flex) — escape both, skip when unescapable (same as STEP 0).
+    # md:flex) — quote both, skip when unquotable (same as STEP 0).
     if element_data["parentId"] and element_data["className"]:
         first_class = element_data["className"].split()[0] if element_data["className"] else ""
         parent_id_css = css_id(element_data["parentId"])

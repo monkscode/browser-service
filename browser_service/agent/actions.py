@@ -38,6 +38,7 @@ from browser_service.agent.read_step_identity import read_identity_facts, read_s
 from browser_service.locators.action_fit import READ_ACTIONS, check_action_fit
 from browser_service.locators.classifier import classify_element_type
 from browser_service.locators.click_target import find_inner_control
+from browser_service.locators.css_tokens import robot_safe
 from browser_service.locators.frame_locator import ensure_frame_on_result, strip_frame
 from browser_service.locators.hidden_value import HIDES_VALUE_JS
 from browser_service.locators.read_target import apply_read_target_policy
@@ -52,6 +53,12 @@ from browser_service.locators.validation import convert_to_playwright_locator
 
 # Get logger
 logger = logging.getLogger(__name__)
+
+# bs #60: the reason a found locator is withheld (a backslash, a split, a ${ … in it).
+ROBOT_UNSAFE_ERROR = (
+    "The only locator found holds characters the generated Robot Framework test would change "
+    "(a backslash, a run of spaces, a line break or a ${...}); it was not used."
+)
 
 
 # One evaluate() on the element the candidate ACTUALLY resolves to. Keys are
@@ -577,7 +584,7 @@ def _log_failure_result(
 
 
 def _through_frame_gate(action):
-    """Return every result of ``action`` through the frame gate (#35).
+    """Return every result of ``action`` through the frame gate (#35) and the bs #60 backstop.
 
     The agent's candidate, its collection candidate, a parked candidate and
     the coordinate fallback all returned a locator validated INSIDE the frame
@@ -586,6 +593,11 @@ def _through_frame_gate(action):
     — and every direct caller. The gate only adds a missing frame: a result
     that already carries it, a not-found result and a call with no frame come
     back as the same, unchanged object.
+
+    The wrapper also withholds a found locator the test's Robot cell would
+    change (``robot_safe`` False): it comes back ``found`` False,
+    ``best_locator`` None, ``error`` ``ROBOT_UNSAFE_ERROR``. A safe result
+    still comes back as the same object.
     """
     signature = inspect.signature(action)
 
@@ -600,6 +612,14 @@ def _through_frame_gate(action):
                 f"   🖼️ FRAME PREFIX ADDED: '{bare}' → '{result.get('best_locator')}' "
                 f"(signal: frame-prefix-added)"
             )
+        # bs #60 backstop: a locator the test's own Robot cell would change never ships.
+        best = result.get("best_locator") if isinstance(result, dict) else None
+        if best and result.get("found") and not robot_safe(best):
+            logger.warning(
+                f"   ⛔ LOCATOR WITHHELD: Robot Framework would change {best!r} "
+                f"(signal: robot-unsafe-withheld)"
+            )
+            result = {**result, "found": False, "best_locator": None, "error": ROBOT_UNSAFE_ERROR}
         return result
 
     return gated
@@ -906,6 +926,11 @@ async def find_unique_locator_action(
                 if not isinstance(candidate_locator, str) or not candidate_locator.strip():
                     logger.warning(f"⚠️ Invalid candidate locator format: {candidate_locator}")
                     logger.info("🔄 Continuing with smart locator finder...")
+                elif not robot_safe(candidate_locator):
+                    logger.info(  # bs #60: the agent's string is one Robot would change
+                        "   ⚠️ Candidate locator would be changed by Robot Framework — continuing "
+                        "with smart locator finder (signal: robot-unsafe-candidate-skipped)"
+                    )
                 else:
                     # Use shared conversion function from browser_service.locators
                     from browser_service.locators import convert_to_playwright_locator

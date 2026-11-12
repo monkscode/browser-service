@@ -78,7 +78,7 @@ class TestNameStrategyBrowserForm:
 
     def test_name_value_with_double_quote_is_escaped(self):
         strategies = _build_coordinate_strategies(make_element_data(name='say-"hi"'))
-        assert by_type(strategies, "name")[0]["locator"] == '[name="say-\\"hi\\""]'
+        assert by_type(strategies, "name")[0]["locator"] == "[name='say-\"hi\"']"
 
     def test_no_name_no_strategy(self):
         strategies = _build_coordinate_strategies(make_element_data())
@@ -107,7 +107,7 @@ class TestDataQaStrategyForm:
     def test_data_qa_value_with_double_quote_is_escaped(self):
         strategies = _build_coordinate_strategies(make_element_data(dataQa='say-"hi"'))
         locator = by_type(strategies, "data-qa")[0]["locator"]
-        assert locator == '[data-qa="say-\\"hi\\""]'
+        assert locator == "[data-qa='say-\"hi\"']"
 
     def test_no_data_qa_no_strategy(self):
         strategies = _build_coordinate_strategies(make_element_data())
@@ -321,7 +321,7 @@ class TestCssEscaping:
             assert locator == f'[id="{pid}"] button.btn'
 
     def test_token_robot_would_read_as_a_variable_skips_the_css_strategy(self):
-        for token in ("a${b}", "a@{b}", "a&{b}", "a%{b}", 'a"b', "a" + chr(92) + "b"):
+        for token in ("a${b}", "a@{b}", "a&{b}", "a%{b}", "a\"b'c", "a" + chr(92) + "b"):
             strategies = _build_coordinate_strategies(
                 make_element_data(
                     parentId=token, className=token, parentClass=token, siblingIndex=2

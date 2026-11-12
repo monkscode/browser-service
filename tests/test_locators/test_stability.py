@@ -167,6 +167,26 @@ class TestIsPositionalLocator:
     def test_not_positional(self, locator):
         assert is_positional_locator(locator) is False
 
+    @pytest.mark.parametrize(
+        ("locator", "expected"),
+        [
+            ("xpath=//a[@title='Item [3]']", False),
+            ('button[class~="[&:nth-child(2)]:block"]', False),
+            ("button[class~='[&:nth-child(3)]:p-2']", False),
+            ('text="Step >> nth=0 of 3"', False),
+            ("text=it's >> nth=0", True),  # unbalanced quote: the nth stays visible
+            ('text="a' + chr(92) + '"b" >> nth=0', True),  # an agent \" form
+            ("xpath=//a[contains(text(), concat('it', \"'\", 's'))][2]", True),
+            ('iframe >> nth=1 >>> text="Pay"', True),  # an ordinal frame stays positional
+            ("xpath=(//li)[3]", True),
+            ('li:nth-child(2) >> text="x"', True),
+            ('[aria-label="Pay now"]', False),
+            ("text=a >> nth=0", True),
+        ],
+    )
+    def test_quoted_text_is_not_a_position(self, locator, expected):
+        assert is_positional_locator(locator) is expected
+
 
 class TestIsDynamicText:
     @pytest.mark.parametrize(

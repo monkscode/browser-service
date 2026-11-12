@@ -37,6 +37,7 @@ import re
 from typing import Optional
 
 from browser_service.locators.action_fit import READ_ACTIONS
+from browser_service.locators.css_tokens import css_attr
 from browser_service.locators.frame_locator import strip_frame
 from browser_service.locators.hidden_value import SECRET_MARK, node_hides_value, node_text
 from browser_service.locators.read_change import (
@@ -207,10 +208,6 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
 
     x, y = coords
 
-    def _esc(value: str) -> str:
-        """Escape \\ and " for a CSS attribute selector."""
-        return value.replace("\\", "\\\\").replace('"', '\\"')
-
     def _attrs_of(node) -> dict:
         return node.attributes if hasattr(node, "attributes") else {}
 
@@ -243,19 +240,24 @@ def _detect_iframe_context(selector_map, coords: tuple) -> tuple:
         # The ordinal is last because async third-party iframes (ASTPP:
         # #jsd-widget) shift iframe order between discovery and RF
         # runtime — `iframe >> nth=N` then points at a DIFFERENT frame.
+        # bs #60: a value Robot would change gives "" and the cascade falls through to the
+        # next level — never to "no frame".
         iframe_locator = None
-        if iframe_id:
-            iframe_locator = f'iframe[id="{_esc(iframe_id)}"]'
-        elif iframe_name:
-            iframe_locator = f'iframe[name="{_esc(iframe_name)}"]'
+        id_css = css_attr("id", iframe_id) if iframe_id else ""
+        name_css = css_attr("name", iframe_name) if iframe_name else ""
+        title_css = css_attr("title", iframe_title) if iframe_title else ""
+        if id_css:
+            iframe_locator = f"iframe{id_css}"
+        elif name_css:
+            iframe_locator = f"iframe{name_css}"
         else:
             title_taken_by_other = any(
                 (_attrs_of(o).get("title", "") or "").strip() == iframe_title for o in others
             )
-            if iframe_title and not is_dynamic_text(iframe_title) and not title_taken_by_other:
+            if title_css and not is_dynamic_text(iframe_title) and not title_taken_by_other:
                 # CKEditor 4 body: title="Rich Text Editor, {field}" —
                 # deterministic per editor instance, no id/name.
-                iframe_locator = f'iframe[title="{_esc(iframe_title)}"]'
+                iframe_locator = f"iframe{title_css}"
             else:
                 for cls in iframe_classes:
                     if not _CSS_IDENTIFIER_RE.match(cls):

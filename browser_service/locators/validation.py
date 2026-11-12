@@ -22,6 +22,8 @@ This is equivalent to testing a selector in the browser's F12 Console.
 import logging
 from typing import Any, Dict, Optional, Tuple
 
+from browser_service.locators.css_tokens import quote_value
+
 logger = logging.getLogger(__name__)
 
 
@@ -94,6 +96,16 @@ def is_already_playwright_selector(locator: str) -> bool:
         # No '=' sign - check if it looks like a CSS selector
         # Could be: tag name, .class, #id, div > span, etc.
         return any(c in locator for c in ".#>+~: ")
+
+
+def _attribute_selector(locator: str, attr: str, value: str) -> Tuple[str, bool]:
+    """[attr='value'] in the quote kind ``value`` needs; ``locator`` unchanged when it cannot be quoted (bs #60)."""
+    quoted = quote_value(value)
+    if not quoted:
+        return (locator, False)
+    if "'" not in value:
+        quoted = f"'{value}'"  # today's spelling
+    return (f"[{attr}={quoted}]", True)
 
 
 def convert_to_playwright_locator(locator: str) -> Tuple[str, bool]:
@@ -170,12 +182,6 @@ def convert_to_playwright_locator(locator: str) -> Tuple[str, bool]:
         # Let Playwright handle the validation
         return (locator, False)
 
-    # Escape special characters for CSS attribute selector
-    # Order matters: escape backslashes FIRST, then single quotes
-    # 1. Backslash is CSS escape character - must double it
-    # 2. Single quote would terminate our string - must escape it
-    value_escaped = value.replace("\\", "\\\\").replace("'", "\\'")
-
     # Check if it's a Playwright-native engine
     if prefix_lower in PLAYWRIGHT_NATIVE_ENGINES:
         # These work natively in Playwright - don't convert
@@ -196,8 +202,9 @@ def convert_to_playwright_locator(locator: str) -> Tuple[str, bool]:
     # - ARIA: aria-label, aria-labelledby, aria-describedby, aria-expanded, etc.
     # - Testing: data-testid, data-test, data-cy, data-qa, data-automation
     # - Frameworks: ng-model (Angular), v-model (Vue), formControlName, etc.
-    # Convert to CSS attribute selector: [attr='value']
-    return (f"[{prefix_original}='{value_escaped}']", True)
+    # Convert to CSS attribute selector: [attr='value'] — bs #60: the quote kind the value
+    # needs, never a backslash (Robot drops it); a value that cannot be quoted is left as given.
+    return _attribute_selector(locator, prefix_original, value)
 
 
 # =============================================================================

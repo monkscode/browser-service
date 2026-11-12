@@ -29,6 +29,7 @@ test_collection_scoping.py).
 """
 
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from playwright.async_api import async_playwright
@@ -318,3 +319,42 @@ class TestPlumbing:
             encoding="utf-8"
         )
         assert '"file-upload"' in src
+
+
+class _FakeContext:
+    """search_context whose every locator matches exactly one element."""
+
+    def locator(self, _selector):
+        node = MagicMock()
+        node.count = AsyncMock(return_value=1)
+        node.get_attribute = AsyncMock(return_value=None)
+        return node
+
+
+class TestRobotSafeCandidates:
+    """bs #60: a candidate Robot Framework would change never wins the loop."""
+
+    async def _find(self, input_id):
+        from types import SimpleNamespace
+
+        from browser_service.locators.handlers.file_upload import find_locator
+
+        return await find_locator(
+            page=None,
+            element_data={"tagName": "input", "type": "file", "id": input_id, "name": "resume"},
+            type_info=SimpleNamespace(framework="", confidence="high", signals=[]),
+            element_id="elem_1",
+            element_description="Resume upload",
+            expected_text=None,
+            search_context=_FakeContext(),
+            iframe_context=None,
+            confirmed_coords=None,
+        )
+
+    async def test_robot_variable_id_is_skipped_for_the_name_candidate(self):
+        result = await self._find("${file}")
+        assert result["best_locator"] == 'input[type="file"][name="resume"]'
+
+    async def test_plain_id_still_wins(self):
+        result = await self._find("resume_file")
+        assert result["best_locator"] == "id=resume_file"

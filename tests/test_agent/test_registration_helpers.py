@@ -387,7 +387,30 @@ class TestDetectIframeContext:
         fn = self._get_fn()
         iframe = self._make_iframe_element(0, 0, 800, 600, iframe_title='He said "hi"')
         locator, _ = fn({0: iframe}, (100, 100))
-        assert locator == 'iframe[title="He said \\"hi\\""]'
+        assert locator == "iframe[title='He said \"hi\"']"
+
+    def test_id_robot_would_change_falls_through_to_name(self):
+        """bs #60: an id holding both quote kinds cannot be quoted — the frame is kept."""
+        fn = self._get_fn()
+        iframe = self._make_iframe_element(
+            0, 0, 800, 600, iframe_id="a\"b'c", iframe_name="payframe"
+        )
+        locator, _ = fn({0: iframe}, (100, 100))
+        assert locator == 'iframe[name="payframe"]'
+
+    def test_id_and_name_robot_would_change_fall_through_to_title(self):
+        fn = self._get_fn()
+        iframe = self._make_iframe_element(
+            0,
+            0,
+            800,
+            600,
+            iframe_id="a\"b'c",
+            iframe_name="a  b",
+            iframe_title="Payment",
+        )
+        locator, _ = fn({0: iframe}, (100, 100))
+        assert locator == 'iframe[title="Payment"]'
 
     def test_dynamic_title_skipped(self):
         """A data-bound title (date) dies next session → not an anchor."""

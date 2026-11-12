@@ -37,6 +37,7 @@ Depends on:
 import logging
 from typing import Optional
 
+from browser_service.locators.css_tokens import css_attr, robot_safe
 from browser_service.locators.handlers.base import build_locator_result
 from browser_service.locators.stability import STABLE, score_stability
 
@@ -113,11 +114,10 @@ async def find_locator(
         candidates.append((f"id={input_id}", "flatpickr-input id"))
     elif input_id:
         candidates.append((f"id={input_id}", "flatpickr-input id (volatile)"))
-    if input_name:
-        escaped_name = input_name.replace("\\", "\\\\").replace('"', '\\"')
+    if input_name and (name_css := css_attr("name", input_name)):  # bs #60
         candidates.append(
             (
-                f'input.flatpickr-input[name="{escaped_name}"]',
+                f"input.flatpickr-input{name_css}",
                 "flatpickr-input name",
             )
         )
@@ -127,6 +127,8 @@ async def find_locator(
 
     chosen = None
     for locator, strategy in candidates:
+        if not robot_safe(locator):  # bs #60: Robot would change it in a test cell
+            continue
         try:
             if await search_context.locator(locator).count() == 1:
                 chosen = (locator, strategy)

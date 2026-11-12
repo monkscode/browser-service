@@ -37,7 +37,7 @@ test_file_upload.py).
 """
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from playwright.async_api import async_playwright
@@ -458,3 +458,47 @@ class TestPlumbing:
         assert "date-picker" in src
         assert "file-upload" in src
         assert "flatpickr" in src
+
+
+class _FakeContext:
+    """search_context whose every locator matches exactly one element, with no readonly attribute."""
+
+    def locator(self, _selector):
+        node = MagicMock()
+        node.count = AsyncMock(return_value=1)
+        node.get_attribute = AsyncMock(return_value=None)
+        return node
+
+
+class TestRobotSafeCandidates:
+    """bs #60: a candidate Robot Framework would change never wins the loop."""
+
+    async def _find(self, input_id):
+        from types import SimpleNamespace
+
+        from browser_service.locators.handlers.date_picker import find_locator
+
+        return await find_locator(
+            page=None,
+            element_data={
+                "tagName": "input",
+                "className": "flatpickr-input",
+                "id": input_id,
+                "name": "event_date",
+            },
+            type_info=SimpleNamespace(framework="flatpickr", confidence="high", signals=[]),
+            element_id="elem_1",
+            element_description="Event date",
+            expected_text=None,
+            search_context=_FakeContext(),
+            iframe_context=None,
+            confirmed_coords=None,
+        )
+
+    async def test_robot_variable_id_is_skipped_for_the_name_candidate(self):
+        result = await self._find("${date}")
+        assert result["best_locator"] == 'input.flatpickr-input[name="event_date"]'
+
+    async def test_plain_id_still_wins(self):
+        result = await self._find("event_date_id")
+        assert result["best_locator"] == "id=event_date_id"

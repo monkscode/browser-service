@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Optional
 
 import structlog
 
+from browser_service.locators.css_tokens import css_attr, robot_safe
 from browser_service.locators.stability import STABLE, score_stability
 
 from .base import build_locator_result
@@ -65,9 +66,11 @@ _TS_CONTROL_SUFFIX = "-ts-control"
 
 
 def _css_id_attr(value: str) -> str:
-    """Return a CSS attribute selector for an id that is safe for ids containing CSS-special characters."""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'[id="{escaped}"]'
+    """Return a CSS attribute selector for an id that is safe for ids containing CSS-special characters.
+
+    bs #60: "" when Robot would change the id (the caller skips that strategy).
+    """
+    return css_attr("id", value)
 
 
 def _normalize_label_or_description(text: Optional[str]) -> str:
@@ -466,18 +469,24 @@ async def _tom_select(
     # depends on TomSelect initialisation order in a given browser session and will
     # differ in a fresh Docker session.  Pass None to build_locator_result so the
     # Code Assembler uses the locator-based JS fallback instead of id=tomselect-N.
-    result_select_id = select_id if has_real_select_id else None
+    # bs #60: NLRF writes it as id=<select_id> in a Robot cell, so a value Robot would change is dropped too.
+    robot_unsafe_select_id = has_real_select_id and not robot_safe(f"id={select_id}")
+    result_select_id = select_id if has_real_select_id and not robot_unsafe_select_id else None
     if result_select_id is None and select_id is not None:
         logger.info(
             "tom_select.select_id_suppressed",
             select_id=select_id,
-            reason="volatile per stability scorer, unstable across sessions",
+            reason=(
+                "Robot Framework would change it in a test cell"
+                if robot_unsafe_select_id
+                else "volatile per stability scorer, unstable across sessions"
+            ),
         )
 
     # ---- Strategy 1a: id-anchored input ----
-    if has_real_input_id:
+    if has_real_input_id and input_id and (id_css := _css_id_attr(input_id)):
         result = await _validate_and_build_result(
-            locator=f"css={_css_id_attr(input_id)}",
+            locator=f"css={id_css}",
             strategy_name="Tom Select Strategy 1a (id-anchored input)",
             element_id=element_id,
             element_description=element_description,
@@ -489,9 +498,9 @@ async def _tom_select(
             return result
 
     # ---- Strategy 1b: adjacent-sibling fallback ----
-    if has_real_select_id:
+    if has_real_select_id and select_id and (select_css := _css_id_attr(select_id)):
         result = await _validate_and_build_result(
-            locator=f"css={_css_id_attr(select_id)} + .ts-wrapper .ts-control",
+            locator=f"css={select_css} + .ts-wrapper .ts-control",
             strategy_name="Tom Select Strategy 1b (adjacent sibling)",
             element_id=element_id,
             element_description=element_description,

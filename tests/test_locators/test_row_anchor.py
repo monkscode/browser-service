@@ -186,7 +186,7 @@ class TestUpgradeToRowAnchor:
 
     async def test_quote_in_anchor_escaped(self):
         """Anchor data can carry double quotes (John "JJ" Smith)."""
-        escaped = 'tr:has-text("John \\"JJ\\" Smith") >> [title="Edit"]'
+        escaped = 'tr:has-text(\'John "JJ" Smith\') >> [title="Edit"]'
         ctx = FakeSearchContext({escaped: FakeLocator(1)})
         result = await _upgrade_to_row_anchor(ctx, EDIT, 'John "JJ" Smith')
         assert result == {"locator": escaped}

@@ -157,6 +157,9 @@ _NTH_ENGINE_RE = re.compile(r">>\s*nth=")  # Playwright nth engine
 _NTH_CSS_RE = re.compile(r":nth-(?:child|of-type)\(")  # CSS structural
 _XPATH_GROUP_INDEX_RE = re.compile(r"\)\[\d+\]")  # (//...)[N]
 _XPATH_STEP_INDEX_RE = re.compile(r"\[\d+\]")  # //div[1]/...
+_QUOTED_SPAN_RE = re.compile(
+    r"\"[^\"]*\"|'[^']*'"
+)  # a quoted value, removed before the checks above
 
 # --- dynamic-text shapes ---------------------------------------------------
 _TRAILING_COUNT_RE = re.compile(r"\(\s*\d+[^)]*\)\s*$")  # "Cart (3 items)"
@@ -250,6 +253,8 @@ def is_positional_locator(locator: str) -> bool:
     if not locator:
         return False
 
+    # bs #60: a quoted value is page text, not structure ('Item [3]', a class holding ':nth-child(').
+    locator = _QUOTED_SPAN_RE.sub('""', locator)
     if _NTH_ENGINE_RE.search(locator) or _NTH_CSS_RE.search(locator):
         return True
 

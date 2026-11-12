@@ -2741,24 +2741,21 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
     if element_data.get("id"):
         element_id_val = element_data["id"]
         id_stability = score_stability("id", element_id_val)
-        # Handle numeric IDs with attribute selector
-        if element_id_val.isdigit():
+        # bs #60: "#id" only where NLRF adds css= (a bare "#-side" cell is a Robot
+        # comment); any other id is quoted ('[id="123"]', '[id="-side"]'), skipped if it cannot be.
+        id_css = css_id(element_id_val)
+        if id_css:
+            bare = id_css.startswith("#")
             locator_candidates.append(
                 {
-                    "locator": f'[id="{element_id_val}"]',
-                    "type": "id-attr",
+                    "locator": id_css,
+                    "type": "id" if bare else "id-attr",
                     "priority": PRIORITY_ID,
-                    "strategy": "ID attribute selector (numeric ID)",
-                    "stability": id_stability,
-                }
-            )
-        else:
-            locator_candidates.append(
-                {
-                    "locator": f"#{element_id_val}",  # Use CSS ID selector - Playwright native format
-                    "type": "id",
-                    "priority": PRIORITY_ID,
-                    "strategy": "ID selector from element_data",
+                    "strategy": "ID selector from element_data"
+                    if bare
+                    else "ID attribute selector (numeric ID)"
+                    if element_id_val.isdigit()
+                    else "ID attribute selector",
                     "stability": id_stability,
                 }
             )

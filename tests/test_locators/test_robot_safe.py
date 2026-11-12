@@ -181,3 +181,19 @@ def test_every_builder_output_is_robot_safe_or_absent(value):
     # convert_to_playwright_locator leaves a value it cannot quote as given: the candidate check refuses it
     unsafe = [o for o in out if o and not robot_safe(o) and not o.startswith("name=")]
     assert unsafe == [], (value, unsafe)
+
+
+@pytest.mark.parametrize(
+    ("own_id", "expected"),
+    [
+        ("-side", '[id="-side"]'),
+        ("éclair", '[id="éclair"]'),
+        ("Ünïcödé", '[id="Ünïcödé"]'),
+        ("plainId", "#plainId"),
+        ("123", '[id="123"]'),
+    ],
+)
+def test_own_id_ships_as_id_selector_nlrf_prefixes(own_id, expected):
+    cands = _build_element_data_candidates({"tagName": "input", "type": "text", "id": own_id})
+    id_cands = [c for c in cands if c["type"] in ("id", "id-attr")]
+    assert [c["locator"] for c in id_cands] == [expected]

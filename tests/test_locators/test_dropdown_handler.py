@@ -485,3 +485,33 @@ async def test_evaluate_exception_does_not_raise():
         confirmed_coords=(10, 10),
     )
     assert result is None
+
+
+# ----------------------------------------------------------------------
+# bs #60: select_id reaches a Robot cell as id=<select_id>
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("select_id", "expected"),
+    [("${country}", None), ("country_id", "country_id")],
+)
+async def test_select_id_kept_only_when_robot_leaves_it_unchanged(select_id, expected):
+    ctx = _make_search_context(
+        count_value=1,
+        evaluate_value={"selectId": select_id, "inputId": "country-ts-control"},
+    )
+    result = await find_locator(
+        page=None,
+        element_data={"tagName": "div", "className": "ts-wrapper"},
+        type_info=_info(framework="tom-select"),
+        element_id="elem_9",
+        element_description="Country *",
+        expected_text=None,
+        search_context=ctx,
+        iframe_context=None,
+        confirmed_coords=(420, 380),
+    )
+    assert result is not None
+    assert result["select_id"] == expected

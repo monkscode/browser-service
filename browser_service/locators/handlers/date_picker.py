@@ -37,7 +37,7 @@ Depends on:
 import logging
 from typing import Optional
 
-from browser_service.locators.css_tokens import css_attr
+from browser_service.locators.css_tokens import css_attr, robot_safe
 from browser_service.locators.handlers.base import build_locator_result
 from browser_service.locators.stability import STABLE, score_stability
 
@@ -127,6 +127,8 @@ async def find_locator(
 
     chosen = None
     for locator, strategy in candidates:
+        if not robot_safe(locator):  # bs #60: Robot would change it in a test cell
+            continue
         try:
             if await search_context.locator(locator).count() == 1:
                 chosen = (locator, strategy)

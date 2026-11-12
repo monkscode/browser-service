@@ -49,7 +49,9 @@ def quote_value(value: str, collapse: bool = False) -> str:
     value = " ".join(str(value or "").split()) if collapse else (value or "")
     if (
         not value
-        or not value.isprintable()  # TAB, line breaks, NBSP and every other non-ASCII space
+        # every non-printable character: TAB, line breaks, NBSP and other non-ASCII spaces,
+        # zero-width characters, direction marks, soft hyphen, private use
+        or not value.isprintable()
         or "  " in value
         or "\\" in value
         or _ROBOT_VARIABLE.search(value)

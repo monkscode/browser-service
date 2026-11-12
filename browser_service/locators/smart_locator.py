@@ -2741,8 +2741,9 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
     if element_data.get("id"):
         element_id_val = element_data["id"]
         id_stability = score_stability("id", element_id_val)
-        # bs #60: "#id" only where NLRF adds css= (a bare "#-side" cell is a Robot
-        # comment); any other id is quoted ('[id="123"]', '[id="-side"]'), skipped if it cannot be.
+        # bs #60: an id that is not a plain CSS identifier ships as [id="…"] ("-side",
+        # "form:main", "a.b", "123"; a bare "#-side" cell is a Robot comment), "#id"
+        # otherwise; skipped if it cannot be quoted.
         id_css = css_id(element_id_val)
         if id_css:
             bare = id_css.startswith("#")

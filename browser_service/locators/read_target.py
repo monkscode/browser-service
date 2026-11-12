@@ -26,7 +26,8 @@ actions, iframes, collections, row-anchored results, shadow-root elements,
 and everything when ENABLE_ACTION_FIT=false.
 
 Referenced by: agent/actions.py
-Depends on: locators/action_fit.py, locators/hidden_value.py, locators/stability.py
+Depends on: locators/action_fit.py, locators/css_tokens.py, locators/hidden_value.py,
+locators/stability.py
 """
 
 import asyncio

@@ -3,7 +3,8 @@
 robot_safe is the rule (Robot 7.4.2's tokenizer + NLRF's css= prefix), written without robotframework.
 The builder test feeds every value shape Robot changes into every synchronous builder and asserts each
 output is robot-safe or absent. The async cascade steps (text-first, the description loop, the
-accessibility search, the agent candidate) are covered by the backstop in agent/actions.py.
+accessibility search, the agent candidate) are covered by the robot_safe filters where they collect
+candidates AND by the exit backstop in agent/actions.py.
 """
 
 import types

@@ -584,7 +584,7 @@ def _log_failure_result(
 
 
 def _through_frame_gate(action):
-    """Return every result of ``action`` through the frame gate (#35).
+    """Return every result of ``action`` through the frame gate (#35) and the bs #60 backstop.
 
     The agent's candidate, its collection candidate, a parked candidate and
     the coordinate fallback all returned a locator validated INSIDE the frame
@@ -593,6 +593,11 @@ def _through_frame_gate(action):
     — and every direct caller. The gate only adds a missing frame: a result
     that already carries it, a not-found result and a call with no frame come
     back as the same, unchanged object.
+
+    The wrapper also withholds a found locator the test's Robot cell would
+    change (``robot_safe`` False): it comes back ``found`` False,
+    ``best_locator`` None, ``error`` ``ROBOT_UNSAFE_ERROR``. A safe result
+    still comes back as the same object.
     """
     signature = inspect.signature(action)
 

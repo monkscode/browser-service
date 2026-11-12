@@ -126,3 +126,15 @@ class TestConvertToPlaywrightLocator:
         """aria-label locator is converted to Playwright attribute selector."""
         result, converted = convert_to_playwright_locator("aria-label=Close dialog")
         assert "Close dialog" in result
+
+
+def test_validation_new_branches():
+    """bs #60: the quote kind the value needs, never a backslash; an unquotable value is left as given."""
+    b = chr(92)
+    assert convert_to_playwright_locator("name=it's") == ('[name="it\'s"]', True)
+    assert convert_to_playwright_locator('name=say "hi"') == ("[name='say \"hi\"']", True)
+    assert convert_to_playwright_locator("name=q") == ("[name='q']", True)
+    unq = "name=a" + b + "b"
+    assert convert_to_playwright_locator(unq) == (unq, False)
+    both = 'name=He said "it\'s"'
+    assert convert_to_playwright_locator(both) == (both, False)

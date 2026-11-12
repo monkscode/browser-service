@@ -98,6 +98,16 @@ def is_already_playwright_selector(locator: str) -> bool:
         return any(c in locator for c in ".#>+~: ")
 
 
+def _attribute_selector(locator: str, attr: str, value: str) -> Tuple[str, bool]:
+    """[attr='value'] in the quote kind ``value`` needs; ``locator`` unchanged when it cannot be quoted (bs #60)."""
+    quoted = quote_value(value)
+    if not quoted:
+        return (locator, False)
+    if "'" not in value:
+        quoted = f"'{value}'"  # today's spelling
+    return (f"[{attr}={quoted}]", True)
+
+
 def convert_to_playwright_locator(locator: str) -> Tuple[str, bool]:
     """
     Convert various locator formats to Playwright-compatible format.
@@ -194,12 +204,7 @@ def convert_to_playwright_locator(locator: str) -> Tuple[str, bool]:
     # - Frameworks: ng-model (Angular), v-model (Vue), formControlName, etc.
     # Convert to CSS attribute selector: [attr='value'] — bs #60: the quote kind the value
     # needs, never a backslash (Robot drops it); a value that cannot be quoted is left as given.
-    quoted = quote_value(value)
-    if not quoted:
-        return (locator, False)
-    if "'" not in value:
-        quoted = f"'{value}'"  # today's spelling
-    return (f"[{prefix_original}={quoted}]", True)
+    return _attribute_selector(locator, prefix_original, value)
 
 
 # =============================================================================

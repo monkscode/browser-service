@@ -2747,16 +2747,18 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
         id_css = css_id(element_id_val)
         if id_css:
             bare = id_css.startswith("#")
+            if bare:
+                id_strategy = "ID selector from element_data"
+            elif element_id_val.isdigit():
+                id_strategy = "ID attribute selector (numeric ID)"
+            else:
+                id_strategy = "ID attribute selector"
             locator_candidates.append(
                 {
                     "locator": id_css,
                     "type": "id" if bare else "id-attr",
                     "priority": PRIORITY_ID,
-                    "strategy": "ID selector from element_data"
-                    if bare
-                    else "ID attribute selector (numeric ID)"
-                    if element_id_val.isdigit()
-                    else "ID attribute selector",
+                    "strategy": id_strategy,
                     "stability": id_stability,
                 }
             )

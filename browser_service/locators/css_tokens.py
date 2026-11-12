@@ -37,7 +37,7 @@ _ID_IDENT = re.compile(rf"[A-Za-z_][{_TAIL}]*\Z")
 # Robot reads ${x} @{x} &{x} %{x} as a variable even inside a quoted value.
 _ROBOT_VARIABLE = re.compile(r"[$@&%]\{")
 # Robot 7.4.2 splits a cell on 2+ whitespace or one TAB, and a line on str.splitlines.
-_ROBOT_SPLIT = re.compile(r"\s{2,}|\t|[\n\r\v\f\x1c-\x1e\x85  ]")
+_ROBOT_SPLIT = re.compile(r"\s{2,}|[\t\n\r\v\f\x1c-\x1e\x85  ]")
 
 
 def quote_value(value: str, collapse: bool = False) -> str:

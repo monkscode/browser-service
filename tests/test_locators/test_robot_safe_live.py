@@ -81,6 +81,7 @@ async def _assert_ships(page, out, expected, pick, frame=None):
 def _assert_withheld(out):
     assert out.get("found") is False, out
     assert not out.get("best_locator")
+    assert not out.get("error_type"), out  # the action's catch-all sets it on a crash
 
 
 class TestItemRows:

@@ -19,7 +19,8 @@ the value needs, or returns "" for a value Robot would change (backslash, 2+ spa
 TAB, line break, "${"); robot_safe is the rule a whole locator is checked by. css_attr
 writes every quoted attribute value through quote_value.
 
-Referenced by: locators/smart_locator.py
+Referenced by: locators/smart_locator.py, agent/registration.py, locators/validation.py,
+locators/handlers/checkbox.py, date_picker.py, dropdown.py, file_upload.py
 Depends on: nothing
 """
 

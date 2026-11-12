@@ -12,7 +12,7 @@ import re
 from typing import Any, Optional
 
 from browser_service.locators.action_fit import check_action_fit
-from browser_service.locators.css_tokens import css_class, css_id
+from browser_service.locators.css_tokens import css_attr, css_class, css_id, quote_value
 from browser_service.locators.frame_locator import add_frame, apply_frame_to_result, strip_frame
 from browser_service.locators.hidden_value import (
     HIDES_VALUE_JS,
@@ -1015,10 +1015,12 @@ async def _upgrade_to_row_anchor(
         )
         return None
 
-    escaped = anchor.replace("\\", "\\\\").replace('"', '\\"')
+    quoted = quote_value(anchor, collapse=True)
+    if not quoted:
+        return None
 
     for container in ("tr", "li"):
-        rows = f'{container}:has-text("{escaped}")'
+        rows = f"{container}:has-text({quoted})"
         composite = f"{rows} >> {locator}"
         try:
             count = await search_context.locator(composite).count()
@@ -1414,49 +1416,47 @@ async def _find_element_by_expected_text(
     # ========================================
     # Build list of selectors to try based on expected_text
     selectors_to_try = []
+    # bs #60: the quote kind the text needs; whitespace folded where Playwright folds it
+    # (text=, role names, :has-text). "" = Robot would change it: that selector is not built.
+    quoted = quote_value(text, collapse=True)
 
     # Exact text match (highest priority)
-    selectors_to_try.append(f'text="{text}"')
+    if quoted:
+        selectors_to_try.append(f"text={quoted}")
 
     # Role-based with exact name (very reliable for buttons/links)
-    if "button" in desc_lower or any(
-        word in text.lower()
-        for word in ["submit", "add", "delete", "save", "cancel", "ok", "yes", "no"]
+    if quoted and (
+        "button" in desc_lower
+        or any(
+            word in text.lower()
+            for word in ["submit", "add", "delete", "save", "cancel", "ok", "yes", "no"]
+        )
     ):
         selectors_to_try.extend(
             [
-                f'role=button[name="{text}"]',
-                f'button:has-text("{text}")',
+                f"role=button[name={quoted}]",
+                f"button:has-text({quoted})",
             ]
         )
 
-    if "link" in desc_lower:
+    if quoted and "link" in desc_lower:
         selectors_to_try.extend(
             [
-                f'role=link[name="{text}"]',
-                f'a:has-text("{text}")',
+                f"role=link[name={quoted}]",
+                f"a:has-text({quoted})",
             ]
         )
 
-    # Generic text-based selectors
+    # Generic text-based selectors (CSS attribute equality is exact: no folding)
     # NOTE: Removed *:has-text() - it's too broad (matches every ancestor container)
     selectors_to_try.extend(
-        [
-            f'[aria-label="{text}"]',
-            f'[title="{text}"]',
-            f'[placeholder="{text}"]',
-        ]
+        s for s in (css_attr(a, text) for a in ("aria-label", "title", "placeholder")) if s
     )
 
-    # Try partial matches if text is long
-    if len(text) > 20:
-        short_text = text[:20]
-        selectors_to_try.extend(
-            [
-                f'text="{short_text}"',
-                # NOTE: Removed *:has-text() for partial text - same issue as above
-            ]
-        )
+    # Try partial matches if text is long: legacy text= matches an element's own text chunk, so
+    # the first 20 characters find <span>Proceed to checkout <b>(3 items)</b></span> (bs #60 item 5)
+    if len(text) > 20 and (short_quoted := quote_value(text[:20])):
+        selectors_to_try.append(f"text={short_quoted}")
 
     # Try each selector
     for selector in selectors_to_try:
@@ -1746,6 +1746,8 @@ async def _find_element_by_playwright_role(
 
     text = expected_text.strip()
     desc_lower = element_description.lower() if element_description else ""
+    # bs #60: the role name as shipped ("" = Robot would change it: the role strategies are skipped)
+    quoted = quote_value(text, collapse=True)
 
     logger.info("   🎯 PLAYWRIGHT ROLE: Trying native Playwright accessibility APIs")
     logger.info(f"      Text: '{text[:40]}...' | Description: '{desc_lower[:40]}...'")
@@ -1791,7 +1793,7 @@ async def _find_element_by_playwright_role(
 
     try:
         # Strategy 1: getByRole with exact name match
-        for role in roles_to_try:
+        for role in roles_to_try if quoted else ():
             try:
                 locator_obj = search_context.get_by_role(role, name=text, exact=True)
                 count = await locator_obj.count()
@@ -1799,7 +1801,7 @@ async def _find_element_by_playwright_role(
 
                 if count == 1:
                     # Convert to string locator for Robot Framework compatibility
-                    locator_str = f'role={role}[name="{text}"]'
+                    locator_str = f"role={role}[name={quoted}]"
                     locator_str = add_frame(locator_str, iframe_context)
 
                     logger.info(f"   ✅ PLAYWRIGHT ROLE SUCCESS: {locator_str}")
@@ -1821,8 +1823,8 @@ async def _find_element_by_playwright_role(
             count = await locator_obj.count()
             attempts.append(f'label="{text}" -> {count}')
 
-            if count == 1:
-                locator_str = f'[aria-label="{text}"]'  # Closest RF equivalent
+            if count == 1 and (label_css := css_attr("aria-label", text)):
+                locator_str = label_css  # Closest RF equivalent
                 locator_str = add_frame(locator_str, iframe_context)
 
                 logger.info(f"   ✅ PLAYWRIGHT LABEL SUCCESS: {locator_str}")
@@ -1844,8 +1846,8 @@ async def _find_element_by_playwright_role(
             count = await locator_obj.count()
             attempts.append(f'placeholder="{text}" -> {count}')
 
-            if count == 1:
-                locator_str = f'[placeholder="{text}"]'
+            if count == 1 and (placeholder_css := css_attr("placeholder", text)):
+                locator_str = placeholder_css
                 locator_str = add_frame(locator_str, iframe_context)
 
                 logger.info(f"   ✅ PLAYWRIGHT PLACEHOLDER SUCCESS: {locator_str}")
@@ -1862,14 +1864,14 @@ async def _find_element_by_playwright_role(
             pass
 
         # Strategy 4: getByRole with partial name match (less strict)
-        for role in roles_to_try[:5]:  # Only try top 5 roles for partial match
+        for role in roles_to_try[:5] if quoted else ():  # Only try top 5 roles for partial match
             try:
                 locator_obj = search_context.get_by_role(role, name=text, exact=False)
                 count = await locator_obj.count()
                 attempts.append(f'role={role}[name~="{text}"] -> {count}')
 
                 if count == 1:
-                    locator_str = f'role={role}[name="{text}"]'
+                    locator_str = f"role={role}[name={quoted}]"
                     locator_str = add_frame(locator_str, iframe_context)
 
                     logger.info(f"   ✅ PLAYWRIGHT ROLE (partial) SUCCESS: {locator_str}")
@@ -1891,8 +1893,8 @@ async def _find_element_by_playwright_role(
             count = await locator_obj.count()
             attempts.append(f'alt="{text}" -> {count}')
 
-            if count == 1:
-                locator_str = f'[alt="{text}"]'
+            if count == 1 and (alt_css := css_attr("alt", text)):
+                locator_str = alt_css
                 locator_str = add_frame(locator_str, iframe_context)
 
                 logger.info(f"   ✅ PLAYWRIGHT ALT TEXT SUCCESS: {locator_str}")
@@ -1914,8 +1916,8 @@ async def _find_element_by_playwright_role(
             count = await locator_obj.count()
             attempts.append(f'title="{text}" -> {count}')
 
-            if count == 1:
-                locator_str = f'[title="{text}"]'
+            if count == 1 and (title_css := css_attr("title", text)):
+                locator_str = title_css
                 locator_str = add_frame(locator_str, iframe_context)
 
                 logger.info(f"   ✅ PLAYWRIGHT TITLE SUCCESS: {locator_str}")
@@ -2003,19 +2005,21 @@ async def _find_element_via_accessibility_tree(
     # Create regex pattern for flexible matching
     escaped_text = re.escape(expected_text)
     text_pattern = re.compile(escaped_text, re.IGNORECASE)
+    # bs #60: the name as the shipped string spells it; "" = Robot would change it, the
+    # role and text strategies are skipped (the label strategy below still runs).
+    quoted = quote_value(expected_text, collapse=True)
 
     try:
         # Strategy 1: Try role-based search with Playwright's get_by_role
         # This uses Playwright's built-in accessibility tree traversal
-        for role in role_hints:
+        for role in role_hints if quoted else ():
             try:
                 # Exact match
                 locator_obj = page.get_by_role(role, name=expected_text, exact=True)
                 count = await locator_obj.count()
 
                 if count == 1:
-                    safe_name = expected_text.replace('"', '\\"')
-                    locator_str = f'role={role}[name="{safe_name}"]'
+                    locator_str = f"role={role}[name={quoted}]"
                     locator_str = add_frame(locator_str, iframe_context)
 
                     logger.info(f"   ✅ NATIVE API SUCCESS (exact): {locator_str}")
@@ -2034,8 +2038,7 @@ async def _find_element_via_accessibility_tree(
                 count = await locator_obj.count()
 
                 if count == 1:
-                    safe_name = expected_text.replace('"', '\\"')
-                    locator_str = f'role={role}[name="{safe_name}"]'
+                    locator_str = f"role={role}[name={quoted}]"
                     locator_str = add_frame(locator_str, iframe_context)
 
                     logger.info(f"   ✅ NATIVE API SUCCESS (partial): {locator_str}")
@@ -2054,8 +2057,7 @@ async def _find_element_via_accessibility_tree(
                 count = await locator_obj.count()
 
                 if count == 1:
-                    safe_name = expected_text.replace('"', '\\"')
-                    locator_str = f'role={role}[name="{safe_name}"]'
+                    locator_str = f"role={role}[name={quoted}]"
                     locator_str = add_frame(locator_str, iframe_context)
 
                     logger.info(f"   ✅ NATIVE API SUCCESS (regex): {locator_str}")
@@ -2101,11 +2103,13 @@ async def _find_element_via_accessibility_tree(
             locator_obj = page.get_by_text(expected_text, exact=True)
             count = await locator_obj.count()
 
-            if count == 1 and (
-                not is_field_description or await _text_match_is_form_control(locator_obj)
+            if (
+                count == 1
+                and quoted
+                and (not is_field_description or await _text_match_is_form_control(locator_obj))
             ):
                 # Get the text locator string
-                locator_str = f'text="{expected_text}"'
+                locator_str = f"text={quoted}"
                 locator_str = add_frame(locator_str, iframe_context)
 
                 logger.info(f"   ✅ NATIVE TEXT SUCCESS: {locator_str}")
@@ -2125,10 +2129,12 @@ async def _find_element_via_accessibility_tree(
             locator_obj = page.get_by_text(expected_text, exact=False)
             count = await locator_obj.count()
 
-            if count == 1 and (
-                not is_field_description or await _text_match_is_form_control(locator_obj)
+            if (
+                count == 1
+                and quoted
+                and (not is_field_description or await _text_match_is_form_control(locator_obj))
             ):
-                locator_str = f'text="{expected_text}"'
+                locator_str = f"text={quoted}"
                 locator_str = add_frame(locator_str, iframe_context)
 
                 logger.info(f"   ✅ NATIVE TEXT (partial) SUCCESS: {locator_str}")
@@ -2164,9 +2170,9 @@ async def _find_element_via_accessibility_tree(
                 candidates = []
                 if info.get("id"):
                     candidates.append(f"id={info['id']}")
-                if info.get("name") and tag:
-                    safe = str(info["name"]).replace('"', '\\"')
-                    candidates.append(f'{tag}[name="{safe}"]')
+                name_css = css_attr("name", str(info.get("name") or ""))
+                if name_css and tag:
+                    candidates.append(f"{tag}{name_css}")
                 for resolved in candidates:
                     if await page.locator(resolved).count() == 1:
                         locator_str = add_frame(resolved, iframe_context)
@@ -2585,9 +2591,11 @@ async def _find_element_via_accessibility(
         # raw form does.
         accessible_name = " ".join(str(accessible_name).split())
 
+    quoted = quote_value(accessible_name) if accessible_name else ""
+    if accessible_name and not quoted:
+        return None  # bs #60: Robot would change the name; the cascade goes on
     if accessible_name:
-        safe_name = accessible_name.replace('"', '\\"')
-        locator = f'role={role}[name="{safe_name}"]'
+        locator = f"role={role}[name={quoted}]"
     else:
         locator = f"role={role}"
 
@@ -2602,7 +2610,7 @@ async def _find_element_via_accessibility(
                 native_locator = ctx.get_by_role(role, name=accessible_name, exact=True)
                 native_count = await native_locator.count()
                 if native_count == 1:
-                    locator = f'role={role}[name="{safe_name}"]'
+                    locator = f"role={role}[name={quoted}]"
                     count = native_count
                     logger.info(f"   ✅ Playwright native exact match found: {locator}")
             except Exception:
@@ -2614,7 +2622,7 @@ async def _find_element_via_accessibility(
                     native_locator = ctx.get_by_role(role, name=accessible_name, exact=False)
                     native_count = await native_locator.count()
                     if native_count == 1:
-                        locator = f'role={role}[name="{safe_name}"]'
+                        locator = f"role={role}[name={quoted}]"
                         count = native_count
                         logger.info(f"   ✅ Playwright native partial match found: {locator}")
                 except Exception:
@@ -2623,10 +2631,10 @@ async def _find_element_via_accessibility(
             # Strategy 2.5b-3: Try CSS contains text selector
             if count == 0:
                 try:
-                    text_locator = f'{role}:has-text("{safe_name}")'
+                    text_locator = f"{role}:has-text({quoted})"
                     text_count = await ctx.locator(text_locator).count()
                     if text_count == 1:
-                        locator = f'role={role}:has-text("{safe_name}")'
+                        locator = f"role={role}:has-text({quoted})"
                         count = text_count
                         logger.info(f"   ✅ Text contains match found: {locator}")
                 except Exception:
@@ -3599,12 +3607,12 @@ def _build_coordinate_strategies(element_data: dict) -> list[dict]:
     # Strategy 4: data-qa (Priority 2)
     # Playwright has no data-qa selector engine (data-testid/data-test are
     # built-in, data-qa is not) — only the CSS attribute form resolves.
-    if element_data["dataQa"]:
-        data_qa_escaped = element_data["dataQa"].replace('"', '\\"')
+    # bs #60: css_attr / quote_value pick the quote kind and return "" when Robot would change the value.
+    if element_data["dataQa"] and (data_qa_css := css_attr("data-qa", element_data["dataQa"])):
         locator_strategies.append(
             {
                 "type": "data-qa",
-                "locator": f'[data-qa="{data_qa_escaped}"]',
+                "locator": data_qa_css,
                 "priority": PRIORITY_TEST_ID,
                 "strategy": "QA attribute",
             }
@@ -3613,73 +3621,71 @@ def _build_coordinate_strategies(element_data: dict) -> list[dict]:
     # Strategy 5: name (Priority 3)
     # Browser Library (Playwright) has no name= engine — only the CSS
     # attribute form resolves.
-    if element_data["name"]:
-        name_escaped = element_data["name"].replace('"', '\\"')
+    if element_data["name"] and (name_css := css_attr("name", element_data["name"])):
         locator_strategies.append(
             {
                 "type": "name",
-                "locator": f'[name="{name_escaped}"]',
+                "locator": name_css,
                 "priority": PRIORITY_NAME,
                 "strategy": "Name attribute",
             }
         )
 
     # Strategy 6: aria-label (Priority 4)
-    if element_data["ariaLabel"]:
-        aria_label_escaped = element_data["ariaLabel"].replace('"', '\\"')
+    if element_data["ariaLabel"] and (
+        aria_css := css_attr("aria-label", element_data["ariaLabel"])
+    ):
         locator_strategies.append(
             {
                 "type": "aria-label",
-                "locator": f'[aria-label="{aria_label_escaped}"]',
+                "locator": aria_css,
                 "priority": PRIORITY_ARIA_LABEL,
                 "strategy": "ARIA label",
             }
         )
 
     # Strategy 7: placeholder (Priority 5)
-    if element_data["placeholder"]:
-        placeholder_escaped = element_data["placeholder"].replace('"', '\\"')
+    if element_data["placeholder"] and (
+        placeholder_css := css_attr("placeholder", element_data["placeholder"])
+    ):
         locator_strategies.append(
             {
                 "type": "placeholder",
-                "locator": f'[placeholder="{placeholder_escaped}"]',
+                "locator": placeholder_css,
                 "priority": PRIORITY_PLACEHOLDER,
                 "strategy": "Placeholder attribute",
             }
         )
 
     # Strategy 8: title (Priority 5)
-    if element_data["title"]:
-        title_escaped = element_data["title"].replace('"', '\\"')
+    if element_data["title"] and (title_css := css_attr("title", element_data["title"])):
         locator_strategies.append(
             {
                 "type": "title",
-                "locator": f'[title="{title_escaped}"]',
+                "locator": title_css,
                 "priority": PRIORITY_PLACEHOLDER,
                 "strategy": "Title attribute",
             }
         )
 
     # Strategy 9: Text content (Priority 6)
-    if element_data["innerText"] and len(element_data["innerText"]) > MIN_TEXT_LENGTH:
-        # Escape quotes in text
-        text = element_data["innerText"].replace('"', '\\"')
+    text_q = quote_value(element_data["innerText"], collapse=True)
+    if text_q and len(element_data["innerText"]) > MIN_TEXT_LENGTH:
         locator_strategies.append(
             {
                 "type": "text",
-                "locator": f'text="{text}"',
+                "locator": f"text={text_q}",
                 "priority": PRIORITY_TEXT,
                 "strategy": "Visible text content",
             }
         )
 
     # Strategy 10: Role + Name (Priority 7)
-    if element_data["role"] and element_data["innerText"]:
-        text = element_data["innerText"].replace('"', '\\"')
+    if element_data["role"] and text_q:
         locator_strategies.append(
             {
                 "type": "role",
-                "locator": f'role={element_data["role"]}[name="{text}"]',
+                "locator": f"role={element_data['role']}[name={text_q}]",
                 "priority": PRIORITY_ROLE,
                 "strategy": "ARIA role with name",
             }

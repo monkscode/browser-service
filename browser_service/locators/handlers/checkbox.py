@@ -41,6 +41,8 @@ from typing import TYPE_CHECKING, Optional
 
 import structlog
 
+from browser_service.locators.css_tokens import css_attr
+
 from .base import build_locator_result
 
 if TYPE_CHECKING:
@@ -270,11 +272,6 @@ el => {
 """
 
 
-def _css_quote(value: str) -> str:
-    """Escape a raw value for embedding in a double-quoted CSS string."""
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
 async def _probe_hidden_input(search_context, input_locator: str) -> Optional[dict]:
     """Return the hidden-input probe payload, or None when no redirect applies.
 
@@ -302,16 +299,18 @@ def _proxy_candidates(input_locator: str, probe: dict) -> list[tuple[str, str]]:
     """Ordered ``(selector, kind)`` proxy candidates for a hidden input."""
     el_id = (probe.get("id") or "").strip()
     # CSS form of the input, needed for :has() and sibling candidates.
-    # Attribute-selector form avoids CSS identifier-escaping issues.
-    input_css: Optional[str] = f'input[id="{_css_quote(el_id)}"]' if el_id else None
+    # Attribute-selector form avoids CSS identifier-escaping issues; bs #60: the quote
+    # kind the id needs, "" when Robot would change it.
+    id_css = css_attr("id", el_id) if el_id else ""
+    input_css: Optional[str] = f"input{id_css}" if id_css else None
     if input_css is None:
         loc = input_locator.strip()
         if not (loc.startswith(("xpath=", "text=", "role=", "//")) or ">>" in loc):
             input_css = loc  # already a plain CSS selector
 
     candidates: list[tuple[str, str]] = []
-    if el_id and probe.get("hasLabelFor"):
-        candidates.append((f'label[for="{_css_quote(el_id)}"]', "label-for"))
+    if id_css and probe.get("hasLabelFor"):
+        candidates.append((f"label{css_attr('for', el_id)}", "label-for"))
     if input_css and probe.get("hasWrappingLabel"):
         candidates.append((f"label:has({input_css})", "wrapping-label"))
     if input_css and probe.get("siblingTag"):

@@ -32,6 +32,7 @@ Depends on:
 import logging
 from typing import Optional
 
+from browser_service.locators.css_tokens import css_attr
 from browser_service.locators.handlers.base import build_locator_result
 from browser_service.locators.stability import STABLE, score_stability
 
@@ -92,11 +93,10 @@ async def find_locator(
         candidates.append((f"id={input_id}", "file-input id"))
     elif input_id:
         candidates.append((f"id={input_id}", "file-input id (volatile)"))
-    if input_name:
-        escaped_name = input_name.replace("\\", "\\\\").replace('"', '\\"')
+    if input_name and (name_css := css_attr("name", input_name)):  # bs #60
         candidates.append(
             (
-                f'input[type="file"][name="{escaped_name}"]',
+                f'input[type="file"]{name_css}',
                 "file-input name",
             )
         )

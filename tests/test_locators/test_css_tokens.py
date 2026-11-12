@@ -88,4 +88,5 @@ def test_css_attr_is_the_one_quoting_place():
     assert css_attr("title", "a b") == ""  # whitespace: skipped (bs #60 may extend)
     assert css_attr("data-x", "1/2") == '[data-x="1/2"]'
     assert css_attr("class", "w-1/2", "~=") == '[class~="w-1/2"]'
-    assert can_quote("a:b") and not can_quote("a${b}")
+    assert can_quote("a:b")
+    assert not can_quote("a${b}")

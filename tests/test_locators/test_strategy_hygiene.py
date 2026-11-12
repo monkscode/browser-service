@@ -277,21 +277,21 @@ class TestCssEscaping:
 
     def test_css_class_escapes_tailwind_slash(self):
         strategies = _build_coordinate_strategies(make_element_data(className="w-1/2 p-4"))
-        assert by_type(strategies, "css-class")[0]["locator"] == "button.w-1\\/2"
+        assert by_type(strategies, "css-class")[0]["locator"] == 'button[class~="w-1/2"]'
 
     def test_css_parent_id_escapes_id_and_class(self):
         strategies = _build_coordinate_strategies(
             make_element_data(parentId="form:main", className="w-1/2 p-4")
         )
         locator = by_type(strategies, "css-parent-id")[0]["locator"]
-        assert locator == "#form\\:main button.w-1\\/2"
+        assert locator == '[id="form:main"] button[class~="w-1/2"]'
 
     def test_css_nth_child_escapes_parent_class(self):
         strategies = _build_coordinate_strategies(
             make_element_data(parentClass="grid-2/3 wrap", siblingIndex=2)
         )
         locator = by_type(strategies, "css-nth-child")[0]["locator"]
-        assert locator == ".grid-2\\/3 > button:nth-child(2)"
+        assert locator == '[class~="grid-2/3"] > button:nth-child(2)'
 
     def test_unescapable_parent_id_skips_css_strategy_only(self):
         """Whitespace inside an id cannot be CSS-escaped -> skip Strategy 11.
@@ -310,6 +310,25 @@ class TestCssEscaping:
         )
         assert by_type(strategies, "css-parent-id")[0]["locator"] == "#formMain button.btn"
         assert by_type(strategies, "css-class")[0]["locator"] == "button.btn"
+
+    def test_digit_leading_and_dash_leading_ids_are_quoted(self):
+        # "#1st" is invalid CSS and a bare "#-side" cell is a Robot comment: both ship as [id="..."]
+        for pid in ("1st", "-side", "2xl:p-4"):
+            strategies = _build_coordinate_strategies(
+                make_element_data(parentId=pid, className="btn")
+            )
+            locator = by_type(strategies, "css-parent-id")[0]["locator"]
+            assert locator == f'[id="{pid}"] button.btn'
+
+    def test_token_robot_would_read_as_a_variable_skips_the_css_strategy(self):
+        for token in ("a${b}", "a@{b}", "a&{b}", "a%{b}", 'a"b', "a" + chr(92) + "b"):
+            strategies = _build_coordinate_strategies(
+                make_element_data(
+                    parentId=token, className=token, parentClass=token, siblingIndex=2
+                )
+            )
+            for type_name in ("css-parent-id", "css-nth-child", "css-class"):
+                assert by_type(strategies, type_name) == [], (token, type_name)
 
     def test_xpath_class_strategies_keep_raw_slash(self):
         strategies = _build_coordinate_strategies(

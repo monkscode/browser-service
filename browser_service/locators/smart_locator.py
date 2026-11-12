@@ -12,7 +12,7 @@ import re
 from typing import Any, Optional
 
 from browser_service.locators.action_fit import check_action_fit
-from browser_service.locators.css_tokens import css_attr, css_class, css_id, quote_value
+from browser_service.locators.css_tokens import css_attr, css_class, css_id, quote_value, robot_safe
 from browser_service.locators.frame_locator import add_frame, apply_frame_to_result, strip_frame
 from browser_service.locators.hidden_value import (
     HIDES_VALUE_JS,
@@ -1667,8 +1667,8 @@ async def _find_element_by_description(
             ]
         )
 
-        # Try each selector
-        for selector in selectors_to_try:
+        # Try each selector (bs #60: one Robot would change is never tried)
+        for selector in filter(robot_safe, selectors_to_try):
             try:
                 count = await page.locator(selector).count()
                 if count == 1:
@@ -2173,7 +2173,7 @@ async def _find_element_via_accessibility_tree(
                 name_css = css_attr("name", str(info.get("name") or ""))
                 if name_css and tag:
                     candidates.append(f"{tag}{name_css}")
-                for resolved in candidates:
+                for resolved in filter(robot_safe, candidates):  # bs #60
                     if await page.locator(resolved).count() == 1:
                         locator_str = add_frame(resolved, iframe_context)
                         logger.info(
@@ -2885,7 +2885,7 @@ def _build_element_data_candidates(element_data: dict) -> list[dict]:
                 )
                 logger.info(f"   📋 Added parent-context CSS: {css_locator}")
 
-    return locator_candidates
+    return [c for c in locator_candidates if robot_safe(str(c["locator"]))]  # bs #60
 
 
 # Candidate types that identify the ELEMENT ITSELF. Parent-context CSS is
@@ -3857,7 +3857,7 @@ def _build_coordinate_strategies(element_data: dict) -> list[dict]:
     for strategy in locator_strategies:
         strategy["stability"] = _score_strategy_stability(strategy, element_data)
 
-    return locator_strategies
+    return [s for s in locator_strategies if robot_safe(str(s["locator"]))]  # bs #60
 
 
 def _worst_stability(*tiers: str) -> str:

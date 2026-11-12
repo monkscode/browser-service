@@ -20,7 +20,8 @@ TAB, line break, "${"); robot_safe is the rule a whole locator is checked by. cs
 writes every quoted attribute value through quote_value.
 
 Referenced by: locators/smart_locator.py, agent/registration.py, locators/validation.py,
-locators/handlers/checkbox.py, date_picker.py, dropdown.py, file_upload.py
+locators/handlers/checkbox.py, date_picker.py, dropdown.py, file_upload.py,
+locators/read_target.py, agent/actions.py
 Depends on: nothing
 """
 

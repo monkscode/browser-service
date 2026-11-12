@@ -264,6 +264,26 @@ class TestFindUniqueLocatorAction:
         mock_playwright_page.locator.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_robot_unsafe_candidate_delegates_to_cascade(self, mock_playwright_page, cascade):
+        """bs #60: a candidate Robot would change (a backslash) is never validated or shipped."""
+        from browser_service.agent.actions import find_unique_locator_action
+
+        candidate = 'text="Say ' + chr(92) + '"hi' + chr(92) + '" now"'
+        result = await find_unique_locator_action(
+            page=mock_playwright_page,
+            x=100,
+            y=200,
+            element_id="elem_1",
+            element_description="element with a backslash candidate",
+            expected_text="Submit",
+            candidate_locator=candidate,
+        )
+
+        cascade.assert_called_once()
+        assert result == CASCADE_RESULT
+        mock_playwright_page.locator.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_candidate_locator_timeout(self, mock_playwright_page, cascade):
         """Playwright timeout while counting the candidate → fall through, don't raise."""
         import asyncio

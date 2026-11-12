@@ -35,6 +35,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from browser_service.locators.action_fit import FIT_READ_TIMEOUT_MS, READ_ACTIONS
+from browser_service.locators.css_tokens import robot_safe
 from browser_service.locators.hidden_value import HIDES_VALUE_JS
 from browser_service.locators.stability import (
     STABLE,
@@ -382,7 +383,7 @@ async def structural_address(search_context, handle, observed: str) -> Optional[
         # Backstop: never ship a candidate built on a volatile token.
         if any(_is_volatile_token(kind, value) for kind, value in cand.get("tokens") or []):
             continue
-        if carries_value(locator, observed):
+        if carries_value(locator, observed) or not robot_safe(locator):  # bs #60
             continue
         if await _unique_same(search_context, locator, handle):
             return {"locator": locator, "kind": cand.get("kind", "")}

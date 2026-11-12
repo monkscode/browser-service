@@ -1,12 +1,22 @@
 """bs #60: a locator the engine returns must reach the keyword unchanged through a Robot Framework cell.
 
 robot_safe is the rule (Robot 7.4.2's tokenizer + NLRF's css= prefix), written without robotframework.
-quote_value picks the quote kind a value needs, or returns "" for a value Robot would change.
+The builder test feeds every value shape Robot changes into every synchronous builder and asserts each
+output is robot-safe or absent. The async cascade steps (text-first, the description loop, the
+accessibility search, the agent candidate) are covered by the backstop in agent/actions.py.
 """
+
+import types
 
 import pytest
 
-from browser_service.locators.css_tokens import css_attr, quote_value, robot_safe
+from browser_service.agent.registration import _detect_iframe_context
+from browser_service.locators.css_tokens import css_attr, css_class, css_id, quote_value, robot_safe
+from browser_service.locators.smart_locator import (
+    _build_coordinate_strategies,
+    _build_element_data_candidates,
+)
+from browser_service.locators.validation import convert_to_playwright_locator
 
 B = chr(92)
 # Every shape Robot 7.4.2 changes inside a cell (Task 1 runner rows), plus the quote / id shapes.
@@ -134,3 +144,40 @@ PLAIN = [
 @pytest.mark.parametrize("value", PLAIN)
 def test_quote_value_plain_value_is_byte_identical(value):
     assert quote_value(value) == f'"{value}"'
+
+
+def _iframe_node(**attrs):
+    pos = types.SimpleNamespace(x=0, y=0, width=500, height=500)
+    return types.SimpleNamespace(node_name="IFRAME", attributes=attrs, absolute_position=pos)
+
+
+@pytest.mark.parametrize("value", UNSAFE_VALUES + OTHER_VALUES)
+def test_every_builder_output_is_robot_safe_or_absent(value):
+    out = [css_attr("title", value), css_class(value), css_id(value)]
+    out.append(convert_to_playwright_locator(f"name={value}")[0])
+    for key in (
+        "id",
+        "dataTestId",
+        "name",
+        "ariaLabel",
+        "placeholder",
+        "parentId",
+        "parentClassName",
+    ):
+        data = {"tagName": "input", "type": "text", key: value}
+        out += [c["locator"] for c in _build_element_data_candidates(data)]
+    keys = ("id", "name", "dataTestId", "dataTest", "dataQa", "ariaLabel", "placeholder", "title")
+    for key in keys + ("innerText", "className", "parentId", "parentClass", "href"):
+        data = dict.fromkeys(
+            keys + ("innerText", "className", "parentId", "parentClass", "href"), ""
+        )
+        data.update(tagName="a", role="link", textContent=value, value="", alt="", src="", type="")
+        data.update(attributes={}, coordinates={"x": 1, "y": 1}, ariaDescribedby="", siblingIndex=2)
+        data[key] = value
+        out += [s["locator"] for s in _build_coordinate_strategies(data)]
+    for attr in ("id", "name", "title"):
+        prefix, _ = _detect_iframe_context({0: _iframe_node(**{attr: value})}, (10, 10))
+        out.append(prefix)
+    # convert_to_playwright_locator leaves a value it cannot quote as given: the candidate check refuses it
+    unsafe = [o for o in out if o and not robot_safe(o) and not o.startswith("name=")]
+    assert unsafe == [], (value, unsafe)

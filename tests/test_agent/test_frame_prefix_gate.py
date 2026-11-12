@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from browser_service.agent.actions import find_unique_locator_action
+from browser_service.agent.actions import ROBOT_UNSAFE_ERROR, find_unique_locator_action
 
 FRAME = 'iframe[id="editor-frame"]'
 
@@ -157,3 +157,29 @@ async def test_input_error_in_a_frame_is_returned_untouched():
     assert out["found"] is False
     assert out["error_type"] == "PageObjectError"
     assert "iframe_context" not in out
+
+
+async def test_found_result_robot_would_change_is_withheld_at_the_exit(framed_page):
+    unsafe = {
+        "element_id": "elem_1",
+        "found": True,
+        "best_locator": "id=cb" + chr(92) + "x",
+        "all_locators": [{"locator": "id=cb" + chr(92) + "x", "stability": "stable"}],
+    }
+    with _cascade_returning(unsafe):
+        out = await _call(framed_page)
+    assert out["found"] is False
+    assert out["best_locator"] is None
+    assert out["error"] == ROBOT_UNSAFE_ERROR
+
+
+async def test_robot_safe_found_result_leaves_as_the_same_object(framed_page):
+    safe = {
+        "element_id": "elem_1",
+        "found": True,
+        "best_locator": "id=cb",
+        "all_locators": [{"locator": "id=cb", "stability": "stable"}],
+    }
+    with _cascade_returning(safe):
+        out = await _call(framed_page)
+    assert out is safe

@@ -2,7 +2,7 @@
 
 import pytest
 
-from browser_service.locators.css_tokens import can_quote, css_attr, css_class, css_id
+from browser_service.locators.css_tokens import css_attr, css_class, css_id, quote_value
 
 
 class TestCssClass:
@@ -40,7 +40,7 @@ class TestCssClass:
         [
             "",
             None,
-            'a"b',
+            "a\"b'c",
             "a\\b",
             "a\\nb",
             "a b",
@@ -72,7 +72,7 @@ class TestCssId:
         # any other bare "#..." cell is a Robot comment, so these are quoted.
         assert css_id(token) == f'[id="{token}"]'
 
-    @pytest.mark.parametrize("token", ["", None, 'a"b', "a\\b", "a b", "a${b}"])
+    @pytest.mark.parametrize("token", ["", None, "a\"b'c", "a\\b", "a b", "a${b}"])
     def test_unsafe_token_is_skipped(self, token):
         assert css_id(token) == ""
 
@@ -85,8 +85,9 @@ class TestNoBackslashEver:
 
 
 def test_css_attr_is_the_one_quoting_place():
-    assert css_attr("title", "a b") == ""  # whitespace: skipped (bs #60 may extend)
+    assert css_attr("title", "a b") == '[title="a b"]'  # bs #60: one space is a value, not a split
+    assert css_attr("title", "a  b") == ""  # two spaces: Robot splits the cell
     assert css_attr("data-x", "1/2") == '[data-x="1/2"]'
     assert css_attr("class", "w-1/2", "~=") == '[class~="w-1/2"]'
-    assert can_quote("a:b")
-    assert not can_quote("a${b}")
+    assert quote_value("a:b") == '"a:b"'
+    assert quote_value("a${b}") == ""

@@ -321,7 +321,7 @@ class TestCssEscaping:
             assert locator == f'[id="{pid}"] button.btn'
 
     def test_token_robot_would_read_as_a_variable_skips_the_css_strategy(self):
-        for token in ("a${b}", "a@{b}", "a&{b}", "a%{b}", 'a"b', "a" + chr(92) + "b"):
+        for token in ("a${b}", "a@{b}", "a&{b}", "a%{b}", "a\"b'c", "a" + chr(92) + "b"):
             strategies = _build_coordinate_strategies(
                 make_element_data(
                     parentId=token, className=token, parentClass=token, siblingIndex=2

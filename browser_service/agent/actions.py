@@ -474,22 +474,22 @@ async def _same_element(search_root, result, candidate, action, iframe_context=N
     return same
 
 
-async def _row_datum_cures(
+async def _settle_row_datum(
     result, fallback_result, action, search_root, iframe_context, row_datum, expected_text
-) -> bool:
-    """bs #61: a found answer that names the row, is not value-holding on a read step, and is the same element."""
+) -> Dict[str, Any]:
+    """bs #61: the answer when it names the row, is not value-holding on a read step and is the same element, else the candidate."""
     if not (
         result.get("found")
         and carries_row_anchor(result.get("best_locator"), row_datum)
         and not (action in READ_ACTIONS and carries_value(result["best_locator"], expected_text))
         and await _same_element(search_root, result, fallback_result, action, iframe_context)
     ):
-        return False
+        return fallback_result
     logger.info(
         f"   ↪ ROW DATUM: '{result.get('best_locator')}' names the row '{row_datum}' — "
         f"replaces '{fallback_result.get('best_locator')}' (signal: row-datum-replaced)"
     )
-    return True
+    return result
 
 
 async def _settle_action_fit(
@@ -519,10 +519,9 @@ async def _settle_action_fit(
        decision, smart_locator._generate_locators_from_element_data sort).
     """
     if fallback_result is not None and row_datum:
-        cured = await _row_datum_cures(
+        return await _settle_row_datum(
             result, fallback_result, action, search_root, iframe_context, row_datum, expected_text
         )
-        return result if cured else fallback_result
     if fallback_result is not None:
         if result.get("found") and (
             fallback_result.get("action_fit") == "misfit"

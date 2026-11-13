@@ -164,6 +164,8 @@ async def _call(page, **overrides):
         page=page,
     )
     kwargs.update(overrides)
+    # bs #64: the exit counts the string it ships; the cascade's string counts 1.
+    page._locators.setdefault(CASCADE_RESULT["best_locator"], FakeLocator(1))
     with patch(
         "browser_service.locators.find_unique_locator_at_coordinates",
         return_value=dict(CASCADE_RESULT),

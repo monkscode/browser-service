@@ -13,7 +13,7 @@ collections get no exception).
 """
 
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -100,7 +100,8 @@ async def test_the_refusal_is_logged_as_one_signal_line(page, cascade, caplog):
 async def test_expected_text_is_evidence_and_the_candidate_is_counted(page, cascade):
     result = await _call(page, expected_text="Submit", candidate_locator="id=submit")
 
-    page.locator.assert_called_with("id=submit")  # got past the rule: the candidate was counted
+    # got past the rule: the candidate was counted first (bs #64: the shipped string is counted after)
+    assert page.locator.call_args_list[0] == call("id=submit")
     cascade.assert_called_once()  # count 0, so the cascade carries on
     assert "evidence" not in result
 

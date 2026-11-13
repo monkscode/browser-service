@@ -138,7 +138,8 @@ CANDIDATE = f'[aria-label="{SEARCH_TEXT}"]'
 
 
 async def _call(action, cascade):
-    page = FakePage({CANDIDATE: FakeLocator(1)})
+    # bs #64: the exit counts the string it ships; the cascade's answer counts 1 too.
+    page = FakePage({CANDIDATE: FakeLocator(1), FOUND_STABLE["best_locator"]: FakeLocator(1)})
     with patch("browser_service.locators.find_unique_locator_at_coordinates", new=cascade):
         return await find_unique_locator_action(
             x=100,

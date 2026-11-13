@@ -105,7 +105,8 @@ class FakePage:
     url = "https://books.toscrape.com"
 
     def __init__(self, locators: dict):
-        self._locators = locators
+        # bs #64: the action's exit counts the string it ships; the cascade's string counts 1.
+        self._locators = {CASCADE_RESULT["best_locator"]: FakeLocator(1), **locators}
 
     def locator(self, selector: str) -> FakeLocator:
         return self._locators.get(selector, FakeLocator(0))

@@ -98,7 +98,13 @@ class FakePage:
 
 
 def _page(resolved=U07_RESOLVED_H6, count=1):
-    return FakePage({U07_CANDIDATE: FakeLocator(count, resolved)})
+    # bs #64: the string the cascade ships (the sidebar one) is counted at the exit — 1 match.
+    return FakePage(
+        {
+            U07_CANDIDATE: FakeLocator(count, resolved),
+            SIDEBAR_CASCADE_RESULT["best_locator"]: FakeLocator(1),
+        }
+    )
 
 
 async def _call(page, facts, **overrides):

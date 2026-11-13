@@ -41,8 +41,13 @@ from browser_service.locators.click_target import find_inner_control
 from browser_service.locators.css_tokens import robot_safe
 from browser_service.locators.frame_locator import ensure_frame_on_result, strip_frame
 from browser_service.locators.hidden_value import HIDES_VALUE_JS
-from browser_service.locators.read_target import apply_read_target_policy
-from browser_service.locators.smart_locator import NO_EVIDENCE_ERROR, _returned_string_matches
+from browser_service.locators.read_target import apply_read_target_policy, carries_value
+from browser_service.locators.smart_locator import (
+    NO_EVIDENCE_ERROR,
+    _returned_string_matches,
+    carries_row_anchor,
+    unanchored_row_datum,
+)
 from browser_service.locators.stability import (
     STABLE,
     VOLATILE,
@@ -476,6 +481,8 @@ async def _settle_action_fit(
     action: str,
     search_root=None,
     iframe_context: Optional[str] = None,
+    row_datum: Optional[str] = None,
+    expected_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Pick the answer once fit mode has run — never worse than today (E2).
 
@@ -483,13 +490,31 @@ async def _settle_action_fit(
        better: any found result beats a misfit candidate; against a
        volatile candidate only a strictly more stable result that resolves
        to the same element (for a click, an element inside it) wins (a tie
-       keeps the agent's).
+       keeps the agent's). A candidate demoted for skipping the row the step
+       names (``row_datum``, bs #61) yields only to a found answer that names
+       that row, is the same element and, on a read step, does not hold the
+       value read; stability rank does not apply.
     2. With no demoted candidate, a found fit-mode result stands.
     3. Fit mode found nothing: today's cascade (action=None) runs and its
        answer is returned flagged action_fit="misfit", so the found rate
        cannot fall below today's (the recorded "found=false must not rise"
        decision, smart_locator._generate_locators_from_element_data sort).
     """
+    if fallback_result is not None and row_datum:
+        if (
+            result.get("found")
+            and carries_row_anchor(result.get("best_locator"), row_datum)
+            and not (
+                action in READ_ACTIONS and carries_value(result["best_locator"], expected_text)
+            )
+            and await _same_element(search_root, result, fallback_result, action, iframe_context)
+        ):
+            logger.info(
+                f"   ↪ ROW DATUM: '{result.get('best_locator')}' names the row '{row_datum}' — "
+                f"replaces '{fallback_result.get('best_locator')}' (signal: row-datum-replaced)"
+            )
+            return result
+        return fallback_result
     if fallback_result is not None:
         if result.get("found") and (
             fallback_result.get("action_fit") == "misfit"
@@ -934,6 +959,7 @@ async def find_unique_locator_action(
         # E2: a candidate that cannot perform the step, or whose id is a
         # session counter, is parked here while the cascade runs first.
         _fallback_result: Optional[Dict[str, Any]] = None
+        _fallback_row_datum: Optional[str] = None
 
         # ========================================
         # STEP 1: Validate Candidate Locator (if provided)
@@ -1282,6 +1308,17 @@ async def find_unique_locator_action(
                                 if action and candidate_stability == VOLATILE
                                 else ""
                             )
+                            _row_datum: Optional[str] = None
+                            if not _demote_reason and action and is_collection is not True:
+                                # bs #61: a positional candidate that skips the row the step names
+                                _row_datum = unanchored_row_datum(
+                                    final_locator, element_description
+                                )
+                                if _row_datum:
+                                    _demote_reason = (
+                                        f"positional candidate does not name the row '{_row_datum}' "
+                                        f"the step names"
+                                    )
                             if not _demote_reason:
                                 _accepted = await apply_read_target_policy(
                                     search_root,
@@ -1307,6 +1344,7 @@ async def find_unique_locator_action(
                                 candidate_result["action_fit"] = "misfit"
                                 candidate_result["action_fit_reason"] = _candidate_misfit
                             _fallback_result = candidate_result
+                            _fallback_row_datum = _row_datum
                     elif count > 1 and is_collection:
                         # A COLLECTION request asked for many, so many matches
                         # is the answer — not a failure. Rejecting the agent's
@@ -1547,7 +1585,14 @@ async def find_unique_locator_action(
                 result = {"found": False, "error": f"fit-mode cascade raised {type(e).__name__}"}
             if action:
                 result = await _settle_action_fit(
-                    result, _fallback_result, _run_cascade, action, search_context, iframe_context
+                    result,
+                    _fallback_result,
+                    _run_cascade,
+                    action,
+                    search_context,
+                    iframe_context,
+                    row_datum=_fallback_row_datum,
+                    expected_text=expected_text,
                 )
                 result = await apply_read_target_policy(
                     search_context,

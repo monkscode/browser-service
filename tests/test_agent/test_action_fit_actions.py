@@ -296,3 +296,65 @@ class TestSameElementGuard:
         out = await _settle_action_fit(res, cand, run, "click", root, "iframe[id=f]")
         assert out["best_locator"] == "iframe[id=f] >>> text=B"
         assert root.selectors == ["id=a", "text=B"]
+
+
+class TestRowDatumCure:
+    """bs #61: a positional candidate that skips the named row is replaced only by an answer that names it."""
+
+    CAND = {"found": True, "best_locator": "#t tr:nth-child(1) a", "stability": "positional"}
+    NAMED = {"found": True, "best_locator": 'tr:has-text("Smith") >> a', "stability": "stable"}
+
+    async def _settle(self, res, root, action="click", expected_text=None, datum="Smith"):
+        run, calls = _cascade()
+        out = await _settle_action_fit(
+            dict(res),
+            dict(self.CAND),
+            run,
+            action,
+            root,
+            row_datum=datum,
+            expected_text=expected_text,
+        )
+        assert calls == []
+        return out
+
+    async def test_answer_naming_the_row_on_the_same_node_replaces_the_candidate(self, caplog):
+        caplog.set_level("INFO", logger="browser_service.agent.actions")
+        out = await self._settle(self.NAMED, _Handle(same=True))
+        assert out["best_locator"] == 'tr:has-text("Smith") >> a'
+        assert "(signal: row-datum-replaced)" in caplog.text
+
+    async def test_answer_lacking_the_datum_keeps_the_candidate(self):
+        res = {**self.NAMED, "best_locator": 'text="edit"'}
+        out = await self._settle(res, _Handle(same=True))
+        assert out["best_locator"] == "#t tr:nth-child(1) a"
+
+    async def test_different_node_keeps_the_candidate(self):
+        out = await self._settle(self.NAMED, _Handle(same=False))
+        assert out["best_locator"] == "#t tr:nth-child(1) a"
+
+    async def test_not_found_keeps_the_candidate(self):
+        out = await self._settle({"found": False, "error": "x"}, _Handle(same=True))
+        assert out["best_locator"] == "#t tr:nth-child(1) a"
+
+    async def test_read_step_answer_holding_the_value_keeps_the_candidate(self):
+        res = {**self.NAMED, "best_locator": 'tr:has-text("Smith") >> text="Jason"'}
+        out = await self._settle(res, _Handle(same=True), "get_text", "Jason")
+        assert out["best_locator"] == "#t tr:nth-child(1) a"
+
+    async def test_read_step_answer_without_the_value_replaces(self):
+        out = await self._settle(self.NAMED, _Handle(same=True), "get_text", "Jason")
+        assert out["best_locator"] == 'tr:has-text("Smith") >> a'
+
+    async def test_stability_rank_does_not_decide_a_datum_demotion(self):
+        # misfit candidates would take ANY found answer; a datum demotion must not.
+        res = {**self.NAMED, "best_locator": "xpath=//div[3]", "stability": "positional"}
+        out = await self._settle(res, _Handle(same=True))
+        assert out["best_locator"] == "#t tr:nth-child(1) a"
+
+    async def test_without_a_datum_the_old_rule_is_unchanged(self):
+        run, _ = _cascade()
+        out = await _settle_action_fit(
+            dict(FOUND_STABLE), dict(CAND_VOLATILE), run, "click", _Handle(same=True)
+        )
+        assert out["best_locator"] == 'text="Blue"'

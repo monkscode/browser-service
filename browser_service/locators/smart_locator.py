@@ -917,6 +917,29 @@ def candidate_targets_row_anchor(
     return anchor in candidate_locator.split(">>")[-1]
 
 
+_ROW_HOP_RE = re.compile(r"\b(?:tr|li):has-text\(\s*(['\"])(.*?)\1\s*\)")
+
+
+def carries_row_anchor(locator: Optional[str], anchor: Optional[str]) -> bool:
+    """bs #61: the locator scopes to the row by ``anchor`` — a tr / li ``:has-text`` hop whose literal equals it."""
+    want = " ".join((anchor or "").split()).casefold()
+    return bool(want) and any(
+        " ".join(m.group(2).split()).casefold() == want for m in _ROW_HOP_RE.finditer(locator or "")
+    )
+
+
+def unanchored_row_datum(
+    candidate_locator: Optional[str], element_description: Optional[str]
+) -> Optional[str]:
+    """bs #61: the row datum the step names (3+ chars) when a POSITIONAL candidate does not carry it, else None."""
+    if not candidate_locator or not is_positional_locator(candidate_locator):
+        return None
+    anchor = _derive_row_anchor_text_from_description(element_description)
+    if not anchor or len(anchor) < 3 or carries_row_anchor(candidate_locator, anchor):
+        return None
+    return anchor
+
+
 def _should_treat_as_collection(
     is_collection: Optional[bool],
     element_description: Optional[str],

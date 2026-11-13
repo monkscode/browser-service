@@ -426,6 +426,22 @@ async def _find_matching_label(page, text: str) -> Optional[str]:
     return None
 
 
+async def _counted(page, preferred: str, counted: str) -> str:
+    """bs #64: ``preferred`` when it matches exactly one element here, else ``counted``.
+
+    ``counted`` is the selector the caller already counted to 1. ``id=x`` matches any element
+    with that id, so a duplicate id elsewhere on the page makes the id string match 2.
+    """
+    if preferred == counted:
+        return counted
+    try:
+        if await page.locator(preferred).count() == 1:
+            return preferred
+    except Exception:
+        pass
+    return counted
+
+
 async def _resolve_label_for(page, for_attr: str) -> Optional[dict]:
     """``<label for="id">text</label>`` → the checkbox/radio it points at."""
     input_locator = f'input[id="{for_attr}"]'
@@ -436,7 +452,7 @@ async def _resolve_label_for(page, for_attr: str) -> Optional[dict]:
     if input_type not in ("checkbox", "radio"):
         return None
 
-    final_locator = f"id={for_attr}"
+    final_locator = await _counted(page, f"id={for_attr}", input_locator)
     logger.info(
         "checkbox.found_via_label_for",
         input_type=input_type,
@@ -458,6 +474,7 @@ async def _resolve_nested_input(page, label_locator: str) -> Optional[dict]:
             final_locator = f'input[type="checkbox"][name="{checkbox_name}"]'
         else:
             final_locator = nested_checkbox
+        final_locator = await _counted(page, final_locator, nested_checkbox)
 
         logger.info(
             "checkbox.found_nested_in_label",
@@ -480,6 +497,7 @@ async def _resolve_nested_input(page, label_locator: str) -> Optional[dict]:
             final_locator = f'input[type="radio"][name="{radio_name}"]'
         else:
             final_locator = nested_radio
+        final_locator = await _counted(page, final_locator, nested_radio)
 
         logger.info(
             "checkbox.found_nested_in_label",
@@ -549,6 +567,7 @@ async def _resolve_adjacent_input(page, text: str) -> Optional[dict]:
                         final_locator = f'input[type="{input_type}"][name="{input_name}"]'
                     else:
                         continue
+                    final_locator = await _counted(page, final_locator, pattern)
 
                     logger.info(
                         "checkbox.found_adjacent", input_type=input_type, locator=final_locator

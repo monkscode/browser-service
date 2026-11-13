@@ -13,11 +13,11 @@ import logging
 import pytest
 from playwright.async_api import async_playwright
 
-from browser_service.agent import actions
-from browser_service.agent.actions import ROBOT_UNSAFE_ERROR, _through_frame_gate
-
-# Imported defensively so the same file also runs against code that lacks the constant.
-RETURNED_COUNT_ERROR = getattr(actions, "RETURNED_COUNT_ERROR", None)
+from browser_service.agent.actions import (
+    RETURNED_COUNT_ERROR,
+    ROBOT_UNSAFE_ERROR,
+    _through_frame_gate,
+)
 
 FRAME = 'iframe[id="editor-frame"]'
 DUP_PAGE = """<!DOCTYPE html><html><body>

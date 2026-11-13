@@ -634,8 +634,10 @@ def _through_frame_gate(action):
         page = bound.get("page")
         if best and result.get("found") and page is not None:
             root = page.frame_locator(iframe_context) if iframe_context else page
+            # A collection call keeps its string at count >= 1 even when the candidate path said unique.
+            unique = False if bound.get("is_collection") is True else result.get("unique")
             if not await _returned_string_matches(
-                root, {"locator": best, "unique": result.get("unique")}, iframe_context
+                root, {"locator": best, "unique": unique}, iframe_context
             ):
                 logger.warning(
                     f"   ⛔ LOCATOR WITHHELD: {best!r} does not match exactly one element where the "

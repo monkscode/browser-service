@@ -57,7 +57,7 @@ class _FakePage(_Root):
 
 def _gated(result):
     @_through_frame_gate
-    async def action(x, y, page=None, iframe_context=None):
+    async def action(x, y, page=None, iframe_context=None, is_collection=None):
         return result
 
     return action
@@ -88,6 +88,20 @@ async def test_collection_count_three_is_kept():
     result = _found(unique=False)
     out = await _gated(result)(1, 2, page=_FakePage(3))
     assert out is result
+
+
+async def test_collection_call_keeps_an_accepted_candidate_whose_list_grew():
+    # The candidate path reports unique True; the call said is_collection, so a count of 3 is fine.
+    result = _found(unique=True)
+    out = await _gated(result)(1, 2, page=_FakePage(3), is_collection=True)
+    assert out is result
+    assert out["unique"] is True
+
+
+async def test_unique_result_with_count_two_and_no_collection_call_is_withheld():
+    out = await _gated(_found(unique=True))(1, 2, page=_FakePage(2))
+    assert out["found"] is False
+    assert out["error"] == RETURNED_COUNT_ERROR
 
 
 async def test_collection_count_zero_is_withheld():

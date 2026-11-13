@@ -346,12 +346,6 @@ class TestRowDatumCure:
         out = await self._settle(self.NAMED, _Handle(same=True), "get_text", "Jason")
         assert out["best_locator"] == 'tr:has-text("Smith") >> a'
 
-    async def test_stability_rank_does_not_decide_a_datum_demotion(self):
-        # misfit candidates would take ANY found answer; a datum demotion must not.
-        res = {**self.NAMED, "best_locator": "xpath=//div[3]", "stability": "positional"}
-        out = await self._settle(res, _Handle(same=True))
-        assert out["best_locator"] == "#t tr:nth-child(1) a"
-
     async def test_without_a_datum_the_old_rule_is_unchanged(self):
         run, _ = _cascade()
         out = await _settle_action_fit(

@@ -28,7 +28,7 @@ Tests:
   - element_data and candidate-less calls → forwarded to the cascade intact
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import DEFAULT, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -54,7 +54,14 @@ def mock_playwright_page():
     locator_mock.count = AsyncMock(return_value=1)
     locator_mock.first = MagicMock()
     locator_mock.first.text_content = AsyncMock(return_value="Submit")
-    page.locator = MagicMock(return_value=locator_mock)
+    # bs #64: the action's exit counts the string it ships. The cascade sentinel's string
+    # counts 1; every other string answers with `locator.return_value` (a test's own count).
+    cascade_locator = MagicMock()
+    cascade_locator.count = AsyncMock(return_value=1)
+    page.locator = MagicMock(
+        return_value=locator_mock,
+        side_effect=lambda s: cascade_locator if s == CASCADE_RESULT["best_locator"] else DEFAULT,
+    )
 
     return page
 
@@ -260,8 +267,8 @@ class TestFindUniqueLocatorAction:
 
         cascade.assert_called_once()
         assert result == CASCADE_RESULT
-        # A blank string must not reach Playwright at all.
-        mock_playwright_page.locator.assert_not_called()
+        # A blank string must not reach Playwright at all (bs #64: only the shipped string is counted).
+        mock_playwright_page.locator.assert_called_once_with(CASCADE_RESULT["best_locator"])
 
     @pytest.mark.asyncio
     async def test_robot_unsafe_candidate_delegates_to_cascade(self, mock_playwright_page, cascade):
@@ -281,7 +288,8 @@ class TestFindUniqueLocatorAction:
 
         cascade.assert_called_once()
         assert result == CASCADE_RESULT
-        mock_playwright_page.locator.assert_not_called()
+        # The candidate is never validated; only the shipped string is counted (bs #64).
+        mock_playwright_page.locator.assert_called_once_with(CASCADE_RESULT["best_locator"])
 
     @pytest.mark.asyncio
     async def test_candidate_locator_timeout(self, mock_playwright_page, cascade):

@@ -105,7 +105,8 @@ class FakePage:
     url = "https://books.toscrape.com"
 
     def __init__(self, locators: dict):
-        self._locators = locators
+        # bs #64: the exit counts the string it ships; a collection counts N (here 3, unique False).
+        self._locators = {CASCADE_RESULT["best_locator"]: FakeLocator(3), **locators}
 
     def locator(self, selector: str) -> FakeLocator:
         return self._locators.get(selector, FakeLocator(0))
@@ -120,6 +121,7 @@ CASCADE_RESULT = {
     "found": True,
     "best_locator": "ol > li",
     "element_type": "collection",
+    "unique": False,  # production: every collection exit carries a top-level unique False
     "all_locators": [{"type": "collection", "locator": "ol > li"}],
     "element_info": {"tagName": "li"},
     "approach_metrics": {"locator_approach": "collection", "fallback_depth": 3},

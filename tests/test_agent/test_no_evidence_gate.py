@@ -13,7 +13,7 @@ collections get no exception).
 """
 
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -31,14 +31,21 @@ FRAME = 'iframe[id="editor-frame"]'
 
 @pytest.fixture
 def page():
-    """A page that matches nothing; the refusal tests assert it is never touched."""
+    """A page that matches nothing but the cascade's answer; the refusal tests assert it is never touched."""
     locator = MagicMock()
     locator.count = AsyncMock(return_value=0)
+    # bs #64: the exit counts the string it ships, so the cascade's string counts 1.
+    shipped = MagicMock()
+    shipped.count = AsyncMock(return_value=1)
+
+    def by_selector(selector):
+        return shipped if selector == CASCADE_RESULT["best_locator"] else locator
+
     root = MagicMock()
-    root.locator = MagicMock(return_value=locator)
+    root.locator = MagicMock(side_effect=by_selector)
     pg = MagicMock()
     pg.url = "https://example.com/app"
-    pg.locator = MagicMock(return_value=locator)
+    pg.locator = MagicMock(side_effect=by_selector)
     pg.frame_locator = MagicMock(return_value=root)
     return pg
 
@@ -100,7 +107,8 @@ async def test_the_refusal_is_logged_as_one_signal_line(page, cascade, caplog):
 async def test_expected_text_is_evidence_and_the_candidate_is_counted(page, cascade):
     result = await _call(page, expected_text="Submit", candidate_locator="id=submit")
 
-    page.locator.assert_called_with("id=submit")  # got past the rule: the candidate was counted
+    # got past the rule: the candidate was counted, then the string the cascade ships (bs #64)
+    assert page.locator.call_args_list == [call("id=submit"), call("css=.from-cascade")]
     cascade.assert_called_once()  # count 0, so the cascade carries on
     assert "evidence" not in result
 

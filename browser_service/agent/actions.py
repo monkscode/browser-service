@@ -42,7 +42,7 @@ from browser_service.locators.css_tokens import robot_safe
 from browser_service.locators.frame_locator import ensure_frame_on_result, strip_frame
 from browser_service.locators.hidden_value import HIDES_VALUE_JS
 from browser_service.locators.read_target import apply_read_target_policy
-from browser_service.locators.smart_locator import NO_EVIDENCE_ERROR
+from browser_service.locators.smart_locator import NO_EVIDENCE_ERROR, _returned_string_matches
 from browser_service.locators.stability import (
     STABLE,
     VOLATILE,
@@ -58,6 +58,12 @@ logger = logging.getLogger(__name__)
 ROBOT_UNSAFE_ERROR = (
     "The only locator found holds characters the generated Robot Framework test would change "
     "(a backslash, a run of spaces, a line break or a ${...}); it was not used."
+)
+
+# bs #64: the reason a found locator is withheld (it counts other than one where the test applies it).
+RETURNED_COUNT_ERROR = (
+    "The only locator found matches more than one element, or none, where the generated Robot "
+    "Framework test would use it; it was not used."
 )
 
 
@@ -597,14 +603,18 @@ def _through_frame_gate(action):
     The wrapper also withholds a found locator the test's Robot cell would
     change (``robot_safe`` False): it comes back ``found`` False,
     ``best_locator`` None, ``error`` ``ROBOT_UNSAFE_ERROR``. A safe result
-    still comes back as the same object.
+    still comes back as the same object. A third check (bs #64) counts the
+    returned string where the test applies it — frame hop stripped, counted
+    inside the frame — and withholds it (``RETURNED_COUNT_ERROR``) unless it
+    matches exactly one element (at least one for a collection).
     """
     signature = inspect.signature(action)
 
     @functools.wraps(action)
     async def gated(*args, **kwargs):
         result = await action(*args, **kwargs)
-        iframe_context = signature.bind(*args, **kwargs).arguments.get("iframe_context")
+        bound = signature.bind(*args, **kwargs).arguments
+        iframe_context = bound.get("iframe_context")
         bare = result.get("best_locator") if isinstance(result, dict) else None
         result = ensure_frame_on_result(result, iframe_context)
         if isinstance(result, dict) and result.get("best_locator") != bare:
@@ -620,9 +630,29 @@ def _through_frame_gate(action):
                 f"(signal: robot-unsafe-withheld)"
             )
             result = {**result, "found": False, "best_locator": None, "error": ROBOT_UNSAFE_ERROR}
-        return result
+            return result
+        return await _withhold_uncounted(result, bound)
 
     return gated
+
+
+async def _withhold_uncounted(result: Dict[str, Any], bound: Dict[str, Any]) -> Dict[str, Any]:
+    """bs #64: the result withheld unless its string matches exactly 1 where the test applies it, >= 1 for a collection call or result."""
+    best = result.get("best_locator") if isinstance(result, dict) else None
+    page = bound.get("page")
+    if not (best and result.get("found") and page is not None):
+        return result
+    iframe_context = bound.get("iframe_context")
+    root = page.frame_locator(iframe_context) if iframe_context else page
+    # A collection call keeps its string at count >= 1 even when the candidate path said unique.
+    unique = False if bound.get("is_collection") is True else result.get("unique")
+    if await _returned_string_matches(root, {"locator": best, "unique": unique}, iframe_context):
+        return result
+    logger.warning(
+        f"   ⛔ LOCATOR WITHHELD: {best!r} does not match exactly one element where the "
+        f"test applies it (signal: returned-string-count-withheld)"
+    )
+    return {**result, "found": False, "best_locator": None, "error": RETURNED_COUNT_ERROR}
 
 
 async def _reaimed(action, call, inner, search_root, frame) -> Optional[Dict[str, Any]]:

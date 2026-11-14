@@ -2162,9 +2162,10 @@ def register_custom_actions(
                                         f"⛔ ELEMENT VERIFIER NOT FOUND for {params.element_id} after "
                                         f"{_v_n} rejections (signal: element-verifier-not-found)"
                                     )
+                                    # No error: browser-use counts an error result as an agent
+                                    # failure, and 5 in a row end the run (max_failures).
                                     return ActionResult(
                                         extracted_content=final_msg,
-                                        error=final_msg,
                                         is_done=False,
                                         metadata=_v_meta,
                                     )

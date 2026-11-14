@@ -133,8 +133,11 @@ async def test_first_mismatch_reasks_with_reason_screenshot_and_found_false():
 
 async def test_second_mismatch_is_not_found_and_says_do_not_retry():
     (_, second), m = await _run(["elem_2", "elem_2"], [("mismatch", REASON)] * 2)
-    assert "NOT FOUND" in second.error
-    assert "do not retry" in second.error.lower()
+    assert "NOT FOUND" in second.extracted_content
+    assert "do not retry" in second.extracted_content.lower()
+    # no error: browser-use counts an error result as an agent failure (5 in a row end the run)
+    assert second.error is None
+    assert second.is_done is not True
     assert second.long_term_memory is None
     assert not second.metadata.get("include_screenshot")
     assert second.metadata["found"] is False
@@ -146,8 +149,19 @@ async def test_second_mismatch_is_not_found_and_says_do_not_retry():
 async def test_action_step_not_found_says_do_not_perform():
     (_, click_nf), _ = await _run(["elem_1", "elem_1"], [("mismatch", REASON)] * 2)
     (_, read_nf), _ = await _run(["elem_2", "elem_2"], [("mismatch", REASON)] * 2)
-    assert "do not perform this step's action yourself" in click_nf.error.lower()
-    assert "perform" not in read_nf.error.lower()
+    assert "do not perform this step's action yourself" in click_nf.extracted_content.lower()
+    assert "perform" not in read_nf.extracted_content.lower()
+    assert click_nf.error is None and read_nf.error is None
+
+
+async def test_verifier_answers_never_chain_into_agent_failures():
+    """Two elements rejected twice, then a third rejected once: no two results in a row carry error."""
+    third = {"id": "elem_3", "action": "click", "value": "", "description": "the cart icon"}
+    calls = ["elem_1", "elem_1", "elem_2", "elem_2", "elem_3"]
+    results, _ = await _run(calls, [("mismatch", REASON)] * 5, elements=(CLICK, READ, third))
+    errors = [r.error is not None for r in results]
+    assert errors == [True, False, True, False, True]
+    assert not any(a and b for a, b in zip(errors, errors[1:]))
 
 
 async def test_match_proceeds_to_the_interaction(caplog):

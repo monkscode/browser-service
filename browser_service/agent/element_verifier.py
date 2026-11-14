@@ -8,7 +8,7 @@ inside an ``[nlrf-secret]`` element or an ``<input type=password>`` is dropped f
 a missing fact read, a timeout, an exception or a malformed reply is a "skipped" outcome, never a verdict, and
 ``verify_pick`` never raises. The prompt is the one measured by the bs #62 spike, plus three rulings.
 
-Referenced by: nothing yet (agent/actions.py find_unique_locator wires it in Task 2)
+Referenced by: agent/registration.py (the find_unique_locator handler)
 Depends on: locators/hidden_value.py; browser_use.llm.messages (the llm object is passed in)
 """
 

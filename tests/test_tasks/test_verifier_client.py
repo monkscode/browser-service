@@ -126,12 +126,13 @@ class _Tracker:
         self.registered.append(llm)
 
 
-def _run(harness, flag, monkeypatch, llm=None, tracker=True):
+def _run(harness, flag, llm=None, tracker=True, custom_actions=True):
     from unittest.mock import patch
 
     from browser_service.tasks import workflow as wf
 
     harness.config.locator.enable_element_verifier = flag
+    harness.config.enable_custom_actions = custom_actions
     arm(harness, [])
     if llm is not None:
         harness.chat_google.return_value = llm
@@ -145,36 +146,70 @@ def _run(harness, flag, monkeypatch, llm=None, tracker=True):
     return register, trk
 
 
-def test_flag_off_passes_no_verifier(workflow_harness, monkeypatch):
-    register, trk = _run(workflow_harness, False, monkeypatch, llm=_DataclassLlm())
+def test_flag_off_passes_no_verifier(workflow_harness):
+    register, trk = _run(workflow_harness, False, llm=_DataclassLlm())
     assert register.call_args.kwargs["verifier_llm"] is None
     assert register.call_args.kwargs["user_query"] == "find the search box"
     assert trk.registered == []
 
 
-def test_flag_on_with_a_non_dataclass_client_passes_none_and_warns_once(
-    workflow_harness, monkeypatch, caplog
-):
+def test_flag_on_with_a_non_dataclass_client_passes_none_and_warns_once(workflow_harness, caplog):
     with caplog.at_level(logging.WARNING):
-        register, _ = _run(workflow_harness, True, monkeypatch)  # the harness's MagicMock client
+        register, _ = _run(workflow_harness, True)  # the harness's MagicMock client
     assert register.call_args.kwargs["verifier_llm"] is None
     assert len([r for r in caplog.records if "verifier" in r.getMessage().lower()]) == 1
 
 
-def test_flag_on_hands_the_clone_and_the_query_to_registration(workflow_harness, monkeypatch):
+def test_flag_on_hands_the_clone_and_the_query_to_registration(workflow_harness):
     original = _DataclassLlm()
-    register, trk = _run(workflow_harness, True, monkeypatch, llm=original)
+    register, trk = _run(workflow_harness, True, llm=original)
     clone = register.call_args.kwargs["verifier_llm"]
     assert isinstance(clone, _DataclassLlm) and clone is not original
     assert clone.max_retries == 1 and original.max_retries == 9
+    assert "ainvoke" in vars(clone)  # its own timing wrap, not the original's
     assert register.call_args.kwargs["user_query"] == "find the search box"
     assert trk.registered == [clone]
 
 
-def test_a_failed_token_registration_drops_the_verifier(workflow_harness, monkeypatch, caplog):
+def test_a_failed_token_registration_drops_the_verifier(workflow_harness, caplog):
     with caplog.at_level(logging.WARNING):
         register, _ = _run(
-            workflow_harness, True, monkeypatch, llm=_DataclassLlm(), tracker=False
+            workflow_harness, True, llm=_DataclassLlm(), tracker=False
         )  # FakeAgent has no token_cost_service -> AttributeError
     assert register.call_args.kwargs["verifier_llm"] is None
     assert any("verifier" in r.getMessage().lower() for r in caplog.records)
+
+
+def _verifier_log(caplog):
+    return [
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("Element verifier:")
+    ]
+
+
+@pytest.mark.parametrize(
+    "flag, custom, llm, expected",
+    [
+        (True, True, _DataclassLlm(), "Element verifier: on"),
+        (False, True, _DataclassLlm(), "Element verifier: off (flag)"),
+        (True, False, _DataclassLlm(), "Element verifier: off (custom actions off)"),
+        (True, True, None, "Element verifier: off (client clone failed)"),
+    ],
+)
+def test_one_log_line_with_the_final_state(workflow_harness, caplog, flag, custom, llm, expected):
+    with caplog.at_level(logging.INFO):
+        _run(workflow_harness, flag, llm=llm, custom_actions=custom)
+    assert _verifier_log(caplog) == [expected]
+
+
+def test_a_failed_token_registration_logs_the_final_state_off(workflow_harness, caplog):
+    with caplog.at_level(logging.INFO):
+        _run(workflow_harness, True, llm=_DataclassLlm(), tracker=False)
+    assert _verifier_log(caplog) == ["Element verifier: off (token tracking failed)"]
+
+
+def test_custom_actions_off_takes_no_clone(workflow_harness):
+    from unittest.mock import patch
+
+    with patch("dataclasses.replace") as replace:
+        _run(workflow_harness, True, llm=_DataclassLlm(), custom_actions=False)
+    replace.assert_not_called()

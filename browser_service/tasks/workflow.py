@@ -423,11 +423,8 @@ def extract_agent_diagnostics(
         of API calls — a provider-side parse retry makes up to 5 API calls
         inside one ainvoke; see instrument_llm_timing.
       - positive — a second LLM instance got registered and we never saw its
-        calls. Unreachable today: page_extraction_llm and judge_llm both
-        default to the same object (service.py:253-255), register_llm
-        early-returns on a duplicate instance id (tokens/service.py:361-363),
-        and compaction_llm/fallback_llm are None. Kept as a guard against a
-        future Agent(...) kwarg change.
+        calls. The element verifier's client is such a second instance; the
+        gap stays <= 0 only because that client is timed into the same list.
     """
     dom_max, dom_median = summarize_dom_samples(dom_samples)
     # `is not None`, never truthiness: an empty list means "wrapped, zero calls",
@@ -805,19 +802,25 @@ def process_workflow_task(
             llm_durations = instrument_llm_timing(llm_instance)
 
             # bs #62: the element verifier's client is a clone of the agent's own with one
-            # retry. replace() copies dataclass fields only, so the clone does not inherit
+            # retry, built only when custom actions will run (the handler is its only user).
+            # replace() copies dataclass fields only, so the clone does not inherit
             # the timing wrap above — time it into the same list, before Agent(...).
             verifier_llm = None
-            if config.locator.enable_element_verifier:
+            verifier_state = "on"
+            if not config.locator.enable_element_verifier:
+                verifier_state = "off (flag)"
+            elif not enable_custom_actions_flag:
+                verifier_state = "off (custom actions off)"
+            else:
                 try:
                     verifier_llm = dataclasses.replace(llm_instance, max_retries=1)
                     instrument_llm_timing(verifier_llm, llm_durations)
                 except Exception as e:
                     verifier_llm = None
+                    verifier_state = "off (client clone failed)"
                     logger.warning(
                         f"Element verifier off: could not clone the model client ({type(e).__name__})"
                     )
-            logger.info(f"Element verifier: {'on' if verifier_llm is not None else 'off'}")
 
             use_vision = _resolve_use_vision(config.agent_vision_mode, enable_custom_actions_flag)
             agent = Agent(
@@ -838,9 +841,11 @@ def process_workflow_task(
                     agent.token_cost_service.register_llm(verifier_llm)
                 except Exception as e:
                     verifier_llm = None
+                    verifier_state = "off (token tracking failed)"
                     logger.warning(
                         f"Element verifier off: could not track its tokens ({type(e).__name__})"
                     )
+            logger.info(f"Element verifier: {verifier_state}")
             _apply_vision_mode(agent, use_vision)
             _prune_unused_actions(agent)
             logger.info(

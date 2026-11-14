@@ -13,14 +13,16 @@ from browser_service.agent.element_verifier import (
     verify_pick,
 )
 
-THREE_LINES = [
+TWO_LINES = [
     "When the element's visible text and its aria-label or title disagree, the visible text is what the user sees "
     'and means; a disagreeing label alone is not a reason for "mismatch".',
-    "For a step that chooses, reads or checks an option of a dropdown, the dropdown that holds that option "
-    "(a <select>, or the custom control that opens its list) is the right element: the option is set and read "
-    "through it.",
     'Leave "reason" empty when the verdict is "match"; otherwise give it in at most 25 words.',
 ]
+DROPPED_DROPDOWN_SENTENCE = (
+    "For a step that chooses, reads or checks an option of a dropdown, the dropdown that holds that option "
+    "(a <select>, or the custom control that opens its list) is the right element: the option is set and read "
+    "through it."
+)
 FACTS = {"tag": "button", "text": "Search", "landmark": "main"}
 
 
@@ -77,10 +79,12 @@ async def test_no_facts_makes_no_call():
     assert llm.calls == []
 
 
-def test_messages_hold_no_value_key_and_the_three_lines():
+def test_messages_hold_no_value_key_and_the_two_lines():
     system, user = build_messages("find shoes", "click the search box", "click", FACTS)
-    for line in THREE_LINES:
+    for line in TWO_LINES:
         assert line in SYSTEM
+    assert DROPPED_DROPDOWN_SENTENCE not in SYSTEM
+    assert "dropdown" not in SYSTEM
     assert system.content == SYSTEM
     body = json.loads(user.content)
     assert set(body) == {"user_request", "step", "action", "element"}

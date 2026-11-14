@@ -87,6 +87,11 @@ class TestElementFactsOnARealDom:
         assert (facts["placeholder"], facts["title"]) == ("Type here", "finder")
         assert "text" not in facts and "role" not in facts
 
+    async def test_id_is_read_and_omitted_when_empty(self, page):
+        await page.set_content('<button id=" x ">Go</button><button>Stop</button>')
+        assert (await read_element_facts(page.locator("button").nth(0)))["id"] == "x"
+        assert "id" not in await read_element_facts(page.locator("button").nth(1))
+
     async def test_element_text_drops_secret_descendant(self, page):
         await page.set_content(SECRETS)
         facts = await read_element_facts(page.locator("#box"))

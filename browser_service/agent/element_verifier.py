@@ -6,7 +6,7 @@ role, labels, landmark, the row's text, the table column). ``verify_pick`` sends
 the step and its action to the model and returns a verdict. The element's typed value is never read or sent; text
 inside an ``[nlrf-secret]`` element or an ``<input type=password>`` is dropped from every text field. Fail-open:
 a missing fact read, a timeout, an exception or a malformed reply is a "skipped" outcome, never a verdict, and
-``verify_pick`` never raises. The prompt is the one measured by the bs #62 spike, plus three rulings.
+``verify_pick`` never raises. The prompt is the one measured by the bs #62 spike, plus two rulings.
 
 Referenced by: agent/registration.py (the find_unique_locator handler)
 Depends on: locators/hidden_value.py; browser_use.llm.messages (the llm object is passed in)
@@ -75,6 +75,7 @@ ELEMENT_FACTS_JS = (
   }
   const facts = {
     tag: el.tagName.toLowerCase(),
+    id: attr('id').trim(),
     text: safeText(el, 80),
     role: attr('role'),
     aria_label: attr('aria-label').trim(),
@@ -93,7 +94,7 @@ ELEMENT_FACTS_JS = (
 }"""
 )
 
-# The spike's SYSTEM verbatim (bench/private/bs62_spike/build_prompts.py), then three rulings.
+# The spike's SYSTEM verbatim (bench/private/bs62_spike/build_prompts.py), then two rulings.
 SYSTEM = (
     "You check one choice made by a web-test generator. A user asked for a test in plain words; a planner split it "
     "into steps; for one step a browser agent picked an element on the page. You get the user's request, the step, "
@@ -106,9 +107,6 @@ SYSTEM = (
     '{"verdict": "match|mismatch|unsure", "reason": "<at most 25 words>"}.'
     " When the element's visible text and its aria-label or title disagree, the visible text is what the user sees "
     'and means; a disagreeing label alone is not a reason for "mismatch".'
-    " For a step that chooses, reads or checks an option of a dropdown, the dropdown that holds that option "
-    "(a <select>, or the custom control that opens its list) is the right element: the option is set and read "
-    "through it."
     ' Leave "reason" empty when the verdict is "match"; otherwise give it in at most 25 words.'
 )
 

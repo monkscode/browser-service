@@ -22,7 +22,7 @@ id that would need a CSS backslash as a quoted attribute, because Robot
 Framework strips backslashes.
 Nothing confirmed → found=False with the reason; registration.py asks the
 agent once more, then reports the element not found. A locate-only step (NLRF
-#162: a wait / hover / count, flagged ``locate_only`` by NLRF) reads no value:
+#162: a wait / hover / upload / count, flagged ``locate_only`` by NLRF) reads no value:
 its text locator stays when it lands on the pointed element, is re-aimed to
 the pointed address otherwise, and is never refused. Untouched: non-read
 actions, iframes, collections, row-anchored results, shadow-root elements,
@@ -602,7 +602,11 @@ async def _lands_on(search_context, locator: str, address: str) -> bool:
                 _LANDS_ON_JS, other, timeout=FIT_READ_TIMEOUT_MS
             )
         )
-    except Exception:
+    except Exception as e:
+        logger.info(
+            f"   📎 LOCATE ADDRESS: could not tell where '{locator}' lands ({type(e).__name__}) — "
+            f"the pointed address is used (signal: locate-address-check-failed)"
+        )
         return False
 
 
@@ -636,8 +640,8 @@ async def apply_read_target_policy(
 ) -> Dict[str, Any]:
     """On a READ step, replace a found locator that carries the value being read with the pointed element's structural address, or return found=False with the reason.
 
-    ``locate_only`` (NLRF #162): the step is a wait / hover / count — it reads no value, so the
-    text locator stays when it lands on the pointed element, is re-aimed to the pointed address
+    ``locate_only`` (NLRF #162): the step is a wait / hover / upload / count — it reads no value,
+    so the text locator stays when it lands on the pointed element, is re-aimed to the pointed address
     when it lands elsewhere, and is never refused.
     """
     if action not in READ_ACTIONS or not result.get("found") or iframe_context:

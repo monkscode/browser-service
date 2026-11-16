@@ -1,4 +1,4 @@
-"""NLRF #162 wiring: the element spec's ``locate_only`` flag reaches the locator engine, and only a literal True counts."""
+"""NLRF #162 wiring: the element spec's ``locate_only`` flag reaches the locator engine (only a literal True counts), and the engine hands it to the read gate."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -12,6 +12,7 @@ from tests.test_agent.test_indexed_read_screen_point import (
     FakeBrowserSession,
     _fake_playwright,
 )
+from tests.test_agent.test_read_step_identity_wiring import ACCEPT, REJECT, _call, _page
 
 
 async def _engine_kwargs(spec_extra):
@@ -44,3 +45,12 @@ async def _engine_kwargs(spec_extra):
 )
 async def test_the_flag_reaches_the_engine(spec_extra, want):
     assert (await _engine_kwargs(spec_extra))["locate_only"] is want
+
+
+@pytest.mark.parametrize("facts, path", [(ACCEPT, "candidate"), (REJECT, "cascade")])
+async def test_the_flag_reaches_the_gate_on_both_paths(facts, path):
+    """The engine hands the flag to the read gate where the agent's candidate is accepted and where the cascade answers."""
+    policy = AsyncMock(side_effect=lambda root, result, *a, **k: result)
+    await _call(_page(), facts, policy=policy, locate_only=True)
+    assert policy.await_count >= 1, path
+    assert all(c.kwargs["locate_only"] is True for c in policy.await_args_list), path

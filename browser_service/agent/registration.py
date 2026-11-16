@@ -1288,7 +1288,7 @@ def register_custom_actions(
                     "value": _elem.get("value", "") or "",
                     # #62: NLRF's own words for the step, logged beside the agent's pick.
                     "description": _elem.get("description", "") or "",
-                    # NLRF #162: every step of this element is a wait / hover / count.
+                    # NLRF #162: every step of this element is a wait / hover / upload / count.
                     "locate_only": _elem.get("locate_only") is True,
                 }
         _expected_element_ids: set = set(_element_specs.keys())

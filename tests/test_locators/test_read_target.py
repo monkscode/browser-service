@@ -5,7 +5,7 @@ import asyncio
 import logging
 import re
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -13,6 +13,7 @@ from browser_service.config import config
 from browser_service.locators.read_target import (
     STRUCTURAL_CANDIDATES_JS,
     TOKENS_JS,
+    _lands_on,
     apply_read_target_policy,
     carries_value,
     displayed_literals,
@@ -237,6 +238,14 @@ class TestLocateOnly:
         out, lands = await self._run(lands_on=False, result={**BASE, "best_locator": ".title"})
         assert out["best_locator"] == ".title"
         lands.assert_not_awaited()
+
+    async def test_an_unreadable_page_is_not_a_landing(self, caplog):
+        """The same-element check fails closed: a page that cannot be read means the pointed address is used, and the log says the check failed."""
+        caplog.set_level(logging.INFO, logger="browser_service.locators.read_target")
+        page = MagicMock()
+        page.locator.return_value.element_handle = AsyncMock(side_effect=RuntimeError("strict"))
+        assert await _lands_on(page, "text=Products", ".title") is False
+        assert "signal: locate-address-check-failed)" in caplog.text
 
     async def test_a_real_read_never_asks_where_the_text_lands(self):
         """Control: without the flag the same verdict rewrites, as before."""

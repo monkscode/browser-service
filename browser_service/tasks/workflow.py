@@ -9,6 +9,7 @@ This module handles the execution of workflow tasks, including:
 """
 
 import asyncio
+import dataclasses
 import json
 import logging
 import re
@@ -270,8 +271,10 @@ def summarize_dom_samples(samples: list[int]) -> tuple[int, int]:
     return (max(samples), int(statistics.median(samples)))
 
 
-def instrument_llm_timing(llm) -> list[float]:
+def instrument_llm_timing(llm, durations: list[float] | None = None) -> list[float]:
     """Wrap llm.ainvoke to record each model call's wall clock.
+
+    Appends to `durations` when given (a second client can share one list), else to a new one.
 
     Returns the list it appends to — one entry per ainvoke, NOT per API call.
     That distinction matters in one direction only. browser-use's empty-action
@@ -331,7 +334,7 @@ def instrument_llm_timing(llm) -> list[float]:
     Records in a finally and catches nothing: a timed-out or cancelled call still
     burned wall clock, and swallowing the exception would change agent behaviour.
     """
-    durations: list[float] = []
+    durations = [] if durations is None else durations
     original = llm.ainvoke
 
     async def timed_ainvoke(messages, output_format=None, **kwargs):
@@ -420,11 +423,8 @@ def extract_agent_diagnostics(
         of API calls — a provider-side parse retry makes up to 5 API calls
         inside one ainvoke; see instrument_llm_timing.
       - positive — a second LLM instance got registered and we never saw its
-        calls. Unreachable today: page_extraction_llm and judge_llm both
-        default to the same object (service.py:253-255), register_llm
-        early-returns on a duplicate instance id (tokens/service.py:361-363),
-        and compaction_llm/fallback_llm are None. Kept as a guard against a
-        future Agent(...) kwarg change.
+        calls. The element verifier's client is such a second instance; the
+        gap stays <= 0 only because that client is timed into the same list.
     """
     dom_max, dom_median = summarize_dom_samples(dom_samples)
     # `is not None`, never truthiness: an empty list means "wrapped, zero calls",
@@ -801,6 +801,27 @@ def process_workflow_task(
             # (service.py:1162), and judge_llm is never invoked (use_judge=False).
             llm_durations = instrument_llm_timing(llm_instance)
 
+            # bs #62: the element verifier's client is a clone of the agent's own with one
+            # retry, built only when custom actions will run (the handler is its only user).
+            # replace() copies dataclass fields only, so the clone does not inherit
+            # the timing wrap above — time it into the same list, before Agent(...).
+            verifier_llm = None
+            verifier_state = "on"
+            if not config.locator.enable_element_verifier:
+                verifier_state = "off (flag)"
+            elif not enable_custom_actions_flag:
+                verifier_state = "off (custom actions off)"
+            else:
+                try:
+                    verifier_llm = dataclasses.replace(llm_instance, max_retries=1)
+                    instrument_llm_timing(verifier_llm, llm_durations)
+                except Exception as e:
+                    verifier_llm = None
+                    verifier_state = "off (client clone failed)"
+                    logger.warning(
+                        f"Element verifier off: could not clone the model client ({type(e).__name__})"
+                    )
+
             use_vision = _resolve_use_vision(config.agent_vision_mode, enable_custom_actions_flag)
             agent = Agent(
                 task=unified_objective,
@@ -814,6 +835,17 @@ def process_workflow_task(
                 calculate_cost=True,
                 use_judge=False,
             )
+            if verifier_llm is not None:
+                # Its tokens must reach the usage summary; an untracked client is never used.
+                try:
+                    agent.token_cost_service.register_llm(verifier_llm)
+                except Exception as e:
+                    verifier_llm = None
+                    verifier_state = "off (token tracking failed)"
+                    logger.warning(
+                        f"Element verifier off: could not track its tokens ({type(e).__name__})"
+                    )
+            logger.info(f"Element verifier: {verifier_state}")
             _apply_vision_mode(agent, use_vision)
             _prune_unused_actions(agent)
             logger.info(
@@ -841,7 +873,12 @@ def process_workflow_task(
                 # expected element IDs have been processed, terminating the agent loop without
                 # relying on the LLM to call done() with the correct JSON format.
                 custom_actions_enabled = register_custom_actions(
-                    agent, page=None, elements=elements, secrets=secrets
+                    agent,
+                    page=None,
+                    elements=elements,
+                    secrets=secrets,
+                    user_query=user_query,
+                    verifier_llm=verifier_llm,
                 )
 
                 if custom_actions_enabled:

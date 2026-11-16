@@ -275,6 +275,7 @@ def workflow_harness():
     fake_config.headless = True
     fake_config.enable_custom_actions = True
     fake_config.agent_vision_mode = "auto"
+    fake_config.locator.enable_element_verifier = False
     fake_config.llm.model_provider = "gemini"
     fake_config.llm.google_model = "gemini-2.5-flash"
     fake_config.llm.google_api_key = "test-key"

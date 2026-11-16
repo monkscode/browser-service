@@ -616,3 +616,18 @@ class TestActionFitFlag:
 
         with patch.dict(os.environ, {"ENABLE_ACTION_FIT": "false"}):
             assert BrowserServiceConfig().locator.enable_action_fit is False
+
+
+class TestElementVerifierFlag:
+    """bs #62: the element verifier ships behind ENABLE_ELEMENT_VERIFIER, default on."""
+
+    def test_flag_defaults_on_and_env_false_turns_it_off(self):
+        from unittest.mock import patch
+
+        from browser_service.config import BrowserServiceConfig
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ENABLE_ELEMENT_VERIFIER", None)
+            assert BrowserServiceConfig().locator.enable_element_verifier is True
+        with patch.dict(os.environ, {"ENABLE_ELEMENT_VERIFIER": "false"}):
+            assert BrowserServiceConfig().locator.enable_element_verifier is False

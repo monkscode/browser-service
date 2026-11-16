@@ -73,6 +73,10 @@ class LocatorConfig:
     # Set ENABLE_ACTION_FIT=false to restore the legacy cascade.
     enable_action_fit: bool = True
 
+    # bs #62: a model checks each picked element against the step before bs acts.
+    # ENABLE_ELEMENT_VERIFIER=false restores today's path (no verifier call).
+    enable_element_verifier: bool = True
+
     # Coordinate offsets to try (pixels)
     coordinate_offsets: List[Dict[str, Any]] = field(
         default_factory=lambda: [
@@ -133,6 +137,7 @@ class BrowserServiceConfig:
             coordinate_offset_attempts=self._int_env("COORDINATE_OFFSET_ATTEMPTS", 7),
             custom_action_timeout=self._int_env("CUSTOM_ACTION_TIMEOUT", 5),
             enable_action_fit=os.getenv("ENABLE_ACTION_FIT", "true").lower() == "true",
+            enable_element_verifier=os.getenv("ENABLE_ELEMENT_VERIFIER", "true").lower() == "true",
         )
 
         # LLM configuration

@@ -1225,7 +1225,9 @@ async def _do_interaction(
     return note, status, action, sent
 
 
-def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bool:
+def register_custom_actions(
+    agent, page=None, elements=None, secrets=None, user_query: str = "", verifier_llm=None
+) -> bool:
     """
     Register custom actions with browser-use agent.
 
@@ -1244,6 +1246,10 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
         secrets: Optional NAME -> value (NLRF #131). A step whose value is exactly {{NAME}}
                  is typed with the value by _do_interaction; the step specs keep the name.
                  The map lives only in this closure — never in the Agent or its task text.
+        user_query: The user's plain-words request (bs #62). The element verifier judges each
+                    pick against it and the step's description and action — never the value.
+        verifier_llm: The chat model the element verifier asks "is this the element the step
+                      means?" (bs #62). None = no verifier: no call, no log line, today's path.
 
     Returns:
         bool: True if registration succeeded, False otherwise
@@ -1262,6 +1268,7 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
         from pydantic import BaseModel, Field
 
         # Import the action implementation
+        from browser_service.agent import element_verifier
         from browser_service.agent.actions import find_unique_locator_action
 
         # ========================================
@@ -1291,6 +1298,8 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
         _read_address_attempts: dict = {}
         # bs #72: element_id → refusals for naming no element; the second is NOT FOUND.
         _no_evidence_attempts: dict = {}
+        # bs #62: element_id → picks the verifier judged a different element; the second is NOT FOUND.
+        _verifier_rejections: dict = {}
         # D3 (dialog-clobber): element_id → True when the stored result was
         # fully validated (validated=True and semantic_match not False).
         # A re-query may only replace a fully-validated result with another
@@ -2033,6 +2042,138 @@ def register_custom_actions(agent, page=None, elements=None, secrets=None) -> bo
                                 _already_performed,
                             ),
                         )
+
+                    # ========================================
+                    # bs #62 — ELEMENT VERIFIER
+                    # ========================================
+                    # A model judges whether the pick is the element NLRF's step means. A "mismatch"
+                    # on a new element is asked again once, then NOT FOUND; on a re-query of an
+                    # accepted element the accepted locator stands (D3's shape). Fail-open: any error
+                    # in this block logs a warning and the pick ships exactly as today.
+                    if verifier_llm is not None:
+                        try:
+                            _v_spec = _element_specs.get(params.element_id) or {}
+                            _v_type = result.get("element_type")
+                            if _v_type in ("collection", "file-upload"):
+                                _v_skip = f"element type {_v_type}"
+                            elif params.is_collection is True:
+                                _v_skip = "is_collection was set"
+                            elif not _v_spec:
+                                _v_skip = "no NLRF step for this element"
+                            elif _prev_locator is not None and best_locator == _prev_locator:
+                                _v_skip = "re-query returned the accepted locator"
+                            else:
+                                _v_skip = ""
+                            if _v_skip:
+                                logger.info(
+                                    f"   🔎 Element verifier not asked for {params.element_id}: "
+                                    f"{_v_skip} (signal: element-verifier-not-asked)"
+                                )
+                            else:
+                                _v_info = result.get("element_info") or {}
+                                _v_input = _v_info.get("input_locator")
+                                _v_loc = (
+                                    _v_input
+                                    if _v_info.get("hidden_input")
+                                    and isinstance(_v_input, str)
+                                    and _v_input
+                                    else best_locator
+                                )
+                                _v_facts = await element_verifier.read_element_facts(
+                                    _step_locator(active_page, _v_loc, iframe_context)[1]
+                                )
+                                _v = await element_verifier.verify_pick(
+                                    verifier_llm,
+                                    user_query,
+                                    _v_spec["description"],
+                                    _v_spec["action"],
+                                    _v_facts,
+                                )
+                                _v_why = " ".join(_v.reason.split()[:25])
+                                _v_said = f" — {_v_why}" if _v_why else ""
+                                logger.info(
+                                    f"   🔎 Element verifier for {params.element_id}: {_v.verdict} "
+                                    f"(prompt {_v.prompt_tokens} / completion {_v.completion_tokens} "
+                                    f"tokens, {_v.seconds:.1f}s){_v_said} "
+                                    f"(signal: element-verifier-{_v.verdict})"
+                                )
+                                if _v.verdict == "mismatch":
+                                    _v_why = _v_why or "the verifier judged it a different element"
+                                    if _prev_locator is not None:
+                                        logger.info(
+                                            f"   ⛔ Re-query for {params.element_id} picked an element "
+                                            f"the verifier judged different ({best_locator}) — keeping "
+                                            f"the validated locator {_prev_locator} "
+                                            f"(signal: element-verifier-requery-kept)"
+                                        )
+                                        return ActionResult(
+                                            extracted_content=(
+                                                f"✅ Element {params.element_id} is already validated.\n"
+                                                f"Locator: {_prev_locator}\n"
+                                                f"The verifier judged the new pick a different element "
+                                                f"— the earlier validated locator stands. "
+                                                f"Proceed to the next element."
+                                            ),
+                                            long_term_memory=_memory_line(
+                                                params.element_id,
+                                                _prev_locator,
+                                                "not_applicable",
+                                                "",
+                                                _already_performed,
+                                            ),
+                                        )
+                                    _v_n = _verifier_rejections.get(params.element_id, 0) + 1
+                                    _verifier_rejections[params.element_id] = _v_n
+                                    _v_meta = {
+                                        **result,
+                                        "found": False,
+                                        "best_locator": None,
+                                        "error": _v_why,
+                                    }
+                                    # No long_term_memory: browser-use 0.13.7 drops extracted_content when it is set.
+                                    if _v_n == 1:
+                                        retry_msg = (
+                                            f"The element picked for '{params.element_id}' is not the "
+                                            f"element the step means: {_v_why}. Re-examine the attached "
+                                            f"screenshot, point at the element the step means and call "
+                                            f"find_unique_locator again with its element_index or the "
+                                            f"coordinates of its centre. A screenshot of the current page "
+                                            f"is attached to your next message (when available)."
+                                        )
+                                        logger.info(
+                                            f"🔄 ELEMENT VERIFIER RETRY for {params.element_id}: {_v_why} "
+                                            f"(signal: element-verifier-retry)"
+                                        )
+                                        _keep_vision_on(agent)
+                                        return ActionResult(
+                                            extracted_content=retry_msg,
+                                            error=retry_msg,
+                                            is_done=False,
+                                            metadata={**_v_meta, "include_screenshot": True},
+                                        )
+                                    final_msg = (
+                                        f"'{params.element_id}' was again not the element the step "
+                                        f"means ({_v_why}); it is recorded as NOT FOUND. Do not retry "
+                                        f"it — continue with the remaining elements."
+                                    )
+                                    if _v_spec["action"] in _PERFORMED_ACTIONS:
+                                        final_msg += " Do not perform this step's action yourself."
+                                    logger.info(
+                                        f"⛔ ELEMENT VERIFIER NOT FOUND for {params.element_id} after "
+                                        f"{_v_n} rejections (signal: element-verifier-not-found)"
+                                    )
+                                    # No error: browser-use counts an error result as an agent
+                                    # failure, and 5 in a row end the run (max_failures).
+                                    return ActionResult(
+                                        extracted_content=final_msg,
+                                        is_done=False,
+                                        metadata=_v_meta,
+                                    )
+                        except Exception as _v_err:  # noqa: BLE001 — the verifier must never drop a pick
+                            logger.warning(
+                                f"   Element verifier step skipped for {params.element_id} "
+                                f"({type(_v_err).__name__}) — the pick ships as today"
+                            )
 
                     # ========================================
                     # COMPLETION TRACKING

@@ -21,7 +21,10 @@ script never builds on a token Python scores volatile, and writes a class or
 id that would need a CSS backslash as a quoted attribute, because Robot
 Framework strips backslashes.
 Nothing confirmed → found=False with the reason; registration.py asks the
-agent once more, then reports the element not found. Untouched: non-read
+agent once more, then reports the element not found. A locate-only step (NLRF
+#162: a wait / hover / upload / count, flagged ``locate_only`` by NLRF) reads no value:
+its text locator stays when it lands on the pointed element, is re-aimed to
+the pointed address otherwise, and is never refused. Untouched: non-read
 actions, iframes, collections, row-anchored results, shadow-root elements,
 and everything when ENABLE_ACTION_FIT=false.
 
@@ -585,6 +588,45 @@ async def _check_read_address(
     )
 
 
+_LANDS_ON_JS = "(e, o) => e === o || e.contains(o) || o.contains(e)"
+
+
+async def _lands_on(search_context, locator: str, address: str) -> bool:
+    """True when ``locator`` resolves to the element at ``address`` or to one nested with it. Unreadable → False (the pointed address is used)."""
+    # shortcut: a wrapper holding the pointed element and its neighbour also counts as
+    # nested; upgrade to "same or inside" if a real page keeps a wait on the wrong card.
+    try:
+        other = await search_context.locator(address).element_handle(timeout=FIT_READ_TIMEOUT_MS)
+        return bool(
+            await search_context.locator(locator).evaluate(
+                _LANDS_ON_JS, other, timeout=FIT_READ_TIMEOUT_MS
+            )
+        )
+    except Exception as e:
+        logger.info(
+            f"   📎 LOCATE ADDRESS: could not tell where '{locator}' lands ({type(e).__name__}) — "
+            f"the pointed address is used (signal: locate-address-check-failed)"
+        )
+        return False
+
+
+async def _locate_step_keeps(search_context, locator: str, verdict: Dict[str, Any]) -> bool:
+    """A locate-only step keeps its text locator when the pointed element is unconfirmed (never refused) or the text lands on it."""
+    if "unconfirmed" in verdict:
+        logger.info(
+            f"   📎 LOCATE ADDRESS: '{locator}' holds the step's text and {verdict['unconfirmed']} — "
+            f"keeping it, the step reads no value (signal: locate-address-unconfirmed-kept)"
+        )
+        return True
+    if await _lands_on(search_context, locator, verdict["locator"]):
+        logger.info(
+            f"   📎 LOCATE ADDRESS: '{locator}' holds the step's text and lands on the pointed "
+            f"element — keeping it (signal: locate-address-kept)"
+        )
+        return True
+    return False
+
+
 async def apply_read_target_policy(
     search_context,
     result: Dict[str, Any],
@@ -594,8 +636,14 @@ async def apply_read_target_policy(
     element_data: Optional[Dict[str, Any]] = None,
     point: Optional[Tuple[float, float]] = None,
     pixel_point: Optional[Tuple[float, float]] = None,
+    locate_only: bool = False,
 ) -> Dict[str, Any]:
-    """On a READ step, replace a found locator that carries the value being read with the pointed element's structural address, or return found=False with the reason."""
+    """On a READ step, replace a found locator that carries the value being read with the pointed element's structural address, or return found=False with the reason.
+
+    ``locate_only`` (NLRF #162): the step is a wait / hover / upload / count — it reads no value,
+    so the text locator stays when it lands on the pointed element, is re-aimed to the pointed address
+    when it lands elsewhere, and is never refused.
+    """
     if action not in READ_ACTIONS or not result.get("found") or iframe_context:
         return result
     if result.get("row_anchored") or result.get("element_type") == "collection":
@@ -625,6 +673,8 @@ async def apply_read_target_policy(
             f"keeping it (signal: read-address-shadow-kept)"
         )
         return result
+    if locate_only and await _locate_step_keeps(search_context, locator, verdict):
+        return result
     if "unconfirmed" in verdict:
         logger.info(
             f"   📎 READ ADDRESS: '{locator}' carries the value being read and "
@@ -643,9 +693,14 @@ async def apply_read_target_policy(
     # ("the first product", "row 1") and the rule validated it — stable, no
     # NLRF warning. The xpath fallbacks keep classify_locator's honest verdict.
     stability = STABLE if verdict["kind"] == "card-path" else classify_locator(rewritten)
+    said = (
+        ("LOCATE", "lands on another element than the one pointed at", "locate-address-reaimed")
+        if locate_only
+        else ("READ", "carries the value being read", "read-address-rewritten")
+    )
     logger.info(
-        f"   📎 READ ADDRESS: '{locator}' carries the value being read — using '{rewritten}' "
-        f"({verdict['source']}, {verdict['kind']}) (signal: read-address-rewritten)"
+        f"   📎 {said[0]} ADDRESS: '{locator}' {said[1]} — using '{rewritten}' "
+        f"({verdict['source']}, {verdict['kind']}) (signal: {said[2]})"
     )
     return {
         **result,

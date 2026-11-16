@@ -801,6 +801,7 @@ async def find_unique_locator_action(
     pixel_point: Optional[
         Tuple[int, int]
     ] = None,  # Index-less read: raw point read as pixels (#75)
+    locate_only: bool = False,  # NLRF #162: a wait / hover / upload / count — reads no value
 ) -> Dict[str, Any]:
     """
     Custom action that agent can call to find and validate unique locator.
@@ -1336,6 +1337,7 @@ async def find_unique_locator_action(
                                     element_data=element_data,
                                     point=vision_point or (x, y),
                                     pixel_point=pixel_point,
+                                    locate_only=locate_only,
                                 )
                                 await _refresh_read_address_info(_accepted, search_root)
                                 await _stamp_resolved_tag(
@@ -1610,6 +1612,7 @@ async def find_unique_locator_action(
                     element_data=element_data,
                     point=vision_point or (x, y),
                     pixel_point=pixel_point,
+                    locate_only=locate_only,
                 )
                 await _refresh_read_address_info(result, search_context)
 

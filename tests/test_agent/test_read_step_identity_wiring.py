@@ -107,7 +107,7 @@ def _page(resolved=U07_RESOLVED_H6, count=1):
     )
 
 
-async def _call(page, facts, **overrides):
+async def _call(page, facts, policy=None, **overrides):
     kwargs = dict(
         x=250,
         y=420,
@@ -133,7 +133,7 @@ async def _call(page, facts, **overrides):
         patch("browser_service.agent.actions._indexed_element_misfit", AsyncMock(return_value="")),
         patch(
             "browser_service.agent.actions.apply_read_target_policy",
-            AsyncMock(side_effect=lambda root, result, *a, **k: result),
+            policy or AsyncMock(side_effect=lambda root, result, *a, **k: result),
         ),
     ):
         result = await find_unique_locator_action(**kwargs)

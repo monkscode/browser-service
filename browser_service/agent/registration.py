@@ -1288,6 +1288,8 @@ def register_custom_actions(
                     "value": _elem.get("value", "") or "",
                     # #62: NLRF's own words for the step, logged beside the agent's pick.
                     "description": _elem.get("description", "") or "",
+                    # NLRF #162: every step of this element is a wait / hover / upload / count.
+                    "locate_only": _elem.get("locate_only") is True,
                 }
         _expected_element_ids: set = set(_element_specs.keys())
         _total_expected: int = len(_expected_element_ids)
@@ -1964,6 +1966,7 @@ def register_custom_actions(
                     # bs #75: an index-less point the grid scaling may have mis-read; the read gate
                     # tries it as pixels last. Off-screen or equal to the scaled point = no source.
                     pixel_point=_pixel_point(params, scaled_x, scaled_y, viewport_w, viewport_h),
+                    locate_only=_element_specs.get(params.element_id, {}).get("locate_only", False),
                 )
 
                 # Convert result to ActionResult format

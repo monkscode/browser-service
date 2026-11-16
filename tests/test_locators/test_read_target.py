@@ -181,6 +181,72 @@ class TestGate:
 REWRITE = {"locator": ".title", "kind": "class", "source": "pointed element"}
 
 
+class TestLocateOnly:
+    """NLRF #162: a wait / hover / count step reads no value, so its text locator may stay — but only on the element the agent pointed at, and the step is never refused."""
+
+    async def _run(self, lands_on, verdict=REWRITE, result=None):
+        lands = AsyncMock(return_value=lands_on)
+        with (
+            patch(
+                "browser_service.locators.read_target.resolve_read_address",
+                new=AsyncMock(return_value=verdict),
+            ),
+            patch(
+                "browser_service.locators.read_target._in_shadow_root",
+                new=AsyncMock(return_value=False),
+            ),
+            patch("browser_service.locators.read_target._lands_on", new=lands),
+        ):
+            out = await apply_read_target_policy(
+                object(),
+                dict(result or BASE),
+                "get_text",
+                "Products",
+                element_data={"xpath": "html/body/span"},
+                point=(10, 20),
+                locate_only=True,
+            )
+        return out, lands
+
+    async def test_text_locator_on_the_pointed_element_stays(self, caplog):
+        caplog.set_level(logging.INFO, logger="browser_service.locators.read_target")
+        out, lands = await self._run(lands_on=True)
+        assert out == BASE
+        lands.assert_awaited_once()
+        assert lands.await_args.args[1:] == ("text=Products", ".title")
+        assert "signal: locate-address-kept)" in caplog.text
+
+    async def test_text_locator_on_another_element_is_re_aimed(self, caplog):
+        caplog.set_level(logging.INFO, logger="browser_service.locators.read_target")
+        out, _ = await self._run(lands_on=False)
+        assert out["best_locator"] == ".title"
+        assert out["read_target_rewritten_from"] == "text=Products"
+        assert "signal: locate-address-reaimed)" in caplog.text
+        assert "read-address-rewritten" not in caplog.text
+
+    async def test_unconfirmed_never_refuses_a_locate_step(self, caplog):
+        caplog.set_level(logging.INFO, logger="browser_service.locators.read_target")
+        out, lands = await self._run(
+            lands_on=False, verdict={"unconfirmed": "the screen point shows 'x', not 'products'"}
+        )
+        assert out == BASE
+        lands.assert_not_awaited()
+        assert "signal: locate-address-unconfirmed-kept)" in caplog.text
+
+    async def test_value_free_locator_is_untouched(self):
+        out, lands = await self._run(lands_on=False, result={**BASE, "best_locator": ".title"})
+        assert out["best_locator"] == ".title"
+        lands.assert_not_awaited()
+
+    async def test_a_real_read_never_asks_where_the_text_lands(self):
+        """Control: without the flag the same verdict rewrites, as before."""
+        lands = AsyncMock(return_value=True)
+        with patch("browser_service.locators.read_target._lands_on", new=lands):
+            out, _ = await _gate()
+        assert out["best_locator"] == ".title"
+        lands.assert_not_awaited()
+
+
 def _answers_late(value):
     """A page call that would answer after a second — far past the budget."""
 

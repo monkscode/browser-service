@@ -4920,6 +4920,7 @@ async def find_unique_locator_at_coordinates(
                 "found": False,
                 "error": f"Semantic approach failed and coordinates ({x}, {y}) landed on {tag_check.upper()} (empty space)",
                 "coordinates": {"x": x, "y": y},
+                "landed_on": tag_check,  # bs #91: registration names the point's unit on this failure
                 "validation_summary": {
                     "total_generated": 0,
                     "valid": 0,

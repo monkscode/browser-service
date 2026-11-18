@@ -309,6 +309,23 @@ def _pixel_point(params, scaled_x, scaled_y, viewport_w, viewport_h):
     return point if inside and point != (scaled_x, scaled_y) else None
 
 
+def _unit_hint(params, scaled_x, scaled_y, viewport_w, viewport_h, landed_on=None):
+    """bs #91: the reply line naming the 0-1000 grid unit, for an index-less point that failed."""
+    grid_x = round(params.x * 1000 / viewport_w, 1)
+    grid_y = round(params.y * 1000 / viewport_h, 1)
+    # a no-evidence refusal checked nothing at the point: claim a landing only when one was seen
+    landing = f", where it landed on {landed_on.upper()} (empty page)" if landed_on else ""
+    return (
+        f" Note: x and y are read on a 0-1000 grid of the screenshot ((0, 0) top-left, (1000, 1000) "
+        f"bottom-right), not as page pixels. Your ({params.x:g}, {params.y:g}) became page pixel "
+        f"({scaled_x}, {scaled_y}) on this {viewport_w}x{viewport_h} page{landing}. "
+        f"If you measured your point in page pixels (for example with evaluate and getBoundingClientRect), "
+        f"send the CENTRE of the element's box converted: x = pixel_x * 1000 / {viewport_w}, "
+        f"y = pixel_y * 1000 / {viewport_h} (your point would be x={grid_x:g}, y={grid_y:g}), "
+        f"with the element's visible text as expected_text if it has any."
+    )
+
+
 def _find_smallest_containing_element(selector_map, coords, viewport_area, skip_tag=None):
     """
     Find the selector_map element with the smallest bounding box containing coords.
@@ -2533,6 +2550,23 @@ def register_custom_actions(
                                 metadata=result,
                             )
                     elif element_index_was_none:
+                        # bs #91: the scaled point failed; the agent may have sent page pixels.
+                        unit_hint = ""
+                        _landed_on = result.get("landed_on")
+                        if (
+                            (_no_evidence or _landed_on)
+                            and not confirmed_coords
+                            and _pixel_point(params, scaled_x, scaled_y, viewport_w, viewport_h)
+                            is not None
+                        ):
+                            unit_hint = _unit_hint(
+                                params, scaled_x, scaled_y, viewport_w, viewport_h, _landed_on
+                            )
+                            _outcome = f"landed on {_landed_on}" if _landed_on else "not checked"
+                            logger.info(
+                                f"📐 COORDINATE UNIT HINT for {params.element_id}: ({params.x}, {params.y}) → "
+                                f"({scaled_x}, {scaled_y}) {_outcome} (signal: coordinate-unit-hint)"
+                            )
                         retry_msg = (
                             f"Fallback strategies failed for '{params.element_id}'. "
                             f"Reason: {fallback_error}. "
@@ -2545,6 +2579,7 @@ def register_custom_actions(
                             f"with element_index set to that number. "
                             f"Example: if you see '[2181] <input role=\"combobox\">',"
                             f" use element_index=2181"
+                            f"{unit_hint}"
                         )
                         logger.info("")
                         logger.info(f"{'=' * 80}")

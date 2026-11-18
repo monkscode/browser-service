@@ -99,16 +99,22 @@ def displayed_literals(locator: str) -> List[str]:
     return out
 
 
+def _holds(text: str, part: str) -> bool:
+    """``part`` inside ``text``: a substring when both are >= 3 characters, else a whole word (a read of
+    "12" is inside "12 new"; "No" is not inside "Notifications", "1" is not inside "Page 10")."""
+    if len(part) >= 3 and len(text) >= 3:
+        return part in text
+    return re.search(r"(?<!\w)" + re.escape(part) + r"(?!\w)", text) is not None
+
+
 def carries_value(locator: str, observed: Optional[str]) -> bool:
-    """True when the locator matches on the observed text: equal, or one contains the other when both are >= 3 characters."""
+    """True when the locator matches on the observed text: equal, or one holds the other (_holds)."""
     value = normalize_text(observed)
     if not value:
         return False
     for literal in displayed_literals(locator):
         lit = normalize_text(literal)
-        if lit and (
-            lit == value or (len(lit) >= 3 and len(value) >= 3 and (lit in value or value in lit))
-        ):
+        if lit and (lit == value or _holds(lit, value) or _holds(value, lit)):
             return True
     return False
 

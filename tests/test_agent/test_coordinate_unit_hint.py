@@ -76,18 +76,32 @@ async def test_first_no_evidence_refusal_names_the_unit(caplog):
 
     assert first.error.startswith("Fallback strategies failed for 'elem_1'.")
     assert ERROR in first.error
-    assert "Your (815, 294.28) became page pixel (1564, 317) on this 1920x1080 page" in first.error
-    assert "(your point would be x=424.5, y=272.5)" in first.error
-    assert any(m.endswith(HINT_LINE) for m in caplog.messages)
+    assert "x and y are read on a 0-1000 grid of the screenshot" in first.error
+    # nothing was checked at the point, so the hint must not claim a miss there
+    assert (
+        "Your (815, 294.28) became page pixel (1564, 317) on this 1920x1080 page. If" in first.error
+    )
+    assert "nothing was found" not in first.error
+    assert (
+        "(your point would be x=424.5, y=272.5), with the element's visible text as "
+        "expected_text if it has any." in first.error
+    )
+    assert any(m.endswith(f"(1564, 317) not checked {HINT_LINE}") for m in caplog.messages)
 
 
 @pytest.mark.asyncio
-async def test_body_landing_names_the_unit():
-    (first,) = await _run([("elem_1", BODY_LANDING)])
+async def test_body_landing_names_the_unit(caplog):
+    with caplog.at_level(logging.INFO, logger="browser_service.agent.registration"):
+        (first,) = await _run([("elem_1", BODY_LANDING)])
 
     assert first.error.startswith("Fallback strategies failed for 'elem_1'.")
-    assert "Your (815, 294.28) became page pixel (1564, 317) on this 1920x1080 page" in first.error
+    assert "x and y are read on a 0-1000 grid of the screenshot" in first.error
+    assert (
+        "Your (815, 294.28) became page pixel (1564, 317) on this 1920x1080 page, "
+        "where it landed on BODY (empty page). If" in first.error
+    )
     assert "(your point would be x=424.5, y=272.5)" in first.error
+    assert any(m.endswith(f"(1564, 317) landed on body {HINT_LINE}") for m in caplog.messages)
 
 
 @pytest.mark.asyncio

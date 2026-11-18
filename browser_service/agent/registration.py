@@ -2114,7 +2114,7 @@ def register_custom_actions(
                                 logger.info(
                                     f"   🔎 Element verifier for {params.element_id}: {_v.verdict} "
                                     f"(prompt {_v.prompt_tokens} / completion {_v.completion_tokens} "
-                                    f"tokens, {_v.seconds:.1f}s){_v_said} "
+                                    f"tokens, {_v.seconds:.1f}s) on '{_v_loc}'{_v_said} "
                                     f"(signal: element-verifier-{_v.verdict})"
                                 )
                                 if _v.verdict == "mismatch":

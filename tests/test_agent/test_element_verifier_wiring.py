@@ -8,6 +8,7 @@ workflow.py's result extraction.
 
 import asyncio
 import logging
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -257,6 +258,44 @@ async def test_hidden_input_proxy_reads_facts_from_input_locator(info, target):
     (result,), m = await _run(["elem_1"], ["match"], engines=[engine])
     _shipped(result, "css=label.proxy")
     m.read.assert_awaited_once_with(target)
+
+
+def _verdict_line(caplog):
+    return next(r.getMessage() for r in caplog.records if "Element verifier for " in r.getMessage())
+
+
+async def test_verdict_line_names_the_judged_locator_and_keeps_both_parsers(caplog):
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        await _run(["elem_1"], ["match"])
+    line = _verdict_line(caplog)
+    assert "tokens, 0.8s) on 'css=#pick'" in line
+    # the two log parsers that read this line
+    assert re.search(r"Element verifier for [^ :]+: [a-z]+", line)
+    m = re.search(
+        r"Element verifier for (elem_\d+): (\w+) \(prompt (\d+) / completion (\d+) tokens, ([\d.]+)s\)",
+        line,
+    )
+    assert m is not None
+    assert m.groups() == ("elem_1", "match", "310", "12", "0.8")
+
+
+async def test_mismatch_verdict_line_names_the_rejected_picks_locator(caplog):
+    engine = {**FOUND, "best_locator": "css=footer a.signin"}
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        await _run(["elem_1"], [("mismatch", REASON)], engines=[engine])
+    line = _verdict_line(caplog)
+    assert "on 'css=footer a.signin'" in line
+    assert ": mismatch" in line
+
+
+async def test_verdict_line_names_the_input_locator_not_the_proxy(caplog):
+    info = {"hidden_input": True, "input_locator": "input#agree"}
+    engine = {**FOUND, "best_locator": "css=label.proxy", "element_info": info}
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        await _run(["elem_1"], ["match"], engines=[engine])
+    line = _verdict_line(caplog)
+    assert "on 'input#agree'" in line
+    assert "label.proxy" not in line
 
 
 async def test_requery_with_the_accepted_locator_makes_no_call(caplog):

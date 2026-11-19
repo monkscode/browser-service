@@ -2542,6 +2542,7 @@ async def _find_element_via_accessibility(
     expected_text: Optional[str] = None,
     search_context=None,
     iframe_context: Optional[str] = None,
+    is_collection: Optional[bool] = None,  # Agent's flag; False refuses many (bs #93)
 ) -> Optional[dict]:
     """
     STEP 2.5: Accessibility API Fallback Strategy
@@ -2602,7 +2603,7 @@ async def _find_element_via_accessibility(
 
     role = acc_info["role"]
     accessible_name = acc_info.get("accessibleName")
-    is_collection = acc_info.get("isCollection", False)
+    role_is_collection = acc_info.get("isCollection", False)
 
     if accessible_name:
         # D2 (dialog-clobber): normalize whitespace BEFORE the name enters
@@ -2693,7 +2694,13 @@ async def _find_element_via_accessibility(
             return None
 
         # Only accept unique locators (count=1) for non-collection elements
-        if count > 1 and not is_collection:
+        if count > 1 and role_is_collection and is_collection is False:
+            logger.info(
+                "   📌 MANY MATCHES REFUSED: the agent flagged is_collection=False, so the "
+                f"ARIA collection role {locator} ({count} matches) is not accepted "
+                "(signal: flag-false-refuses-many)"
+            )
+        if count > 1 and (not role_is_collection or is_collection is False):
             logger.info(
                 f"   ❌ Accessibility locator not unique: {locator} ({count} matches) - trying 2.5c tree search..."
             )
@@ -2711,7 +2718,7 @@ async def _find_element_via_accessibility(
         return {
             "locator": locator,
             "count": count,
-            "unique": count == 1 and not is_collection,
+            "unique": count == 1 and not role_is_collection,
             "role": role,
             "accessible_name": accessible_name,
             "element_type": role,
@@ -3067,15 +3074,41 @@ async def _generate_locators_from_element_data(
     # while the agent's call carried row_anchor_text AND is_collection=False.
     # Demote to unknown so the generic candidate loop (which owns the
     # row-anchor rescue) handles the element.
-    if type_info.primary_type == "collection" and row_anchor_text:
-        type_info.signals.append("row-anchor-suppresses-collection")
+    # bs #93: the agent's explicit is_collection=False says the same thing — ONE element (d16: "first team name
+    # cell in the search results table" classified 'collection' off "table"/"results" and shipped `tbody > tr`).
+    if type_info.primary_type == "collection" and (row_anchor_text or is_collection is False):
+        if row_anchor_text:
+            type_info.signals.append("row-anchor-suppresses-collection")
+            logger.info(
+                "   📌 Collection classification suppressed: row anchor "
+                f"'{row_anchor_text}' names one row's control"
+            )
+        else:
+            type_info.signals.append("flag-false-suppresses-collection")
+            logger.info(
+                "   📌 Collection classification suppressed: the agent flagged "
+                "is_collection=False (one element)"
+            )
         type_info.primary_type = "unknown"
         type_info.framework = ""
         type_info.confidence = "low"
-        logger.info(
-            "   📌 Collection classification suppressed: row anchor "
-            f"'{row_anchor_text}' names one row's control"
-        )
+
+    # bs #86: an explicit is_collection=True with no row anchor is the second source - the handler runs without the
+    # DOM probe (its own count > 1 checks stand). A specialised verdict (dropdown, checkbox, ...) keeps today's route.
+    flag_true_collection = (
+        is_collection is True
+        and not row_anchor_text
+        and type_info.primary_type in ("unknown", "collection")
+    )
+    if flag_true_collection:
+        if type_info.primary_type == "unknown":
+            type_info.signals.append("flag-true-routes-collection")
+            logger.info(
+                "   📌 FLAG ROUTES COLLECTION: the agent flagged is_collection=True and the "
+                "classifier found no type - routing to the collection handler "
+                "(signal: flag-true-routes-collection)"
+            )
+        type_info.primary_type = "collection"
 
     # Determine which type to probe and whether we're in confirmation or
     # discovery mode. Discovery mode kicks in when the classifier said
@@ -3096,10 +3129,14 @@ async def _generate_locators_from_element_data(
         from .classifier import map_vision_hint
 
         mapped = map_vision_hint(vision_type_hint)
-        if mapped == "collection" and row_anchor_text:
+        if mapped == "collection" and (row_anchor_text or is_collection is False):
             # Same trust order for the discovery route: a vision hint of
             # 'collection' must not resurrect the suppressed verdict.
-            type_info.signals.append("row-anchor-suppresses-collection")
+            type_info.signals.append(
+                "row-anchor-suppresses-collection"
+                if row_anchor_text
+                else "flag-false-suppresses-collection"
+            )
         elif mapped in (
             "dropdown",
             "collection",
@@ -3117,6 +3154,7 @@ async def _generate_locators_from_element_data(
     if (
         suspected_type
         and page is not None
+        and not flag_true_collection
         and not (iframe_context and suspected_type == "date-picker")
     ):
         from .dom_probe import probe_specialized_type
@@ -3255,6 +3293,14 @@ async def _generate_locators_from_element_data(
                 collection_result, type_info, probe_result, vision_type_hint
             )
             return collection_result
+        if flag_true_collection:
+            # bs #86: the flag says a group; none found here, so no single element may stand in for it.
+            # STEP 0.5's text walk and STEP 2.5's row answers still get their turn.
+            logger.info(
+                "   ⛔ NO GROUP FOUND: is_collection=True but the collection handler found no group "
+                "- skipping the single-element candidates (signal: flag-true-no-group)"
+            )
+            return None
         # Else: fall through to the generic 21-strategy below.
 
     elif type_info.primary_type in ("checkbox", "radio"):
@@ -3311,6 +3357,27 @@ async def _generate_locators_from_element_data(
         # 2. We have better locators to try first (id, name, etc.), OR
         # 3. We're inside an iframe
         should_use_xpath = not expected_text or has_semantic_locators or in_iframe
+
+        # bs #93: a False flag is believed only when the pointed element's own text IS the expected text (exact,
+        # whitespace-normalised). TEXT-FIRST is skipped for a keyword collection request, so without the xpath
+        # d16 fell through to STEP 0.5 and shipped the rows. q06's wrong False points at a whole <tr> whose text
+        # is "Cierra Vega 39 ..." for expected text "Cierra" - not equal, so its rescue is untouched.
+        expected_norm = " ".join(str(expected_text or "").split())
+        if (
+            not should_use_xpath
+            and is_collection is False
+            # Only where TEXT-FIRST will not run: a keyword collection request (description words). The gate is
+            # False on a named row anchor, so that row keeps owning the pick (its rescue skips xpath).
+            and _should_treat_as_collection(is_collection, element_description, row_anchor_text)
+            and expected_norm
+            and " ".join(str(element_data.get("textContent") or "").split()) == expected_norm
+        ):
+            should_use_xpath = True
+            logger.info(
+                "   📌 POINTED ELEMENT KEPT: is_collection=False, TEXT-FIRST will not run "
+                "for this keyword-collection request, and the pointed element's own text equals the "
+                "expected text - using its xpath (signal: flag-false-keeps-pointed-element)"
+            )
 
         if should_use_xpath:
             full_xpath = element_data["xpath"]
@@ -4712,6 +4779,7 @@ async def find_unique_locator_at_coordinates(
         expected_text=expected_text,
         search_context=search_context,
         iframe_context=iframe_context,
+        is_collection=is_collection,
     )
 
     # Validate against expected_text if provided. D1 (dialog-clobber): a

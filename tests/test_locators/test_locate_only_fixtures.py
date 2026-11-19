@@ -67,6 +67,26 @@ async def test_a_wait_keeps_the_text_that_names_the_pointed_element(
     assert "read_target_rewritten_from" not in out
 
 
+BADGE = '<header class="top"><span class="badge">12 new</span></header><p>Inbox</p>'
+DIALOG = '<div class="dialog"><p>Saved.</p><button class="ok">OK, got it</button></div>'
+
+
+async def test_a_read_of_a_short_value_does_not_ship_the_text_that_holds_it():
+    """A read of "12" found as text="12 new": "12" is a whole word of it, so the locator is not handed over.
+    The pointed span shows "12 new", not "12", so no rewritten address is confirmed: found is False."""
+    out = await _policy(BADGE, 'text="12 new"', "12", ".badge", locate_only=False)
+    assert out["found"] is False
+    assert "best_locator" not in out or out["best_locator"] != 'text="12 new"'
+    assert "pointed element shows '12 new', not '12'" in out["error"]
+
+
+async def test_a_wait_on_a_short_word_of_its_text_keeps_the_text():
+    """Control: 'OK' is a word of text="OK, got it" and it lands on the pointed button, so the wait keeps it."""
+    out = await _policy(DIALOG, 'text="OK, got it"', "OK", ".ok", locate_only=True)
+    assert out["best_locator"] == 'text="OK, got it"'
+    assert "read_target_rewritten_from" not in out
+
+
 async def test_a_wait_is_re_aimed_when_the_text_lands_on_another_element():
     """'verify the Sauce Labs Backpack image is displayed': the text finds the NAME, the agent pointed at the IMAGE."""
     out = await _policy(

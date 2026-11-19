@@ -44,6 +44,7 @@ from browser_service.locators.hidden_value import HIDES_VALUE_JS
 from browser_service.locators.read_target import apply_read_target_policy, carries_value
 from browser_service.locators.smart_locator import (
     NO_EVIDENCE_ERROR,
+    _derive_row_anchor_text_from_description,
     _returned_string_matches,
     carries_row_anchor,
     unanchored_row_datum,
@@ -63,6 +64,12 @@ logger = logging.getLogger(__name__)
 ROBOT_UNSAFE_ERROR = (
     "The only locator found holds characters the generated Robot Framework test would change "
     "(a backslash, a run of spaces, a line break or a ${...}); it was not used."
+)
+
+# bs #86: the reason a one-element locator is refused for an explicit is_collection=True call.
+COLLECTION_NOT_FOUND_ERROR = (
+    "is_collection was true but no locator matching the group was found; "
+    "a one-element locator was refused"
 )
 
 # bs #64: the reason a found locator is withheld (it counts other than one where the test applies it).
@@ -666,6 +673,47 @@ def _through_frame_gate(action):
         return await _withhold_uncounted(result, bound)
 
     return gated
+
+
+_SPECIALISED_TYPES = frozenset({"dropdown", "checkbox", "radio", "file-upload", "date-picker"})
+
+
+def _refuse_one_element_for_group(
+    result: Dict[str, Any],
+    is_collection: Optional[bool],
+    row_anchor_text: Optional[str],
+    element_description: str,
+) -> Dict[str, Any]:
+    """bs #86: an explicit is_collection=True (no row anchor) that ended in one unique element is not found."""
+    if (
+        is_collection is not True
+        or not isinstance(result, dict)
+        or not (result.get("found") and result.get("unique"))
+        or result.get("element_type") in _SPECIALISED_TYPES
+        or row_anchor_text
+        or _derive_row_anchor_text_from_description(element_description)
+    ):
+        return result
+    element_id = result.get("element_id")
+    refused = result.get("best_locator")
+    logger.warning(
+        f"   ⛔ COLLECTION NOT FOUND for {element_id}: refused one-element {refused!r} "
+        f"(signal: collection-not-found)"
+    )
+    return {
+        "element_id": element_id,
+        "description": result.get("description", element_description),
+        "found": False,
+        "error": COLLECTION_NOT_FOUND_ERROR,
+        "error_type": "CollectionNotFound",
+        "coordinates": result.get("coordinates"),
+        "validated": False,
+        "count": 0,
+        "unique": False,
+        "valid": False,
+        "validation_method": "playwright",
+        "refused_locator": refused,
+    }
 
 
 async def _withhold_uncounted(result: Dict[str, Any], bound: Dict[str, Any]) -> Dict[str, Any]:
@@ -1615,6 +1663,9 @@ async def find_unique_locator_action(
                     locate_only=locate_only,
                 )
                 await _refresh_read_address_info(result, search_context)
+            result = _refuse_one_element_for_group(
+                result, is_collection, row_anchor_text, element_description
+            )
 
             duration_ms = (time.monotonic() - _locator_timer_start) * 1000.0
             logger.info(

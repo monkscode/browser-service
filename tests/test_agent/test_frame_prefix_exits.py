@@ -338,7 +338,28 @@ async def test_coordinate_fallback_on_a_nested_frame_is_refused(page):
         element_data={"tagName": "div"},  # evidence that names nothing, so only STEP 3 is left
     )
     assert out["found"] is False
-    assert "frame inside a frame" in out["error"]
+    assert "a frame inside a frame is not supported" in out["error"]
+    assert "landed_on" not in out
+    assert _approach(out) == "coordinate_fallback"
+
+
+async def test_coordinate_fallback_that_cannot_enter_the_frame_is_worded_so(page):
+    """Two iframes match the frame selector (strict mode), so STEP 3 cannot enter the frame
+    and reads the point on the page: it lands on the frame element, not on a nested one."""
+    await page.goto(_file_url("frame_prefix_outer.html"), wait_until="load")
+    x, y = await _centre(page, FRAME)
+    out = await find_unique_locator_action(
+        x=x,
+        y=y,
+        element_id="elem_1",
+        page=page,
+        iframe_context="iframe",
+        element_description="status",
+        element_data={"tagName": "div"},
+    )
+    assert out["found"] is False
+    assert "could not be entered" in out["error"]
+    assert "frame inside a frame" not in out["error"]
     assert "landed_on" not in out
     assert _approach(out) == "coordinate_fallback"
 

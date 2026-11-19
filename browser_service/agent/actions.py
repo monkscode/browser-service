@@ -377,7 +377,9 @@ async def _refresh_read_address_info(result: Dict[str, Any], search_root) -> Non
     element_info must describe the node now returned. Unknown → keep the old."""
     if not result.get("read_target_rewritten_from"):
         return
-    resolved = await _read_resolved_element(search_root, result.get("best_locator") or "")
+    resolved = await _read_resolved_element(
+        search_root, strip_frame(result.get("best_locator") or "", result.get("iframe_context"))
+    )
     if resolved:
         result["element_info"] = _candidate_element_info(resolved, "read_address_resolved_element")
 

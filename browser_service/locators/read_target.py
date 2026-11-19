@@ -24,13 +24,17 @@ Nothing confirmed → found=False with the reason; registration.py asks the
 agent once more, then reports the element not found. A locate-only step (NLRF
 #162: a wait / hover / upload / count, flagged ``locate_only`` by NLRF) reads no value:
 its text locator stays when it lands on the pointed element, is re-aimed to
-the pointed address otherwise, and is never refused. Untouched: non-read
-actions, iframes, collections, row-anchored results, shadow-root elements,
-and everything when ENABLE_ACTION_FIT=false.
+the pointed address otherwise, and is never refused. Inside an iframe (bs #73
+b) the agent's point is page-level and unusable, so the locator, minus its
+frame hop, must match once in the frame and show the observed text itself; its
+address is built as above and the frame is put back (a locate-only step there
+is untouched). Stated limit: a decoy that is the only match in the frame is
+addressed, not refused. Untouched: non-read actions, collections, row-anchored
+results, shadow-root elements, and everything when ENABLE_ACTION_FIT=false.
 
 Referenced by: agent/actions.py
-Depends on: locators/action_fit.py, locators/css_tokens.py, locators/hidden_value.py,
-locators/stability.py
+Depends on: locators/action_fit.py, locators/css_tokens.py, locators/frame_locator.py,
+locators/hidden_value.py, locators/stability.py
 """
 
 import asyncio
@@ -40,6 +44,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from browser_service.locators.action_fit import FIT_READ_TIMEOUT_MS, READ_ACTIONS
 from browser_service.locators.css_tokens import robot_safe
+from browser_service.locators.frame_locator import apply_frame_to_result, strip_frame
 from browser_service.locators.hidden_value import HIDES_VALUE_JS
 from browser_service.locators.stability import (
     STABLE,
@@ -87,8 +92,8 @@ def displayed_literals(locator: str) -> List[str]:
         for m in pattern.finditer(locator or ""):
             out.append(next((g for g in m.groups() if g is not None), ""))
     # Unquoted forms, parsed without a backtracking regex: `text=Foo bar` as a
-    # whole `>>` hop, and `:has-text(Foo)`.
-    for part in (locator or "").split(">>"):
+    # whole `>>` hop (or `>>>` frame hop), and `:has-text(Foo)`.
+    for part in re.split(r">>>?", locator or ""):
         hop = part.strip()
         if hop[:5].lower() == "text=" and hop[5:6] not in ("'", '"'):
             out.append(hop[5:].strip())
@@ -594,6 +599,40 @@ async def _check_read_address(
     )
 
 
+FRAME_SOURCE = "single match in the frame"
+
+
+async def _check_framed_read(
+    search_context, locator: str, expected_text: Optional[str], iframe_context: str
+) -> Optional[Dict[str, Any]]:
+    """bs #73 (b): the gate's verdict for a read inside an iframe, without the agent's point (its coordinates are page-level). The locator minus its frame hop must match exactly once in the frame, show the observed text by its own text, and have a structural address. None in a shadow root; any failure is unconfirmed."""
+    # shortcut: a decoy that is the only match is addressed, not refused; upgrade if a real framed page shows one.
+    observed = expected_text or ""
+    try:
+        inner = strip_frame(locator, iframe_context)
+        if await _in_shadow_root(search_context, inner):
+            return None
+        matches = search_context.locator(inner)
+        count = await matches.count()
+        if count != 1:
+            return {"unconfirmed": f"the locator matches {count} elements in the frame, not one"}
+        handle = await matches.element_handle(timeout=FIT_READ_TIMEOUT_MS)
+        node, own = await _confirmed_node(handle, observed)
+        if node is None:
+            shown = next((t for t in own or [] if t), "")
+            return {
+                "unconfirmed": f"the match in the frame shows {_short(shown)!r}, not {_short(observed)!r}"
+            }
+        address = await structural_address(search_context, node, observed)
+        if not address:
+            return {
+                "unconfirmed": f"the match in the frame shows {_short(observed)!r} but has no unique address without that text"
+            }
+        return {**address, "source": FRAME_SOURCE}
+    except Exception as e:
+        return {"unconfirmed": f"the checks inside the frame failed ({type(e).__name__})"}
+
+
 _LANDS_ON_JS = "(e, o) => e === o || e.contains(o) || o.contains(e)"
 
 
@@ -650,9 +689,14 @@ async def apply_read_target_policy(
     so the text locator stays when it lands on the pointed element, is re-aimed to the pointed address
     when it lands elsewhere, and is never refused.
     """
-    if action not in READ_ACTIONS or not result.get("found") or iframe_context:
+    if action not in READ_ACTIONS or not result.get("found"):
         return result
-    if result.get("row_anchored") or result.get("element_type") == "collection":
+    # In a frame a locate-only step's single match IS the target, so it always lands.
+    if (
+        result.get("row_anchored")
+        or result.get("element_type") == "collection"
+        or (iframe_context and locate_only)
+    ):
         return result
     locator = result.get("best_locator") or ""
     if not carries_value(locator, expected_text):
@@ -666,7 +710,9 @@ async def apply_read_target_policy(
     # into a spurious not-found.
     try:
         verdict = await asyncio.wait_for(
-            _check_read_address(
+            _check_framed_read(search_context, locator, expected_text, iframe_context)
+            if iframe_context
+            else _check_read_address(
                 search_context, locator, expected_text, element_data, point, pixel_point
             ),
             timeout=budget,
@@ -708,7 +754,7 @@ async def apply_read_target_policy(
         f"   📎 {said[0]} ADDRESS: '{locator}' {said[1]} — using '{rewritten}' "
         f"({verdict['source']}, {verdict['kind']}) (signal: {said[2]})"
     )
-    return {
+    out = {
         **result,
         "best_locator": rewritten,
         "stability": stability,
@@ -731,3 +777,4 @@ async def apply_read_target_policy(
         "read_target_rewritten_from": locator,
         "read_address_source": verdict["source"],
     }
+    return apply_frame_to_result(out, iframe_context)

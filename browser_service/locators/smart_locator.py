@@ -3092,6 +3092,26 @@ async def _generate_locators_from_element_data(
         type_info.framework = ""
         type_info.confidence = "low"
 
+    # bs #86: an explicit is_collection=True with no row anchor is the second source - the handler runs without the
+    # DOM probe (its own count > 1 checks stand). A specialised verdict (dropdown, checkbox, ...) keeps today's route.
+    flag_true_collection = False
+    if is_collection is True and not row_anchor_text:
+        from .classifier import map_vision_hint
+
+        # Specialised verdicts keep today's route; so does an unknown one whose vision hint names such a type.
+        flag_true_collection = type_info.primary_type == "collection" or (
+            type_info.primary_type == "unknown"
+            and map_vision_hint(vision_type_hint or "") in ("", "collection")
+        )
+    if flag_true_collection:
+        if type_info.primary_type == "unknown":
+            type_info.signals.append("flag-true-routes-collection")
+            logger.info(
+                "   📌 flag-true-routes-collection: the agent flagged is_collection=True and the "
+                "classifier found no type - routing to the collection handler"
+            )
+        type_info.primary_type = "collection"
+
     # Determine which type to probe and whether we're in confirmation or
     # discovery mode. Discovery mode kicks in when the classifier said
     # "unknown" but the vision hint mapped to a specialized type.
@@ -3136,6 +3156,7 @@ async def _generate_locators_from_element_data(
     if (
         suspected_type
         and page is not None
+        and not flag_true_collection
         and not (iframe_context and suspected_type == "date-picker")
     ):
         from .dom_probe import probe_specialized_type
@@ -3274,6 +3295,14 @@ async def _generate_locators_from_element_data(
                 collection_result, type_info, probe_result, vision_type_hint
             )
             return collection_result
+        if flag_true_collection:
+            # bs #86: the flag says a group; none found here, so no single element may stand in for it.
+            # STEP 0.5's text walk and STEP 2.5's row answers still get their turn.
+            logger.info(
+                "   ⛔ flag-true-no-group: is_collection=True but the collection handler found no group "
+                "- skipping the single-element candidates"
+            )
+            return None
         # Else: fall through to the generic 21-strategy below.
 
     elif type_info.primary_type in ("checkbox", "radio"):

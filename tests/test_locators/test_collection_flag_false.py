@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 from playwright.async_api import async_playwright
 
+from browser_service.agent.actions import _refuse_one_element_for_group
 from browser_service.locators.smart_locator import (
     _find_element_via_accessibility,
     _generate_locators_from_element_data,
@@ -182,3 +183,14 @@ async def test_cascade_false_on_a_whole_row_keeps_todays_answer(page):
     assert flagged["found"] is True
     assert flagged["best_locator"] == absent["best_locator"]
     assert flagged.get("element_type") == absent.get("element_type")
+
+
+async def test_cascade_true_on_a_data_row_still_ships_the_rows(page):
+    """Control (q06, bs #86): True + the first data <tr> + expected text -> a collection answer the not-found gate keeps."""
+    row = {"tagName": "tr", "className": "team", "xpath": FIRST_ROW, "textContent": FIRST_ROW_TEXT}
+    description = "table rows with data in the results table"
+    result = await _cascade(page, row, "tr.team", description, True, "Toronto Maple Leafs")
+    assert result["found"] is True
+    assert result["unique"] is False
+    assert result["element_type"] == "collection"
+    assert _refuse_one_element_for_group(result, True, None, description) is result

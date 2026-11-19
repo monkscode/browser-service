@@ -24,13 +24,17 @@ Nothing confirmed → found=False with the reason; registration.py asks the
 agent once more, then reports the element not found. A locate-only step (NLRF
 #162: a wait / hover / upload / count, flagged ``locate_only`` by NLRF) reads no value:
 its text locator stays when it lands on the pointed element, is re-aimed to
-the pointed address otherwise, and is never refused. Untouched: non-read
-actions, iframes, collections, row-anchored results, shadow-root elements,
-and everything when ENABLE_ACTION_FIT=false.
+the pointed address otherwise, and is never refused. Inside an iframe (bs #73
+b) the agent's point is page-level and unusable, so the locator, minus its
+frame hop, must match once in the frame and show the observed text itself; its
+address is built as above and the frame is put back (a locate-only step there
+is untouched). Stated limit: a decoy that is the only match in the frame is
+addressed, not refused. Untouched: non-read actions, collections, row-anchored
+results, shadow-root elements, and everything when ENABLE_ACTION_FIT=false.
 
 Referenced by: agent/actions.py
-Depends on: locators/action_fit.py, locators/css_tokens.py, locators/hidden_value.py,
-locators/stability.py
+Depends on: locators/action_fit.py, locators/css_tokens.py, locators/frame_locator.py,
+locators/hidden_value.py, locators/stability.py
 """
 
 import asyncio
@@ -40,10 +44,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from browser_service.locators.action_fit import FIT_READ_TIMEOUT_MS, READ_ACTIONS
 from browser_service.locators.css_tokens import robot_safe
+from browser_service.locators.frame_locator import add_frame, apply_frame_to_result, strip_frame
 from browser_service.locators.hidden_value import HIDES_VALUE_JS
 from browser_service.locators.stability import (
     STABLE,
     classify_locator,
+    is_positional_locator,
     is_volatile_attr_name,
     score_stability,
 )
@@ -87,8 +93,8 @@ def displayed_literals(locator: str) -> List[str]:
         for m in pattern.finditer(locator or ""):
             out.append(next((g for g in m.groups() if g is not None), ""))
     # Unquoted forms, parsed without a backtracking regex: `text=Foo bar` as a
-    # whole `>>` hop, and `:has-text(Foo)`.
-    for part in (locator or "").split(">>"):
+    # whole `>>` hop (or `>>>` frame hop), and `:has-text(Foo)`.
+    for part in re.split(r">>>?", locator or ""):
         hop = part.strip()
         if hop[:5].lower() == "text=" and hop[5:6] not in ("'", '"'):
             out.append(hop[5:].strip())
@@ -594,6 +600,40 @@ async def _check_read_address(
     )
 
 
+FRAME_SOURCE = "single match in the frame"
+
+
+async def _check_framed_read(
+    search_context, locator: str, expected_text: Optional[str], iframe_context: str
+) -> Optional[Dict[str, Any]]:
+    """bs #73 (b): the gate's verdict for a read inside an iframe, without the agent's point (its coordinates are page-level). The locator minus its frame hop must match exactly once in the frame, show the observed text by its own text, and have a structural address. None in a shadow root; any failure is unconfirmed."""
+    # shortcut: a decoy that is the only match is addressed, not refused, and an inner locator ending in `>> nth=N` always counts 1, so a second element holding the value goes unseen (the same element the old code shipped); upgrade if a real framed page shows one.
+    observed = expected_text or ""
+    try:
+        inner = strip_frame(locator, iframe_context)
+        if await _in_shadow_root(search_context, inner):
+            return None
+        matches = search_context.locator(inner)
+        count = await matches.count()
+        if count != 1:
+            return {"unconfirmed": f"the locator matches {count} elements in the frame, not one"}
+        handle = await matches.element_handle(timeout=FIT_READ_TIMEOUT_MS)
+        node, own = await _confirmed_node(handle, observed)
+        if node is None:
+            shown = next((t for t in own or [] if t), "")
+            return {
+                "unconfirmed": f"the match in the frame shows {_short(shown)!r}, not {_short(observed)!r}"
+            }
+        address = await structural_address(search_context, node, observed)
+        if not address:
+            return {
+                "unconfirmed": f"the match in the frame shows {_short(observed)!r} but has no unique address without that text"
+            }
+        return {**address, "source": FRAME_SOURCE}
+    except Exception as e:
+        return {"unconfirmed": f"the checks inside the frame failed ({type(e).__name__})"}
+
+
 _LANDS_ON_JS = "(e, o) => e === o || e.contains(o) || o.contains(e)"
 
 
@@ -633,30 +673,10 @@ async def _locate_step_keeps(search_context, locator: str, verdict: Dict[str, An
     return False
 
 
-async def apply_read_target_policy(
-    search_context,
-    result: Dict[str, Any],
-    action: Optional[str],
-    expected_text: Optional[str],
-    iframe_context: Optional[str] = None,
-    element_data: Optional[Dict[str, Any]] = None,
-    point: Optional[Tuple[float, float]] = None,
-    pixel_point: Optional[Tuple[float, float]] = None,
-    locate_only: bool = False,
-) -> Dict[str, Any]:
-    """On a READ step, replace a found locator that carries the value being read with the pointed element's structural address, or return found=False with the reason.
-
-    ``locate_only`` (NLRF #162): the step is a wait / hover / upload / count — it reads no value,
-    so the text locator stays when it lands on the pointed element, is re-aimed to the pointed address
-    when it lands elsewhere, and is never refused.
-    """
-    if action not in READ_ACTIONS or not result.get("found") or iframe_context:
-        return result
-    if result.get("row_anchored") or result.get("element_type") == "collection":
-        return result
-    locator = result.get("best_locator") or ""
-    if not carries_value(locator, expected_text):
-        return result
+async def _timed_verdict(
+    search_context, locator, expected_text, iframe_context, element_data, point, pixel_point
+) -> Optional[Dict[str, Any]]:
+    """The page-touching verdict (framed or page-level) under the pass's own time budget."""
     from browser_service.config import config
 
     budget = config.locator.custom_action_timeout
@@ -665,50 +685,28 @@ async def apply_read_target_policy(
     # full cascade), so a remainder would turn a slow-but-successful cascade
     # into a spurious not-found.
     try:
-        verdict = await asyncio.wait_for(
-            _check_read_address(
+        return await asyncio.wait_for(
+            _check_framed_read(search_context, locator, expected_text, iframe_context)
+            if iframe_context
+            else _check_read_address(
                 search_context, locator, expected_text, element_data, point, pixel_point
             ),
             timeout=budget,
         )
     except asyncio.TimeoutError:
-        verdict = {"unconfirmed": f"the page did not answer the address checks within {budget} s"}
-    if verdict is None:
-        logger.info(
-            f"   📎 READ ADDRESS: '{locator}' carries the value but sits in a shadow root — "
-            f"keeping it (signal: read-address-shadow-kept)"
-        )
-        return result
-    if locate_only and await _locate_step_keeps(search_context, locator, verdict):
-        return result
-    if "unconfirmed" in verdict:
-        logger.info(
-            f"   📎 READ ADDRESS: '{locator}' carries the value being read and "
-            f"{verdict['unconfirmed']} — not handing it over (signal: read-address-unconfirmed)"
-        )
-        return {
-            "found": False,
-            "element_id": result.get("element_id"),
-            "description": result.get("description"),
-            "error": f"the read locator would carry the value being read; {verdict['unconfirmed']}",
-            "read_address_unconfirmed": verdict["unconfirmed"],
-            "read_address_rejected": locator,
-        }
+        return {"unconfirmed": f"the page did not answer the address checks within {budget} s"}
+
+
+def _rewritten_result(
+    result: Dict[str, Any], verdict: Dict[str, Any], locator: str, iframe_context: Optional[str]
+) -> Dict[str, Any]:
+    """``result`` with the confirmed address as its only locator, the frame put back."""
     rewritten = verdict["locator"]
     # Owner (2026-10-04): a card / row address states its position on purpose
     # ("the first product", "row 1") and the rule validated it — stable, no
     # NLRF warning. The xpath fallbacks keep classify_locator's honest verdict.
     stability = STABLE if verdict["kind"] == "card-path" else classify_locator(rewritten)
-    said = (
-        ("LOCATE", "lands on another element than the one pointed at", "locate-address-reaimed")
-        if locate_only
-        else ("READ", "carries the value being read", "read-address-rewritten")
-    )
-    logger.info(
-        f"   📎 {said[0]} ADDRESS: '{locator}' {said[1]} — using '{rewritten}' "
-        f"({verdict['source']}, {verdict['kind']}) (signal: {said[2]})"
-    )
-    return {
+    out = {
         **result,
         "best_locator": rewritten,
         "stability": stability,
@@ -731,3 +729,76 @@ async def apply_read_target_policy(
         "read_target_rewritten_from": locator,
         "read_address_source": verdict["source"],
     }
+    out = apply_frame_to_result(out, iframe_context)
+    # apply_frame_to_result scores the whole framed string, and a card-path always holds `>> nth=`;
+    # only an ordinal frame hop keeps it positional (the row-anchored exemption, mirrored).
+    if verdict["kind"] == "card-path" and not is_positional_locator(iframe_context or ""):
+        out["stability"] = out["all_locators"][0]["stability"] = STABLE
+    return out
+
+
+async def apply_read_target_policy(
+    search_context,
+    result: Dict[str, Any],
+    action: Optional[str],
+    expected_text: Optional[str],
+    iframe_context: Optional[str] = None,
+    element_data: Optional[Dict[str, Any]] = None,
+    point: Optional[Tuple[float, float]] = None,
+    pixel_point: Optional[Tuple[float, float]] = None,
+    locate_only: bool = False,
+) -> Dict[str, Any]:
+    """On a READ step, replace a found locator that carries the value being read with the pointed element's structural address, or return found=False with the reason.
+
+    ``locate_only`` (NLRF #162): the step is a wait / hover / upload / count — it reads no value,
+    so the text locator stays when it lands on the pointed element, is re-aimed to the pointed address
+    when it lands elsewhere, and is never refused.
+    """
+    if action not in READ_ACTIONS or not result.get("found"):
+        return result
+    # In a frame a locate-only step's single match IS the target, so it always lands.
+    if (
+        result.get("row_anchored")
+        or result.get("element_type") == "collection"
+        or (iframe_context and locate_only)
+    ):
+        return result
+    locator = result.get("best_locator") or ""
+    # The frame selector's own title / aria-label is not the value being read.
+    if not carries_value(strip_frame(locator, iframe_context), expected_text):
+        return result
+    verdict = await _timed_verdict(
+        search_context, locator, expected_text, iframe_context, element_data, point, pixel_point
+    )
+    if verdict is None:
+        logger.info(
+            f"   📎 READ ADDRESS: '{locator}' carries the value but sits in a shadow root — "
+            f"keeping it (signal: read-address-shadow-kept)"
+        )
+        return result
+    if locate_only and await _locate_step_keeps(search_context, locator, verdict):
+        return result
+    if "unconfirmed" in verdict:
+        logger.info(
+            f"   📎 READ ADDRESS: '{locator}' carries the value being read and "
+            f"{verdict['unconfirmed']} — not handing it over (signal: read-address-unconfirmed)"
+        )
+        return {
+            "found": False,
+            "element_id": result.get("element_id"),
+            "description": result.get("description"),
+            "error": f"the read locator would carry the value being read; {verdict['unconfirmed']}",
+            "read_address_unconfirmed": verdict["unconfirmed"],
+            "read_address_rejected": locator,
+        }
+    rewritten = verdict["locator"]
+    said = (
+        ("LOCATE", "lands on another element than the one pointed at", "locate-address-reaimed")
+        if locate_only
+        else ("READ", "carries the value being read", "read-address-rewritten")
+    )
+    logger.info(
+        f"   📎 {said[0]} ADDRESS: '{locator}' {said[1]} — using '{add_frame(rewritten, iframe_context)}' "
+        f"({verdict['source']}, {verdict['kind']}) (signal: {said[2]})"
+    )
+    return _rewritten_result(result, verdict, locator, iframe_context)

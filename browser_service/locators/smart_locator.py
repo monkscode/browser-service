@@ -4663,8 +4663,9 @@ async def find_unique_locator_at_coordinates(
             validation_method = "playwright"
             accept = True
             if expected_text:
+                # bs #77: search_context is already the frame, so the bare locator is checked
                 semantic_match, actual_text = await validate_semantic_match(
-                    None, expected_text, page=search_context, locator=semantic_locator
+                    None, expected_text, page=search_context, locator=semantic_result["locator"]
                 )
                 accept = semantic_match
                 if not semantic_match:
@@ -4999,6 +5000,31 @@ async def find_unique_locator_at_coordinates(
                     "validation_method": "playwright",
                 },
                 # Track failure metrics for pattern analysis
+                "approach_metrics": {
+                    **_approach_metrics_base,
+                    "locator_approach": "coordinate_fallback",
+                    "fallback_depth": 7,
+                    "success": False,
+                },
+            }
+
+        # bs #54 item 3: no locator string reaches into a frame inside the frame, so the
+        # <iframe> element must not ship as found. No landed_on: that key means a unit error.
+        if iframe_context and tag_check == "iframe":
+            logger.error(f"❌ Point ({x}, {y}) is on a frame element, frame {iframe_context}")
+            # eval_context is the page when the frame could not be entered: the point then
+            # lands on the frame element itself, not on a frame inside it.
+            if eval_context is page:
+                why = (
+                    "the frame could not be entered and the point lands on the frame element itself"
+                )
+            else:
+                why = "a frame inside a frame is not supported"
+            return {
+                "element_id": element_id,
+                "description": element_description,
+                "found": False,
+                "error": f"The point ({x}, {y}) is on a frame element: {why}",
                 "approach_metrics": {
                     **_approach_metrics_base,
                     "locator_approach": "coordinate_fallback",

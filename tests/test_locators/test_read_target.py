@@ -33,6 +33,7 @@ AMAZON = "Portronics Toad 23 Wireless Optical Mouse with 2.4GHz USB Nano Dongle"
         ("text=Sony vaio i5", "Sony vaio i5", True),
         ("a:has-text('Sony vaio i5')", "Sony vaio i5", True),
         ("header >> text=Dashboard", "Dashboard", True),
+        ('iframe[title="coupon-frame"] >>> text=SAVE-1234', "SAVE-1234", True),
         ('role=link[name="A Light in the Attic"]', "A Light in the Attic", True),
         ('[title="A Light in the Attic"]', "A Light in the ...", True),
         (f'[aria-label="{AMAZON}"]', AMAZON, True),
@@ -166,9 +167,44 @@ class TestGate:
         assert out["best_locator"] == "text=Products"
         resolver.assert_not_awaited()
 
-    async def test_iframe_is_untouched(self):
-        out, resolver = await _gate(iframe='iframe[id="main"]')
-        assert out["best_locator"] == "text=Products"
+    async def test_iframe_read_uses_the_framed_check_not_the_page_resolver(self):
+        framed = 'iframe[id="main"] >>> text=Products'
+        check = AsyncMock(return_value={"unconfirmed": "two"})
+        with patch("browser_service.locators.read_target._check_framed_read", new=check):
+            out, resolver = await _gate(
+                result={**BASE, "best_locator": framed}, iframe='iframe[id="main"]'
+            )
+        resolver.assert_not_awaited()
+        check.assert_awaited_once()
+        assert out["found"] is False
+        assert out["read_address_unconfirmed"] == "two"
+
+    @pytest.mark.parametrize(
+        "frame, want",
+        [('iframe[title="shop"]', "stable"), ('iframe[title="shop"] >> nth=1', "positional")],
+    )
+    async def test_framed_card_path_stays_stable_unless_the_frame_hop_is_ordinal(self, frame, want):
+        card = {"locator": ".product-card >> nth=2 >> .price", "kind": "card-path"}
+        check = AsyncMock(return_value={**card, "source": "single match in the frame"})
+        with patch("browser_service.locators.read_target._check_framed_read", new=check):
+            out, _ = await _gate(
+                result={**BASE, "best_locator": f"{frame} >>> text=Products"}, iframe=frame
+            )
+        assert out["best_locator"] == f"{frame} >>> {card['locator']}"
+        assert out["stability"] == want
+        assert out["all_locators"][0]["stability"] == want
+
+    async def test_a_frame_selector_holding_the_value_does_not_start_the_gate(self):
+        frame = 'iframe[title="Chat"]'
+        check = AsyncMock(return_value={"unconfirmed": "x"})
+        with patch("browser_service.locators.read_target._check_framed_read", new=check):
+            out, resolver = await _gate(
+                result={**BASE, "best_locator": f"{frame} >>> .msg"},
+                expected="Chat",
+                iframe=frame,
+            )
+        assert out["best_locator"] == f"{frame} >>> .msg"
+        check.assert_not_awaited()
         resolver.assert_not_awaited()
 
     @pytest.mark.parametrize(

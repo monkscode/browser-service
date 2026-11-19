@@ -3368,14 +3368,17 @@ async def _generate_locators_from_element_data(
         if (
             not should_use_xpath
             and is_collection is False
-            and not row_anchor_text  # a named row keeps owning the pick (its rescue skips xpath)
+            # Only where TEXT-FIRST will not run: a keyword collection request (description words). The gate is
+            # False on a named row anchor, so that row keeps owning the pick (its rescue skips xpath).
+            and _should_treat_as_collection(is_collection, element_description, row_anchor_text)
             and expected_norm
             and " ".join(str(element_data.get("textContent") or "").split()) == expected_norm
         ):
             should_use_xpath = True
             logger.info(
-                "   📌 flag-false-keeps-pointed-element: is_collection=False and the pointed "
-                "element's own text equals the expected text - using its xpath"
+                "   📌 flag-false-keeps-pointed-element: is_collection=False, TEXT-FIRST will not run "
+                "for this keyword-collection request, and the pointed element's own text equals the "
+                "expected text - using its xpath"
             )
 
         if should_use_xpath:

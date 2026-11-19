@@ -68,15 +68,24 @@ async def _step0(page, is_collection, expected_text="Toronto Maple Leafs"):
 async def test_step0_false_with_text_no_longer_ships_the_rows(page):
     """The d16 failure: with the expected text, False must not end in `tbody > tr` (7 matches).
 
-    STEP 0 now declines (the element has no semantic attribute and the text is known, so TEXT-FIRST owns it);
-    anything it did answer must be the one cell.
+    With the cell's own text in element_data (1d) STEP 0 answers the one cell by xpath; without it STEP 0
+    declines (no semantic attribute, text known, xpath skipped for TEXT-FIRST).
     """
-    result = await _step0(page, False)
-    if result is not None:
-        assert result["element_type"] != "collection"
-        locator = page.locator(result["best_locator"])
-        assert await locator.count() == 1
-        assert (await locator.inner_text()).strip() == "Toronto Maple Leafs"
+    result = await _generate_locators_from_element_data(
+        page,
+        {**CELL_DATA, "textContent": "Toronto Maple Leafs"},
+        "elem_3",
+        CELL_DESCRIPTION,
+        "Toronto Maple Leafs",
+        page=page,
+        is_collection=False,
+    )
+    assert result is not None
+    assert result["element_type"] != "collection"
+    locator = page.locator(result["best_locator"])
+    assert await locator.count() == 1
+    assert (await locator.inner_text()).strip() == "Toronto Maple Leafs"
+    assert await _step0(page, False) is None
 
 
 async def test_step0_false_without_text_ships_the_one_cell(page, caplog):
@@ -194,3 +203,19 @@ async def test_cascade_true_on_a_data_row_still_ships_the_rows(page):
     assert result["unique"] is False
     assert result["element_type"] == "collection"
     assert _refuse_one_element_for_group(result, True, None, description) is result
+
+
+async def test_cascade_false_on_a_plain_element_keeps_text_first(page):
+    """Control (1d blast radius): no collection words, own text == expected text -> False changes nothing."""
+    button = {
+        "tagName": "button",
+        "className": "",
+        "xpath": "html/body/div/form/button[2]",
+        "textContent": "Cancel",
+    }
+    args = (page, button, "form button:nth-child(2)", "the Cancel button")
+    flagged = await _cascade(*args, False, "Cancel")
+    absent = await _cascade(*args, None, "Cancel")
+    assert flagged["found"] is True
+    assert flagged["best_locator"] == absent["best_locator"]
+    assert "xpath" not in flagged["best_locator"]

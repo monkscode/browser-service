@@ -176,7 +176,8 @@ class TestGate:
             )
         resolver.assert_not_awaited()
         check.assert_awaited_once()
-        assert out["found"] is False and out["read_address_unconfirmed"] == "two"
+        assert out["found"] is False
+        assert out["read_address_unconfirmed"] == "two"
 
     @pytest.mark.parametrize(
         "frame, want",
@@ -190,7 +191,8 @@ class TestGate:
                 result={**BASE, "best_locator": f"{frame} >>> text=Products"}, iframe=frame
             )
         assert out["best_locator"] == f"{frame} >>> {card['locator']}"
-        assert (out["stability"], out["all_locators"][0]["stability"]) == (want, want)
+        assert out["stability"] == want
+        assert out["all_locators"][0]["stability"] == want
 
     async def test_a_frame_selector_holding_the_value_does_not_start_the_gate(self):
         frame = 'iframe[title="Chat"]'

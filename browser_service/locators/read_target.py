@@ -697,6 +697,46 @@ async def _timed_verdict(
         return {"unconfirmed": f"the page did not answer the address checks within {budget} s"}
 
 
+def _rewritten_result(
+    result: Dict[str, Any], verdict: Dict[str, Any], locator: str, iframe_context: Optional[str]
+) -> Dict[str, Any]:
+    """``result`` with the confirmed address as its only locator, the frame put back."""
+    rewritten = verdict["locator"]
+    # Owner (2026-10-04): a card / row address states its position on purpose
+    # ("the first product", "row 1") and the rule validated it — stable, no
+    # NLRF warning. The xpath fallbacks keep classify_locator's honest verdict.
+    stability = STABLE if verdict["kind"] == "card-path" else classify_locator(rewritten)
+    out = {
+        **result,
+        "best_locator": rewritten,
+        "stability": stability,
+        # The only entry: workflow.py's PHASE-2 re-ranker scores every
+        # unique+valid entry and would otherwise re-promote the original.
+        "all_locators": [
+            {
+                "type": f"read-address-{verdict['kind']}",
+                "locator": rewritten,
+                "priority": READ_TARGET_PRIORITY,
+                "strategy": f"Structural address of the {verdict['source']} (read address)",
+                "count": 1,
+                "unique": True,
+                "valid": True,
+                "validated": True,
+                "validation_method": "playwright",
+                "stability": stability,
+            }
+        ],
+        "read_target_rewritten_from": locator,
+        "read_address_source": verdict["source"],
+    }
+    out = apply_frame_to_result(out, iframe_context)
+    # apply_frame_to_result scores the whole framed string, and a card-path always holds `>> nth=`;
+    # only an ordinal frame hop keeps it positional (the row-anchored exemption, mirrored).
+    if verdict["kind"] == "card-path" and not is_positional_locator(iframe_context or ""):
+        out["stability"] = out["all_locators"][0]["stability"] = STABLE
+    return out
+
+
 async def apply_read_target_policy(
     search_context,
     result: Dict[str, Any],
@@ -752,10 +792,6 @@ async def apply_read_target_policy(
             "read_address_rejected": locator,
         }
     rewritten = verdict["locator"]
-    # Owner (2026-10-04): a card / row address states its position on purpose
-    # ("the first product", "row 1") and the rule validated it — stable, no
-    # NLRF warning. The xpath fallbacks keep classify_locator's honest verdict.
-    stability = STABLE if verdict["kind"] == "card-path" else classify_locator(rewritten)
     said = (
         ("LOCATE", "lands on another element than the one pointed at", "locate-address-reaimed")
         if locate_only
@@ -765,32 +801,4 @@ async def apply_read_target_policy(
         f"   📎 {said[0]} ADDRESS: '{locator}' {said[1]} — using '{add_frame(rewritten, iframe_context)}' "
         f"({verdict['source']}, {verdict['kind']}) (signal: {said[2]})"
     )
-    out = {
-        **result,
-        "best_locator": rewritten,
-        "stability": stability,
-        # The only entry: workflow.py's PHASE-2 re-ranker scores every
-        # unique+valid entry and would otherwise re-promote the original.
-        "all_locators": [
-            {
-                "type": f"read-address-{verdict['kind']}",
-                "locator": rewritten,
-                "priority": READ_TARGET_PRIORITY,
-                "strategy": f"Structural address of the {verdict['source']} (read address)",
-                "count": 1,
-                "unique": True,
-                "valid": True,
-                "validated": True,
-                "validation_method": "playwright",
-                "stability": stability,
-            }
-        ],
-        "read_target_rewritten_from": locator,
-        "read_address_source": verdict["source"],
-    }
-    out = apply_frame_to_result(out, iframe_context)
-    # apply_frame_to_result scores the whole framed string, and a card-path always holds `>> nth=`;
-    # only an ordinal frame hop keeps it positional (the row-anchored exemption, mirrored).
-    if verdict["kind"] == "card-path" and not is_positional_locator(iframe_context or ""):
-        out["stability"] = out["all_locators"][0]["stability"] = STABLE
-    return out
+    return _rewritten_result(result, verdict, locator, iframe_context)

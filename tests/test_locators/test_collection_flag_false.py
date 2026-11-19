@@ -21,6 +21,7 @@ from playwright.async_api import async_playwright
 from browser_service.locators.smart_locator import (
     _find_element_via_accessibility,
     _generate_locators_from_element_data,
+    find_unique_locator_at_coordinates,
 )
 
 pytestmark = pytest.mark.integration
@@ -126,3 +127,58 @@ async def test_aria_table_detection_ignores_false(page):
     assert with_false is not None
     assert with_false["element_type"] == "collection"
     assert with_false["locator"] == with_none["locator"]
+
+
+# ---- 1d: the pointed element's own text is the evidence (full cascade) ----
+FIRST_ROW = "html/body/div/section/div/table/tbody/tr[2]"
+FIRST_ROW_TEXT = "Toronto Maple Leafs 1917 38"
+
+
+async def _cascade(page, element_data, selector, description, is_collection, expected_text):
+    x, y = await _center(page, selector)
+    return await find_unique_locator_at_coordinates(
+        page=page,
+        x=x,
+        y=y,
+        element_id="elem_3",
+        element_description=description,
+        expected_text=expected_text,
+        element_data=element_data,
+        is_collection=is_collection,
+    )
+
+
+def _cell_data():
+    return {**CELL_DATA, "textContent": "Toronto Maple Leafs"}
+
+
+async def test_cascade_false_with_matching_cell_text_ships_the_one_cell(page):
+    """d16 end to end: the indexed cell's own text IS the expected text, so False is believed."""
+    result = await _cascade(
+        page, _cell_data(), "tr.team td.name", CELL_DESCRIPTION, False, "Toronto Maple Leafs"
+    )
+    assert result["found"] is True
+    assert result.get("element_type") != "collection"
+    locator = page.locator(result["best_locator"])
+    assert await locator.count() == 1
+    assert (await locator.inner_text()).strip() == "Toronto Maple Leafs"
+
+
+async def test_cascade_absent_flag_keeps_the_rows_answer(page):
+    """Control: flag absent -> today's rows answer."""
+    result = await _cascade(
+        page, _cell_data(), "tr.team td.name", CELL_DESCRIPTION, None, "Toronto Maple Leafs"
+    )
+    assert result["found"] is True
+    assert result["element_type"] == "collection"
+
+
+async def test_cascade_false_on_a_whole_row_keeps_todays_answer(page):
+    """Control (q06 shape): False, pointed at a whole row whose text is not the expected text -> unchanged."""
+    row = {"tagName": "tr", "className": "team", "xpath": FIRST_ROW, "textContent": FIRST_ROW_TEXT}
+    args = (page, row, "tr.team", "table rows with data in the results table")
+    flagged = await _cascade(*args, False, "Toronto Maple Leafs")
+    absent = await _cascade(*args, None, "Toronto Maple Leafs")
+    assert flagged["found"] is True
+    assert flagged["best_locator"] == absent["best_locator"]
+    assert flagged.get("element_type") == absent.get("element_type")

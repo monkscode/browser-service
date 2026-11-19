@@ -3331,6 +3331,24 @@ async def _generate_locators_from_element_data(
         # 3. We're inside an iframe
         should_use_xpath = not expected_text or has_semantic_locators or in_iframe
 
+        # bs #93: a False flag is believed only when the pointed element's own text IS the expected text (exact,
+        # whitespace-normalised). TEXT-FIRST is skipped for a keyword collection request, so without the xpath
+        # d16 fell through to STEP 0.5 and shipped the rows. q06's wrong False points at a whole <tr> whose text
+        # is "Cierra Vega 39 ..." for expected text "Cierra" - not equal, so its rescue is untouched.
+        expected_norm = " ".join(str(expected_text or "").split())
+        if (
+            not should_use_xpath
+            and is_collection is False
+            and not row_anchor_text  # a named row keeps owning the pick (its rescue skips xpath)
+            and expected_norm
+            and " ".join(str(element_data.get("textContent") or "").split()) == expected_norm
+        ):
+            should_use_xpath = True
+            logger.info(
+                "   📌 flag-false-keeps-pointed-element: is_collection=False and the pointed "
+                "element's own text equals the expected text - using its xpath"
+            )
+
         if should_use_xpath:
             full_xpath = element_data["xpath"]
 

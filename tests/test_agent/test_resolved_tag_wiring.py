@@ -1,6 +1,6 @@
 """
 D v1 wiring: every found result that leaves find_unique_locator_action carries
-the resolved tag. smart_locator has 11 approach_metrics returns
+the resolved tag. smart_locator has 12 approach_metrics returns
 (**_approach_metrics_base); all of them reach the caller through ONE call site
 (_run_cascade), so the stamp sits there, plus the two candidate accepts that
 return early.
@@ -18,9 +18,9 @@ from browser_service.agent.actions import find_unique_locator_action
 
 INDEXED = {"tagName": "a", "id": "", "textContent": "Dashboard", "xpath": "html/body/a"}
 
-# (locator_approach, found) for the 11 smart_locator returns on 62f640b:
+# (locator_approach, found) for the 12 smart_locator returns (11 on 62f640b, +1 for bs #54 item 3):
 # 6 found (element_data, collection, text_first, semantic, accessibility,
-# coordinate_fallback@5300) and 5 failures (coordinate_fallback).
+# coordinate_fallback@5300) and 6 failures (coordinate_fallback).
 APPROACHES = [
     ("element_data", True),
     ("collection", True),
@@ -33,6 +33,7 @@ APPROACHES = [
     ("coordinate_fallback", False),
     ("coordinate_fallback", False),
     ("coordinate_fallback", False),
+    ("coordinate_fallback", False),  # bs #54 item 3: a frame inside the frame
 ]
 
 
@@ -132,7 +133,7 @@ def test_the_population_is_the_one_the_test_names():
     second cascade call site, this fails, and APPROACHES / the stamp sites are revisited."""
     smart_src = Path(smart_locator_module.__file__).read_text(encoding="utf-8")
     actions_src = Path(actions_module.__file__).read_text(encoding="utf-8")
-    assert smart_src.count("**_approach_metrics_base") == 11
+    assert smart_src.count("**_approach_metrics_base") == 12
     assert len(re.findall(r"find_unique_locator_at_coordinates\(", actions_src)) == 1
 
 

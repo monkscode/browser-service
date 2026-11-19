@@ -4653,6 +4653,7 @@ async def find_unique_locator_at_coordinates(
 
         if semantic_result:
             semantic_locator = semantic_result["locator"]
+            bare_semantic_locator = semantic_locator
             # Add iframe prefix if needed
             if iframe_context:
                 semantic_locator = add_frame(semantic_locator, iframe_context)
@@ -4663,8 +4664,9 @@ async def find_unique_locator_at_coordinates(
             validation_method = "playwright"
             accept = True
             if expected_text:
+                # bs #77: search_context is already the frame, so the bare locator is checked
                 semantic_match, actual_text = await validate_semantic_match(
-                    None, expected_text, page=search_context, locator=semantic_locator
+                    None, expected_text, page=search_context, locator=bare_semantic_locator
                 )
                 accept = semantic_match
                 if not semantic_match:
@@ -4999,6 +5001,26 @@ async def find_unique_locator_at_coordinates(
                     "validation_method": "playwright",
                 },
                 # Track failure metrics for pattern analysis
+                "approach_metrics": {
+                    **_approach_metrics_base,
+                    "locator_approach": "coordinate_fallback",
+                    "fallback_depth": 7,
+                    "success": False,
+                },
+            }
+
+        # bs #54 item 3: no locator string reaches into a frame inside the frame, so the
+        # <iframe> element must not ship as found. No landed_on: that key means a unit error.
+        if iframe_context and tag_check == "iframe":
+            logger.error(f"❌ Point ({x}, {y}) is on a frame inside {iframe_context}")
+            return {
+                "element_id": element_id,
+                "description": element_description,
+                "found": False,
+                "error": (
+                    f"The point ({x}, {y}) is on a frame inside a frame; "
+                    "a frame inside a frame is not supported"
+                ),
                 "approach_metrics": {
                     **_approach_metrics_base,
                     "locator_approach": "coordinate_fallback",

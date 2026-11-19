@@ -167,10 +167,8 @@ async def test_accessibility_step_carries_the_frame(page):
 async def test_description_step_carries_the_frame(page):
     """No expected_text: text-first is skipped and the description answers.
 
-    Since bs #72 a call needs evidence, and in a frame an expected_text cannot be used here (the
-    description step checks its frame-prefixed locator against the frame and errors),
-    so the call carries a bare element_data: it names no id, class or xpath for the element_data
-    step to use, and the description still answers.
+    Since bs #72 a call needs evidence, so the call carries a bare element_data: it names no
+    id, class or xpath for the element_data step to use, and the description still answers.
     """
     out = await _in_frame(
         page,
@@ -179,6 +177,30 @@ async def test_description_step_carries_the_frame(page):
         element_data={"tagName": "button"},
     )
     _assert_carries_the_frame(out, 'role=button[name="Save draft"]', "semantic")
+
+
+async def test_description_step_checks_the_expected_text_inside_the_frame(page):
+    """bs #77: the description step validated its frame-prefixed locator against the
+    frame itself (a frame inside a frame), so any expected_text rejected it. The
+    one-character expected_text is below the text-first minimum (2), so STEP 2 answers."""
+    out = await _in_frame(
+        page,
+        "#save-btn",
+        element_description="Save draft button",
+        expected_text="S",
+    )
+    _assert_carries_the_frame(out, 'role=button[name="Save draft"]', "semantic")
+
+
+async def test_description_step_rejects_a_wrong_expected_text_inside_the_frame(page):
+    out = await _in_frame(
+        page,
+        "#save-btn",
+        element_description="Save draft button",
+        expected_text="Q",
+    )
+    assert _approach(out) != "semantic"
+    assert out.get("best_locator") != f'{PREFIX}role=button[name="Save draft"]'
 
 
 async def test_candidate_that_names_the_frame_itself_falls_back_and_is_prefixed_once(page):
@@ -303,6 +325,22 @@ async def test_coordinate_fallback_in_a_frame_carries_the_frame(page):
     assert [e for e in [out["best_locator"], *entries] if not e.startswith(PREFIX)] == []
     inner = strip_frame(out["best_locator"], FRAME)
     assert await page.frame_locator(FRAME).locator(inner).inner_text() == "Synced"
+
+
+async def test_coordinate_fallback_on_a_nested_frame_is_refused(page):
+    """bs #54 item 3: a point on a frame inside the frame has no locator that
+    reaches into it, so the coordinate step refuses instead of returning the
+    <iframe> as found. No landed_on: that key words the failure as a unit error."""
+    out = await _in_frame(
+        page,
+        'iframe[title="nested preview"]',
+        element_description="status",
+        element_data={"tagName": "div"},  # evidence that names nothing, so only STEP 3 is left
+    )
+    assert out["found"] is False
+    assert "frame inside a frame" in out["error"]
+    assert "landed_on" not in out
+    assert _approach(out) == "coordinate_fallback"
 
 
 async def test_candidate_in_an_ordinal_frame_is_positional(page):

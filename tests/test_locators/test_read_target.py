@@ -179,6 +179,33 @@ class TestGate:
         assert out["found"] is False and out["read_address_unconfirmed"] == "two"
 
     @pytest.mark.parametrize(
+        "frame, want",
+        [('iframe[title="shop"]', "stable"), ('iframe[title="shop"] >> nth=1', "positional")],
+    )
+    async def test_framed_card_path_stays_stable_unless_the_frame_hop_is_ordinal(self, frame, want):
+        card = {"locator": ".product-card >> nth=2 >> .price", "kind": "card-path"}
+        check = AsyncMock(return_value={**card, "source": "single match in the frame"})
+        with patch("browser_service.locators.read_target._check_framed_read", new=check):
+            out, _ = await _gate(
+                result={**BASE, "best_locator": f"{frame} >>> text=Products"}, iframe=frame
+            )
+        assert out["best_locator"] == f"{frame} >>> {card['locator']}"
+        assert (out["stability"], out["all_locators"][0]["stability"]) == (want, want)
+
+    async def test_a_frame_selector_holding_the_value_does_not_start_the_gate(self):
+        frame = 'iframe[title="Chat"]'
+        check = AsyncMock(return_value={"unconfirmed": "x"})
+        with patch("browser_service.locators.read_target._check_framed_read", new=check):
+            out, resolver = await _gate(
+                result={**BASE, "best_locator": f"{frame} >>> .msg"},
+                expected="Chat",
+                iframe=frame,
+            )
+        assert out["best_locator"] == f"{frame} >>> .msg"
+        check.assert_not_awaited()
+        resolver.assert_not_awaited()
+
+    @pytest.mark.parametrize(
         "extra", [{"row_anchored": True}, {"element_type": "collection"}, {"found": False}]
     )
     async def test_anchored_collections_and_misses_are_untouched(self, extra):

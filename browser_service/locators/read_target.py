@@ -44,11 +44,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from browser_service.locators.action_fit import FIT_READ_TIMEOUT_MS, READ_ACTIONS
 from browser_service.locators.css_tokens import robot_safe
-from browser_service.locators.frame_locator import apply_frame_to_result, strip_frame
+from browser_service.locators.frame_locator import add_frame, apply_frame_to_result, strip_frame
 from browser_service.locators.hidden_value import HIDES_VALUE_JS
 from browser_service.locators.stability import (
     STABLE,
     classify_locator,
+    is_positional_locator,
     is_volatile_attr_name,
     score_stability,
 )
@@ -606,7 +607,7 @@ async def _check_framed_read(
     search_context, locator: str, expected_text: Optional[str], iframe_context: str
 ) -> Optional[Dict[str, Any]]:
     """bs #73 (b): the gate's verdict for a read inside an iframe, without the agent's point (its coordinates are page-level). The locator minus its frame hop must match exactly once in the frame, show the observed text by its own text, and have a structural address. None in a shadow root; any failure is unconfirmed."""
-    # shortcut: a decoy that is the only match is addressed, not refused; upgrade if a real framed page shows one.
+    # shortcut: a decoy that is the only match is addressed, not refused, and an inner locator ending in `>> nth=N` always counts 1, so a second element holding the value goes unseen (the same element the old code shipped); upgrade if a real framed page shows one.
     observed = expected_text or ""
     try:
         inner = strip_frame(locator, iframe_context)
@@ -672,6 +673,30 @@ async def _locate_step_keeps(search_context, locator: str, verdict: Dict[str, An
     return False
 
 
+async def _timed_verdict(
+    search_context, locator, expected_text, iframe_context, element_data, point, pixel_point
+) -> Optional[Dict[str, Any]]:
+    """The page-touching verdict (framed or page-level) under the pass's own time budget."""
+    from browser_service.config import config
+
+    budget = config.locator.custom_action_timeout
+    # The pass's OWN budget, not the cascade's remainder: the cascade budget is
+    # per run (the misfit legacy fallback in _settle_action_fit can run a second
+    # full cascade), so a remainder would turn a slow-but-successful cascade
+    # into a spurious not-found.
+    try:
+        return await asyncio.wait_for(
+            _check_framed_read(search_context, locator, expected_text, iframe_context)
+            if iframe_context
+            else _check_read_address(
+                search_context, locator, expected_text, element_data, point, pixel_point
+            ),
+            timeout=budget,
+        )
+    except asyncio.TimeoutError:
+        return {"unconfirmed": f"the page did not answer the address checks within {budget} s"}
+
+
 async def apply_read_target_policy(
     search_context,
     result: Dict[str, Any],
@@ -699,26 +724,12 @@ async def apply_read_target_policy(
     ):
         return result
     locator = result.get("best_locator") or ""
-    if not carries_value(locator, expected_text):
+    # The frame selector's own title / aria-label is not the value being read.
+    if not carries_value(strip_frame(locator, iframe_context), expected_text):
         return result
-    from browser_service.config import config
-
-    budget = config.locator.custom_action_timeout
-    # The pass's OWN budget, not the cascade's remainder: the cascade budget is
-    # per run (the misfit legacy fallback in _settle_action_fit can run a second
-    # full cascade), so a remainder would turn a slow-but-successful cascade
-    # into a spurious not-found.
-    try:
-        verdict = await asyncio.wait_for(
-            _check_framed_read(search_context, locator, expected_text, iframe_context)
-            if iframe_context
-            else _check_read_address(
-                search_context, locator, expected_text, element_data, point, pixel_point
-            ),
-            timeout=budget,
-        )
-    except asyncio.TimeoutError:
-        verdict = {"unconfirmed": f"the page did not answer the address checks within {budget} s"}
+    verdict = await _timed_verdict(
+        search_context, locator, expected_text, iframe_context, element_data, point, pixel_point
+    )
     if verdict is None:
         logger.info(
             f"   📎 READ ADDRESS: '{locator}' carries the value but sits in a shadow root — "
@@ -751,7 +762,7 @@ async def apply_read_target_policy(
         else ("READ", "carries the value being read", "read-address-rewritten")
     )
     logger.info(
-        f"   📎 {said[0]} ADDRESS: '{locator}' {said[1]} — using '{rewritten}' "
+        f"   📎 {said[0]} ADDRESS: '{locator}' {said[1]} — using '{add_frame(rewritten, iframe_context)}' "
         f"({verdict['source']}, {verdict['kind']}) (signal: {said[2]})"
     )
     out = {
@@ -777,4 +788,9 @@ async def apply_read_target_policy(
         "read_target_rewritten_from": locator,
         "read_address_source": verdict["source"],
     }
-    return apply_frame_to_result(out, iframe_context)
+    out = apply_frame_to_result(out, iframe_context)
+    # apply_frame_to_result scores the whole framed string, and a card-path always holds `>> nth=`;
+    # only an ordinal frame hop keeps it positional (the row-anchored exemption, mirrored).
+    if verdict["kind"] == "card-path" and not is_positional_locator(iframe_context or ""):
+        out["stability"] = out["all_locators"][0]["stability"] = STABLE
+    return out

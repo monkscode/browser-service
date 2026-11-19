@@ -104,7 +104,7 @@ async def test_a_match_in_a_shadow_root_keeps_the_locator():
 
 
 async def test_a_single_match_that_does_not_show_the_text_is_not_found():
-    # the locator finds one wrapper that holds the value in a child; the wrapper's own text is "Other"
+    # the locator finds one wrapper that holds the value in a child; the wrapper's own text reads "other save-1234" (its text plus the child's)
     inner = '<div class="w">Other<p>SAVE-1234</p></div>'
     out = await _gate(inner, f'{PREFIX}div:has-text("SAVE-1234")')
     assert out["found"] is False

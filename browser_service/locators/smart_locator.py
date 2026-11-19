@@ -2542,6 +2542,7 @@ async def _find_element_via_accessibility(
     expected_text: Optional[str] = None,
     search_context=None,
     iframe_context: Optional[str] = None,
+    is_collection: Optional[bool] = None,  # Agent's flag; False refuses many (bs #93)
 ) -> Optional[dict]:
     """
     STEP 2.5: Accessibility API Fallback Strategy
@@ -2602,7 +2603,7 @@ async def _find_element_via_accessibility(
 
     role = acc_info["role"]
     accessible_name = acc_info.get("accessibleName")
-    is_collection = acc_info.get("isCollection", False)
+    role_is_collection = acc_info.get("isCollection", False)
 
     if accessible_name:
         # D2 (dialog-clobber): normalize whitespace BEFORE the name enters
@@ -2693,7 +2694,12 @@ async def _find_element_via_accessibility(
             return None
 
         # Only accept unique locators (count=1) for non-collection elements
-        if count > 1 and not is_collection:
+        if count > 1 and role_is_collection and is_collection is False:
+            logger.info(
+                "   📌 flag-false-refuses-many: the agent flagged is_collection=False, so the "
+                f"ARIA collection role {locator} ({count} matches) is not accepted"
+            )
+        if count > 1 and (not role_is_collection or is_collection is False):
             logger.info(
                 f"   ❌ Accessibility locator not unique: {locator} ({count} matches) - trying 2.5c tree search..."
             )
@@ -2711,7 +2717,7 @@ async def _find_element_via_accessibility(
         return {
             "locator": locator,
             "count": count,
-            "unique": count == 1 and not is_collection,
+            "unique": count == 1 and not role_is_collection,
             "role": role,
             "accessible_name": accessible_name,
             "element_type": role,
@@ -3067,15 +3073,24 @@ async def _generate_locators_from_element_data(
     # while the agent's call carried row_anchor_text AND is_collection=False.
     # Demote to unknown so the generic candidate loop (which owns the
     # row-anchor rescue) handles the element.
-    if type_info.primary_type == "collection" and row_anchor_text:
-        type_info.signals.append("row-anchor-suppresses-collection")
+    # bs #93: the agent's explicit is_collection=False says the same thing — ONE element (d16: "first team name
+    # cell in the search results table" classified 'collection' off "table"/"results" and shipped `tbody > tr`).
+    if type_info.primary_type == "collection" and (row_anchor_text or is_collection is False):
+        if row_anchor_text:
+            type_info.signals.append("row-anchor-suppresses-collection")
+            logger.info(
+                "   📌 Collection classification suppressed: row anchor "
+                f"'{row_anchor_text}' names one row's control"
+            )
+        else:
+            type_info.signals.append("flag-false-suppresses-collection")
+            logger.info(
+                "   📌 Collection classification suppressed: the agent flagged "
+                "is_collection=False (one element)"
+            )
         type_info.primary_type = "unknown"
         type_info.framework = ""
         type_info.confidence = "low"
-        logger.info(
-            "   📌 Collection classification suppressed: row anchor "
-            f"'{row_anchor_text}' names one row's control"
-        )
 
     # Determine which type to probe and whether we're in confirmation or
     # discovery mode. Discovery mode kicks in when the classifier said
@@ -3096,10 +3111,14 @@ async def _generate_locators_from_element_data(
         from .classifier import map_vision_hint
 
         mapped = map_vision_hint(vision_type_hint)
-        if mapped == "collection" and row_anchor_text:
+        if mapped == "collection" and (row_anchor_text or is_collection is False):
             # Same trust order for the discovery route: a vision hint of
             # 'collection' must not resurrect the suppressed verdict.
-            type_info.signals.append("row-anchor-suppresses-collection")
+            type_info.signals.append(
+                "row-anchor-suppresses-collection"
+                if row_anchor_text
+                else "flag-false-suppresses-collection"
+            )
         elif mapped in (
             "dropdown",
             "collection",
@@ -4712,6 +4731,7 @@ async def find_unique_locator_at_coordinates(
         expected_text=expected_text,
         search_context=search_context,
         iframe_context=iframe_context,
+        is_collection=is_collection,
     )
 
     # Validate against expected_text if provided. D1 (dialog-clobber): a

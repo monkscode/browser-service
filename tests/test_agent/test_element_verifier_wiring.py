@@ -275,7 +275,8 @@ async def test_verdict_line_names_the_judged_locator_and_keeps_both_parsers(capl
         r"Element verifier for (elem_\d+): (\w+) \(prompt (\d+) / completion (\d+) tokens, ([\d.]+)s\)",
         line,
     )
-    assert m and m.groups() == ("elem_1", "match", "310", "12", "0.8")
+    assert m is not None
+    assert m.groups() == ("elem_1", "match", "310", "12", "0.8")
 
 
 async def test_mismatch_verdict_line_names_the_rejected_picks_locator(caplog):

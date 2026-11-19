@@ -2696,8 +2696,9 @@ async def _find_element_via_accessibility(
         # Only accept unique locators (count=1) for non-collection elements
         if count > 1 and role_is_collection and is_collection is False:
             logger.info(
-                "   📌 flag-false-refuses-many: the agent flagged is_collection=False, so the "
-                f"ARIA collection role {locator} ({count} matches) is not accepted"
+                "   📌 MANY MATCHES REFUSED: the agent flagged is_collection=False, so the "
+                f"ARIA collection role {locator} ({count} matches) is not accepted "
+                "(signal: flag-false-refuses-many)"
             )
         if count > 1 and (not role_is_collection or is_collection is False):
             logger.info(
@@ -3103,8 +3104,9 @@ async def _generate_locators_from_element_data(
         if type_info.primary_type == "unknown":
             type_info.signals.append("flag-true-routes-collection")
             logger.info(
-                "   📌 flag-true-routes-collection: the agent flagged is_collection=True and the "
-                "classifier found no type - routing to the collection handler"
+                "   📌 FLAG ROUTES COLLECTION: the agent flagged is_collection=True and the "
+                "classifier found no type - routing to the collection handler "
+                "(signal: flag-true-routes-collection)"
             )
         type_info.primary_type = "collection"
 
@@ -3295,8 +3297,8 @@ async def _generate_locators_from_element_data(
             # bs #86: the flag says a group; none found here, so no single element may stand in for it.
             # STEP 0.5's text walk and STEP 2.5's row answers still get their turn.
             logger.info(
-                "   ⛔ flag-true-no-group: is_collection=True but the collection handler found no group "
-                "- skipping the single-element candidates"
+                "   ⛔ NO GROUP FOUND: is_collection=True but the collection handler found no group "
+                "- skipping the single-element candidates (signal: flag-true-no-group)"
             )
             return None
         # Else: fall through to the generic 21-strategy below.
@@ -3372,9 +3374,9 @@ async def _generate_locators_from_element_data(
         ):
             should_use_xpath = True
             logger.info(
-                "   📌 flag-false-keeps-pointed-element: is_collection=False, TEXT-FIRST will not run "
+                "   📌 POINTED ELEMENT KEPT: is_collection=False, TEXT-FIRST will not run "
                 "for this keyword-collection request, and the pointed element's own text equals the "
-                "expected text - using its xpath"
+                "expected text - using its xpath (signal: flag-false-keeps-pointed-element)"
             )
 
         if should_use_xpath:

@@ -176,7 +176,7 @@ async def test_flag_true_unknown_verdict_routes_to_the_item_list(page, caplog):
     assert result["element_type"] == "collection"
     assert result["unique"] is False
     assert "flag-true-routes-collection" in result["classifier_signals"]
-    assert "flag-true-routes-collection" in caplog.text
+    assert "(signal: flag-true-routes-collection)" in caplog.text
 
 
 async def test_flag_true_beats_a_specialised_vision_hint(page, caplog):
@@ -202,7 +202,7 @@ async def test_flag_true_beats_a_specialised_vision_hint(page, caplog):
             vision_type_hint="dropdown",
             is_collection=True,
         )
-    assert "flag-true-routes-collection" in caplog.text
+    assert "(signal: flag-true-routes-collection)" in caplog.text
     assert result is not None
     assert result["best_locator"] == "ol > li"
     assert result["element_type"] == "collection"

@@ -9,10 +9,14 @@ tests in tests/test_locators/test_collection_indexed_walk.py).
 """
 
 import logging
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from browser_service.agent.actions import _refuse_one_element_for_group
+from browser_service.agent.actions import (
+    _refuse_one_element_for_group,
+    find_unique_locator_action,
+)
 
 DESCRIPTION = "book item containers in the main product grid"
 
@@ -87,3 +91,59 @@ def test_false_or_absent_flag_is_kept(flag):
 def test_not_found_result_is_kept():
     result = {**_plain(), "found": False}
     assert _refuse_one_element_for_group(result, True, None, DESCRIPTION) is result
+
+
+# --- the wiring: find_unique_locator_action applies the helper to the cascade's final result ---
+
+CASCADE_RESULT = {
+    "element_id": "elem_2",
+    "found": True,
+    "best_locator": "css=.from-cascade",
+    "unique": True,
+    "count": 1,
+    "element_type": "link",
+}
+
+
+@pytest.fixture
+def page():
+    shipped = MagicMock()
+    shipped.count = AsyncMock(return_value=1)
+    pg = MagicMock()
+    pg.url = "https://example.com/app"
+    pg.locator = MagicMock(return_value=shipped)
+    return pg
+
+
+@pytest.fixture
+def cascade():
+    spy = AsyncMock(return_value=dict(CASCADE_RESULT))
+    with patch("browser_service.locators.find_unique_locator_at_coordinates", new=spy):
+        yield spy
+
+
+async def _action(page, **kwargs):
+    return await find_unique_locator_action(
+        page=page,
+        x=120,
+        y=340,
+        element_id="elem_2",
+        element_description=DESCRIPTION,
+        element_data={"tagName": "a", "className": ""},
+        **kwargs,
+    )
+
+
+async def test_action_refuses_a_unique_cascade_answer_for_true(page, cascade):
+    result = await _action(page, is_collection=True)
+    cascade.assert_called_once()
+    assert result["found"] is False
+    assert result["error_type"] == "CollectionNotFound"
+    assert result["refused_locator"] == "css=.from-cascade"
+
+
+async def test_action_passes_the_unique_cascade_answer_without_the_flag(page, cascade):
+    """Control: is_collection=None leaves the cascade's unique answer alone."""
+    result = await _action(page, is_collection=None)
+    assert result["found"] is True
+    assert result["best_locator"] == "css=.from-cascade"

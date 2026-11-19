@@ -179,6 +179,35 @@ async def test_flag_true_unknown_verdict_routes_to_the_item_list(page, caplog):
     assert "flag-true-routes-collection" in caplog.text
 
 
+async def test_flag_true_beats_a_specialised_vision_hint(page, caplog):
+    """The flag decides, heuristics only when it is absent: a vision hint of 'dropdown' on an `unknown` verdict
+    does not keep the discovery route - the call still reaches the collection handler (and ships the item list).
+
+    The classifier is patched to `unknown`: a lone hint is a +3 vote that makes the verdict 'dropdown' itself, so
+    `unknown` beside a mapped hint only arises on a vote tie.
+    """
+    element_data = {"tagName": "a", "className": "", "xpath": IMAGE_LINK}
+    tied = ElementTypeInfo(primary_type="unknown", framework="", confidence="low", signals=[])
+    with (
+        patch("browser_service.locators.smart_locator.classify_element_type", return_value=tied),
+        caplog.at_level("INFO"),
+    ):
+        result = await _generate_locators_from_element_data(
+            page,
+            element_data,
+            "elem_2",
+            B9A6_DESCRIPTION,
+            None,
+            page=page,
+            vision_type_hint="dropdown",
+            is_collection=True,
+        )
+    assert "flag-true-routes-collection" in caplog.text
+    assert result is not None
+    assert result["best_locator"] == "ol > li"
+    assert result["element_type"] == "collection"
+
+
 async def test_flag_absent_unknown_verdict_keeps_the_one_element_answer(page):
     """Control: the same call without the flag keeps today's one-element answer."""
     result = await _generate_locators_from_element_data(

@@ -3094,15 +3094,11 @@ async def _generate_locators_from_element_data(
 
     # bs #86: an explicit is_collection=True with no row anchor is the second source - the handler runs without the
     # DOM probe (its own count > 1 checks stand). A specialised verdict (dropdown, checkbox, ...) keeps today's route.
-    flag_true_collection = False
-    if is_collection is True and not row_anchor_text:
-        from .classifier import map_vision_hint
-
-        # Specialised verdicts keep today's route; so does an unknown one whose vision hint names such a type.
-        flag_true_collection = type_info.primary_type == "collection" or (
-            type_info.primary_type == "unknown"
-            and map_vision_hint(vision_type_hint or "") in ("", "collection")
-        )
+    flag_true_collection = (
+        is_collection is True
+        and not row_anchor_text
+        and type_info.primary_type in ("unknown", "collection")
+    )
     if flag_true_collection:
         if type_info.primary_type == "unknown":
             type_info.signals.append("flag-true-routes-collection")

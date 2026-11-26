@@ -2,7 +2,8 @@
 Element verifier (bs #62 step 3): asks a model whether the element the agent picked is the element a step means.
 
 ``read_element_facts`` reads a few plain facts off the picked element in ONE ``evaluate`` call (tag, short text,
-role, labels, landmark, the row's text, the table column). ``verify_pick`` sends those facts, the user's request,
+role, labels, landmark, the row's text, the table column, and for a wordless element its picture as text: svg
+viewBox / path start / title, or img alt / file name).``verify_pick`` sends those facts, the user's request,
 the step and its action to the model and returns a verdict. The element's typed value is never read or sent; text
 inside an ``[nlrf-secret]`` element or an ``<input type=password>`` is dropped from every text field. Fail-open:
 a missing fact read, a timeout, an exception or a malformed reply is a "skipped" outcome, never a verdict, and
@@ -89,6 +90,33 @@ ELEMENT_FACTS_JS = (
     column_position: position,
     column_header: header,
   };
+  // graphic: a wordless element's picture as text (first svg: viewBox, path start, title; else first img: alt, file name).
+  // shortcut: an svg sprite icon (<use href>) has no path of its own, so only its viewBox shows; upgrade if one is mis-judged.
+  if (!facts.text && !facts.aria_label && !facts.title && !facts.label && !hides(el)) {
+    const first = (sel) => [el, ...el.querySelectorAll(sel)].find((n) => n.matches(sel) && !hides(n));
+    const fileName = (s) => /^data:/i.test(s)
+      ? 'data:' + s.slice(5).split(/[;,]/)[0]
+      : s.split(/[?#]/)[0].split('/').pop().slice(0, 60);
+    const join = (parts) => parts.filter((p) => !p.endsWith('=')).join(' ');
+    const svg = first('svg');
+    const img = svg ? null : first('img');
+    if (svg) {
+      const path = svg.querySelector('path');
+      const title = svg.querySelector('title');
+      facts.graphic = join([
+        'svg',
+        'viewBox=' + squash(svg.getAttribute('viewBox')),
+        'path=' + squash(path && path.getAttribute('d')).slice(0, 60),
+        'title=' + squash(title && title.textContent).slice(0, 40),
+      ]);
+    } else if (img) {
+      facts.graphic = join([
+        'img',
+        'alt=' + squash(img.getAttribute('alt')).slice(0, 60),
+        'src=' + fileName(squash(img.getAttribute('src'))),
+      ]);
+    }
+  }
   for (const k of Object.keys(facts)) if (!facts[k]) delete facts[k];
   return facts;
 }"""

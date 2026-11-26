@@ -338,3 +338,76 @@ def test_rejected_pick_is_not_extracted(rejections, workflow_harness):
     assert entry["found"] is False
     assert not entry.get("best_locator")
     assert entry["error"] == REASON
+
+
+GRAPHIC_FACTS = {"tag": "div", "graphic": "svg viewBox=0 0 24 24 path=M0 0h24v24H0z"}
+GRAPHIC_SIGNAL = "(signal: element-verifier-unsure-graphic-refused)"
+
+
+async def test_unsure_on_a_graphic_pick_is_refused_like_a_mismatch(caplog):
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        (first, second), m = await _run(
+            ["elem_1", "elem_1"],
+            [("unsure", "the facts cannot tell")] * 2,
+            read_facts=AsyncMock(return_value=GRAPHIC_FACTS),
+        )
+    assert "find_unique_locator again" in first.error
+    assert first.metadata["found"] is False and first.metadata["include_screenshot"] is True
+    assert "NOT FOUND" in second.extracted_content and second.error is None
+    assert second.metadata["found"] is False
+    m.interaction.assert_not_awaited()
+    assert "(signal: element-verifier-unsure)" in caplog.text  # the model's own verdict line stays
+    assert GRAPHIC_SIGNAL in caplog.text
+    assert "(signal: element-verifier-retry)" in caplog.text
+    assert "(signal: element-verifier-not-found)" in caplog.text
+    assert "Sign in" not in caplog.text and "M0 0h24" not in caplog.text
+
+
+async def test_unsure_on_a_graphic_requery_keeps_the_validated_locator(caplog):
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        (first, second), m = await _run(
+            ["elem_1", "elem_1"],
+            ["match", "unsure"],
+            engines=[FOUND, {**FOUND, "best_locator": "css=#other"}],
+            read_facts=AsyncMock(return_value=GRAPHIC_FACTS),
+        )
+    _shipped(first)
+    assert second.error is None and "Locator: css=#pick" in second.extracted_content
+    m.interaction.assert_awaited_once()
+    assert "(signal: element-verifier-requery-kept)" in caplog.text
+    assert GRAPHIC_SIGNAL in caplog.text
+
+
+async def test_unsure_without_a_graphic_still_ships(caplog):
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        (result,), m = await _run(["elem_1"], ["unsure"])
+    _shipped(result)
+    m.interaction.assert_awaited_once()
+    assert GRAPHIC_SIGNAL not in caplog.text
+
+
+async def test_match_on_a_graphic_pick_ships(caplog):
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        (result,), m = await _run(
+            ["elem_1"], ["match"], read_facts=AsyncMock(return_value=GRAPHIC_FACTS)
+        )
+    _shipped(result)
+    m.interaction.assert_awaited_once()
+    assert GRAPHIC_SIGNAL not in caplog.text
+
+
+async def test_mismatch_does_not_log_the_graphic_signal(caplog):
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        (first,), _ = await _run(
+            ["elem_1"], [("mismatch", REASON)], read_facts=AsyncMock(return_value=GRAPHIC_FACTS)
+        )
+    assert REASON in first.error
+    assert GRAPHIC_SIGNAL not in caplog.text
+
+
+async def test_skipped_on_a_graphic_pick_still_ships():
+    (result,), m = await _run(
+        ["elem_1"], ["skipped"], read_facts=AsyncMock(return_value=GRAPHIC_FACTS)
+    )
+    _shipped(result)
+    m.interaction.assert_awaited_once()

@@ -38,15 +38,24 @@ SHADOW = """
 """
 
 
-_SVG = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="{d}"/></svg>'
+# The three icon tiles of the stand-in "image-only UI" page: a div with only a style attribute, an aria-hidden svg
+# (bolt / star / heart, the stand-in's own markup), inside <main>.
+_SVG = (
+    '<svg width="48" height="48" viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
+    '<path d="{d}" fill="#444"/></svg>'
+)
 TILES = (
-    '<main><div style="width:40px">'
-    + _SVG.format(d="M13 2L4 14h7l-1 8 9-12h-7z")
-    + '</div><div style="width:40px">'
-    + _SVG.format(d="M12 2l2.9 6.3 6.9.8-5.1 4.7z")
-    + '</div><div style="width:40px">'
-    + _SVG.format(d="M12 21C5 15 2 11 2 8z")
-    + "</div></main>"
+    "<main>"
+    + "".join(
+        f'<div style="display:flex;width:88px;height:88px">{_SVG.format(d=d)}</div>'
+        for d in (
+            "M13 2L4 14h6l-1 8 9-12h-6l1-8z",
+            "M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8L12 17.2l-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8L12 2z",
+            "M12 21s-7.5-4.8-10-9.3C.4 8.6 2.3 5 5.7 5c2 0 3.4 1.1 4.3 2.5h4C14.9 6.1 16.3 5 "
+            "18.3 5c3.4 0 5.3 3.6 3.7 6.7C19.5 16.2 12 21 12 21z",
+        )
+    )
+    + "</main>"
 )
 
 IMG_TILES = """
@@ -140,19 +149,24 @@ class TestElementFactsOnARealDom:
         await page.set_content(TILES)
         tiles = page.locator("main > div")
         graphics = [(await read_element_facts(tiles.nth(i)))["graphic"] for i in range(3)]
+        # exactly the strings Task 1 measured live on the stand-in page
         assert graphics == [
-            "svg viewBox=0 0 24 24 path=M13 2L4 14h7l-1 8 9-12h-7z",
-            "svg viewBox=0 0 24 24 path=M12 2l2.9 6.3 6.9.8-5.1 4.7z",
-            "svg viewBox=0 0 24 24 path=M12 21C5 15 2 11 2 8z",
+            "svg viewBox=0 0 24 24 path=M13 2L4 14h6l-1 8 9-12h-6l1-8z",
+            "svg viewBox=0 0 24 24 path=M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8L12 17.2l-6.1 3.4 1.4-6.8",
+            "svg viewBox=0 0 24 24 path=M12 21s-7.5-4.8-10-9.3C.4 8.6 2.3 5 5.7 5c2 0 3.4 1.1 4.3 2.",
         ]
-        assert all(g.startswith("svg viewBox=") for g in graphics) and len(set(graphics)) == 3
 
     async def test_element_with_text_gets_exactly_todays_facts(self, page):
         await page.set_content(
             '<main><button id="b"><svg viewBox="0 0 1 1"><path d="M1 1"/></svg>Go</button></main>'
         )
         facts = await read_element_facts(page.locator("#b"))
-        assert facts == {"tag": "button", "id": "b", "text": "Go", "landmark": "main"}
+        assert list(facts.items()) == [
+            ("tag", "button"),
+            ("id", "b"),
+            ("text", "Go"),
+            ("landmark", "main"),
+        ]
 
     async def test_labelled_element_gets_no_graphic(self, page):
         await page.set_content(
@@ -191,3 +205,39 @@ class TestElementFactsOnARealDom:
         # a marked sibling does not hide the visible picture next to it
         open_ = await read_element_facts(page.locator("#open"))
         assert open_["graphic"] == "svg viewBox=0 0 2 2 path=M5 visible"
+
+    async def test_secret_inside_the_svg_is_never_read(self, page):
+        await page.set_content(
+            '<div id="x"><svg viewBox="0 0 1 1"><g nlrf-secret><title>topsecret</title>'
+            '<path d="M9 9"/></g></svg></div>'
+        )
+        facts = await read_element_facts(page.locator("#x"))
+        assert "topsecret" not in str(facts) and "M9 9" not in str(facts)
+        assert facts["graphic"] == "svg viewBox=0 0 1 1"
+
+    async def test_a_value_ending_in_equals_is_kept(self, page):
+        await page.set_content('<div id="d"><img alt="a=" src="/x/y.gif"></div>')
+        assert (await read_element_facts(page.locator("#d")))["graphic"] == "img alt=a= src=y.gif"
+
+    async def test_title_attribute_or_label_text_means_no_graphic(self, page):
+        await page.set_content(
+            '<div id="t" title="Tip"><svg viewBox="0 0 1 1"><path d="M1 1"/></svg></div>'
+            '<label>Name<svg viewBox="0 0 1 1"><path d="M1 1"/></svg><input id="i"></label>'
+        )
+        tip = await read_element_facts(page.locator("#t"))
+        assert list(tip.items()) == [("tag", "div"), ("id", "t"), ("title", "Tip")]
+        field = await read_element_facts(page.locator("#i"))
+        assert field == {"tag": "input", "id": "i", "label": "Name"}
+
+    async def test_long_values_are_cut(self, page):
+        d = "M" + "1" * 80
+        await page.set_content(
+            f'<div id="s"><svg viewBox="0 0 1 1"><path d="{d}"/></svg></div>'
+            f'<div id="i"><img alt="{"a" * 80}" src="/{"f" * 80}.png"></div>'
+        )
+        assert (await read_element_facts(page.locator("#s")))["graphic"] == (
+            "svg viewBox=0 0 1 1 path=" + d[:60]
+        )
+        assert (await read_element_facts(page.locator("#i")))["graphic"] == (
+            "img alt=" + "a" * 60 + " src=" + "f" * 60
+        )

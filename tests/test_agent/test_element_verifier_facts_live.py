@@ -222,12 +222,13 @@ class TestElementFactsOnARealDom:
     async def test_title_attribute_or_label_text_means_no_graphic(self, page):
         await page.set_content(
             '<div id="t" title="Tip"><svg viewBox="0 0 1 1"><path d="M1 1"/></svg></div>'
-            '<label>Name<svg viewBox="0 0 1 1"><path d="M1 1"/></svg><input id="i"></label>'
+            '<label>Save <button id="b"><svg viewBox="0 0 24 24"><path d="M1 1"/></svg></button></label>'
         )
         tip = await read_element_facts(page.locator("#t"))
         assert list(tip.items()) == [("tag", "div"), ("id", "t"), ("title", "Tip")]
-        field = await read_element_facts(page.locator("#i"))
-        assert field == {"tag": "input", "id": "i", "label": "Name"}
+        # the button holds an svg and has no words of its own; only its label's words speak for it
+        field = await read_element_facts(page.locator("#b"))
+        assert field == {"tag": "button", "id": "b", "label": "Save"}
 
     async def test_long_values_are_cut(self, page):
         d = "M" + "1" * 80

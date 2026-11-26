@@ -242,3 +242,18 @@ class TestElementFactsOnARealDom:
         assert (await read_element_facts(page.locator("#i")))["graphic"] == (
             "img alt=" + "a" * 60 + " src=" + "f" * 60
         )
+
+    async def test_a_hidden_svg_does_not_hide_the_visible_img_after_it(self, page):
+        await page.set_content(
+            '<button id="b"><svg style="display:none" viewBox="0 0 1 1"><path d="M1 1"/></svg>'
+            '<img alt="Cart" src="/img/cart.png"></button>'
+        )
+        facts = await read_element_facts(page.locator("#b"))
+        assert facts["graphic"] == "img alt=Cart src=cart.png"
+
+    async def test_a_picture_inside_a_display_none_wrapper_is_not_read(self, page):
+        await page.set_content(
+            '<div id="e"><span style="display:none"><svg viewBox="0 0 1 1"><path d="M1 1"/></svg>'
+            '<img alt="Cart" src="/img/cart.png"></span></div>'
+        )
+        assert "graphic" not in await read_element_facts(page.locator("#e"))

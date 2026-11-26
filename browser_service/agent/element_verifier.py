@@ -93,8 +93,11 @@ ELEMENT_FACTS_JS = (
   // graphic: a wordless element's picture as text (first svg: viewBox, path start; else first img: alt, file name).
   // shortcut: a sprite icon (<use href>), a bounding-box first path (M0 0h24v24H0z) or an icon drawn without a path gives
   // an uninformative graphic, which the call site refuses on "unsure"; upgrade if a sweep shows a right icon refused so.
+  // shortcut: only display:none (own or an ancestor's) is skipped, so a visibility:hidden or zero-opacity svg / img still counts;
+  // upgrade if one is mis-described.
   if (!facts.text && !facts.aria_label && !facts.title && !facts.label && !hides(el)) {
-    const first = (sel) => [el, ...el.querySelectorAll(sel)].find((n) => n.matches(sel) && !hides(n));
+    const first = (sel) => [el, ...el.querySelectorAll(sel)]
+      .find((n) => n.matches(sel) && !hides(n) && n.getClientRects().length > 0);
     const fileName = (s) => /^data:/i.test(s)
       ? 'data:' + s.slice(5).split(/[;,]/)[0]
       : s.split(/[?#]/)[0].split('/').pop().slice(0, 60);

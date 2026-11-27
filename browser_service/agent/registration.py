@@ -2117,8 +2117,24 @@ def register_custom_actions(
                                     f"tokens, {_v.seconds:.1f}s) on '{_v_loc}'{_v_said} "
                                     f"(signal: element-verifier-{_v.verdict})"
                                 )
-                                if _v.verdict == "mismatch":
-                                    _v_why = _v_why or "the verifier judged it a different element"
+                                # A wordless pick is judged on its picture alone: it ships only on "match".
+                                _v_unsure_graphic = (
+                                    _v.verdict == "unsure"
+                                    and isinstance(_v_facts, dict)
+                                    and "graphic" in _v_facts
+                                )
+                                if _v_unsure_graphic:
+                                    logger.info(
+                                        f"   ⛔ Element verifier could not confirm the picture of "
+                                        f"{params.element_id} — refused like a mismatch "
+                                        f"(signal: element-verifier-unsure-graphic-refused)"
+                                    )
+                                if _v.verdict == "mismatch" or _v_unsure_graphic:
+                                    _v_why = _v_why or (
+                                        "the verifier could not confirm it is the element the step means"
+                                        if _v_unsure_graphic
+                                        else "the verifier judged it a different element"
+                                    )
                                     if _prev_locator is not None:
                                         logger.info(
                                             f"   ⛔ Re-query for {params.element_id} picked an element "

@@ -6,11 +6,17 @@ never "the smallest indexed box around the point", which on TodoMVC was the whol
 ``box_is_hit`` tells such a box from the hit: the box must be the hit itself or the nearest
 control at or above it.
 
+``proven`` (D2) is the identity gate's test: a locator ships for a performed step only when it
+lands on the target or on one allowlisted relation of it (``RELATION_JS``).
+
 Referenced by: agent/registration.py, agent/actions.py
-Depends on: locators/smart_locator.py (the open-shadow-aware hit-test helper)
+Depends on: locators/smart_locator.py (the open-shadow-aware hit-test helper),
+    locators/frame_locator.py, locators/validation.py
 """
 
+from browser_service.locators.frame_locator import strip_frame
 from browser_service.locators.smart_locator import _SHADOW_DOM_HELPER_JS
+from browser_service.locators.validation import convert_to_playwright_locator
 
 XPATH_TIMEOUT_MS = 1000
 
@@ -52,6 +58,60 @@ _BOX_IS_HIT_JS = f"""
 }}
 """
 
+# D2: how the locator's one match ``el`` relates to the target ``t``; "" = no allowlisted
+# relation. A detached node throws (a re-render between the hit-test and this read): unreadable.
+RELATION_JS = f"""
+(el, t) => {{
+    {_NEAREST_CONTROL_JS}
+    if (!el.isConnected || !t.isConnected) throw new Error('detached');
+    if (el === t) return 'same';
+    if (nearestControl(t) === el) return 'control-above';
+    // Playwright fills and clicks a label's control, so a label and its control are one.
+    if ((el.localName === 'label' && el.control === t)
+        || (t.localName === 'label' && t.control === el)) return 'only-control';
+    // The one control of its kind beside the target. A container is never proven, and neither
+    // is the body: an overlay's common ancestor with any page control is the body.
+    if (nearestControl(el) !== el) return '';
+    const above = [];
+    for (let n = t, d = 0; n && d <= 3; n = n.parentElement, d++) above.push(n);
+    let lca = null;
+    for (let n = el, d = 0; n && d <= 3 && !lca; n = n.parentElement, d++) {{
+        if (above.includes(n)) lca = n;
+    }}
+    if (!lca || ['body', 'html'].includes(lca.localName)) return '';
+    const kind = (n) => [n.localName, typeof n.type === 'string' ? n.type : '',
+        (n.getAttribute('role') || '').trim().toLowerCase()].join('|');
+    const mine = kind(el);
+    const same = [lca, ...lca.querySelectorAll(el.localName)].filter((n) => kind(n) === mine);
+    return same.length === 1 ? 'only-control' : '';
+}}
+"""
+
+# A collection: the target is one of the matches or holds one (crossing open shadow hosts).
+_HOLDS_MATCH_JS = """
+(t, matches) => {
+    if (!t.isConnected) throw new Error('detached');
+    return matches.some((m) => {
+        for (let n = m; n; n = n.parentNode instanceof ShadowRoot ? n.parentNode.host : n.parentNode) {
+            if (n === t) return true;
+        }
+        return false;
+    });
+}
+"""
+
+# How a refusal names an element: <tag id=… type=… role=… class=…>, attributes only.
+_DESCRIBE_JS = """
+el => {
+    const bits = [el.localName];
+    for (const name of ['id', 'type', 'role', 'class']) {
+        const value = (el.getAttribute(name) || '').trim().replace(/\\s+/g, ' ');
+        if (value) bits.push(name + '=' + value.slice(0, 40));
+    }
+    return '<' + bits.join(' ') + '>';
+}
+"""
+
 
 async def _kept(handle):
     """``handle`` unless it names no element (none, body, html, an iframe)."""
@@ -89,19 +149,62 @@ async def pointed_target(
     hit-tested inside the frame with frame-relative coordinates. ``point`` None = no fallback.
     """
     try:
-        xpath = (element_data or {}).get("xpath")
-        if by_index and xpath:
-            root = page.frame_locator(iframe_context) if iframe_context else page
-            try:
-                handle = await root.locator(f"xpath={xpath}").element_handle(
-                    timeout=XPATH_TIMEOUT_MS
-                )
-                return await _kept(handle)
-            except Exception:  # unresolvable xpath (svg, shadow, re-render): the point decides
-                pass
-        return None if point is None else await _hit_at(page, iframe_context, point)
+        return await pointed_target_or_raise(page, iframe_context, element_data, by_index, point)
     except Exception:
         return None
+
+
+async def pointed_target_or_raise(
+    page,
+    iframe_context: str | None,
+    element_data: dict | None,
+    by_index: bool,
+    point: tuple[float, float] | None,
+):
+    """``pointed_target``, except that a page the point cannot be read on raises: the identity
+    gate tells "unreadable" from "no element"."""
+    xpath = (element_data or {}).get("xpath")
+    if by_index and xpath:
+        root = page.frame_locator(iframe_context) if iframe_context else page
+        try:
+            handle = await root.locator(f"xpath={xpath}").element_handle(timeout=XPATH_TIMEOUT_MS)
+            return await _kept(handle)
+        except Exception:  # unresolvable xpath (svg, shadow, re-render): the point decides
+            pass
+    return None if point is None else await _hit_at(page, iframe_context, point)
+
+
+async def proven(
+    page, iframe_context: str | None, locator: str, target, is_collection: bool
+) -> tuple[bool, str]:
+    """Does ``locator`` land on ``target`` (D2)? ``(True, relation)`` or ``(False, reason)``.
+
+    The frame hop is stripped and the locator counted in the frame. A collection is proven when
+    the target is one of its matches or holds one; a single result when it matches exactly one
+    element with a ``RELATION_JS`` relation. The reason names both elements; any read error,
+    a detached node included, is ``(False, "unreadable")``. Never raises.
+    """
+    try:
+        root = page.frame_locator(iframe_context) if iframe_context else page
+        selector = convert_to_playwright_locator(strip_frame(locator, iframe_context))[0]
+        matches = root.locator(selector)
+        count = await matches.count()
+        found = f"{count} elements"
+        if is_collection:
+            if count >= 1 and await target.evaluate(
+                _HOLDS_MATCH_JS, await matches.element_handles()
+            ):
+                return True, "collection"
+        elif count == 1:
+            element = await matches.element_handle(timeout=XPATH_TIMEOUT_MS)
+            relation = await element.evaluate(RELATION_JS, target)
+            if relation:
+                return True, relation
+            found = await element.evaluate(_DESCRIBE_JS)
+        pointed = await target.evaluate(_DESCRIBE_JS)
+        return False, f"finds {found}; the element you pointed at is {pointed}"
+    except Exception:
+        return False, "unreadable"
 
 
 async def box_is_hit(box, hit) -> bool:

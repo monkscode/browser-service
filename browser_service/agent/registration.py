@@ -1316,6 +1316,9 @@ def register_custom_actions(
         # unconfirmed. The first gets one retry with the reason; after that
         # the element is reported not found (owner: "Retry once, then not found").
         _read_address_attempts: dict = {}
+        # Point-then-prove D3: element_id → refusals of a locator that missed the pointed
+        # element; the first gets one retry with a screenshot, the second is NOT FOUND.
+        _identity_attempts: dict = {}
         # bs #72: element_id → refusals for naming no element; the second is NOT FOUND.
         _no_evidence_attempts: dict = {}
         # bs #62: element_id → picks the verifier judged a different element; the second is NOT FOUND.
@@ -1883,6 +1886,7 @@ def register_custom_actions(
                 # IFRAME DETECTION: Check if element is inside an iframe
                 # ========================================
                 iframe_context = None
+                frame_box_swapped = False
                 if selector_map:
                     iframe_context, _ = _detect_iframe_context(selector_map, (final_x, final_y))
                     if iframe_context:
@@ -1922,6 +1926,9 @@ def register_custom_actions(
                                 )
 
                                 if dom_node is not None:
+                                    # The indexed node's data gives way to another box: the
+                                    # gate's target then comes from the point, not the index.
+                                    frame_box_swapped = idx != params.element_index
                                     logger.info(f"   ✅ Found element [{idx}] inside iframe!")
                                     elem_tag = (
                                         dom_node.node_name
@@ -2039,7 +2046,7 @@ def register_custom_actions(
                     # tries it as pixels last. Off-screen or equal to the scaled point = no source.
                     pixel_point=_pixel_point(params, scaled_x, scaled_y, viewport_w, viewport_h),
                     locate_only=_element_specs.get(params.element_id, {}).get("locate_only", False),
-                    pointed_by_index=index_found,
+                    pointed_by_index=index_found and not frame_box_swapped,
                 )
 
                 # Convert result to ActionResult format
@@ -2635,6 +2642,46 @@ def register_custom_actions(
                             action_result = ActionResult(
                                 extracted_content=final_msg,
                                 error=final_msg,
+                                is_done=False,
+                                metadata=result,
+                            )
+                    elif result.get("identity_unproven"):
+                        # Point-then-prove D3: the locator missed the pointed element.
+                        _why = result["identity_unproven"]
+                        _n = _identity_attempts.get(params.element_id, 0) + 1
+                        _identity_attempts[params.element_id] = _n
+                        if _n == 1:
+                            retry_msg = (
+                                f"{fallback_error} Point at the element itself and call "
+                                f"find_unique_locator again with its element_index or the "
+                                f"coordinates of its centre. A screenshot is attached to your "
+                                f"next message."
+                            )
+                            logger.info(
+                                f"🔄 IDENTITY RETRY for {params.element_id}: {_why} "
+                                f"(signal: identity-retry)"
+                            )
+                            _keep_vision_on(agent)
+                            action_result = ActionResult(
+                                extracted_content=retry_msg,
+                                error=retry_msg,
+                                is_done=False,
+                                metadata={**result, "include_screenshot": True},
+                            )
+                        else:
+                            final_msg = (
+                                f"'{params.element_id}' was again not the element you pointed at "
+                                f"({_why}); it is recorded as NOT FOUND. Do not retry it — continue "
+                                f"with the remaining elements. Do not perform this step's action "
+                                f"yourself."
+                            )
+                            logger.info(
+                                f"⛔ IDENTITY NOT FOUND for {params.element_id} after {_n} attempts "
+                                f"(signal: identity-not-found)"
+                            )
+                            # No error: browser-use ends a run after 5 error results in a row.
+                            action_result = ActionResult(
+                                extracted_content=final_msg,
                                 is_done=False,
                                 metadata=result,
                             )

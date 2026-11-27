@@ -143,7 +143,8 @@ class TestRowScopedCandidateIsKept:
         assert out["found"] is True
         assert out["best_locator"] == candidate
         assert out["all_locators"][0]["type"] == "candidate"
-        assert "row-anchor-scope-not-target" in caplog.text
+        # point-then-prove D4: it lands on the pointed link, so the row-anchor check is skipped
+        assert "(signal: candidate-proven)" in caplog.text
         assert "row-anchor-rejects-candidate" not in caplog.text
         assert await page.locator(out["best_locator"]).evaluate(LANDS_JS) == "Smith|table1"
 
@@ -193,7 +194,7 @@ class TestRowScopedCandidateIsKept:
             )
         assert out["found"] is True
         assert strip_frame(out["best_locator"], FRAME) == FIRST_SHAPE
-        assert "row-anchor-scope-not-target" in caplog.text
+        assert "(signal: candidate-proven)" in caplog.text  # point-then-prove D4
         landed = await page.frame_locator(FRAME).locator(FIRST_SHAPE).evaluate(LANDS_JS)
         assert landed == "Smith|table1"
 
@@ -255,6 +256,8 @@ class TestRejectStillStandsWhereTheElementCarriesTheAnchor:
         await self._assert_rejected(out, caplog, candidate)
 
     async def test_unreadable_landed_element_keeps_the_reject(self, page, caplog):
+        """A click candidate on the pointed link is proven and skips this check (point-then-prove
+        D4); the guard pins the unproven path, here with the flag off (action None)."""
         await _open(page)
         with (
             caplog.at_level(logging.INFO),
@@ -264,7 +267,7 @@ class TestRejectStillStandsWhereTheElementCarriesTheAnchor:
                 create=True,
             ),
         ):
-            out = await _call(page, SMITH_EDIT, FIRST_SHAPE, expected_text="edit", action="click")
+            out = await _call(page, SMITH_EDIT, FIRST_SHAPE, expected_text="edit", action=None)
         assert "row-anchor-rejects-candidate" in caplog.text
         assert out["best_locator"] != FIRST_SHAPE
 

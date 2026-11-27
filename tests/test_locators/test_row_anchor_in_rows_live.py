@@ -17,6 +17,7 @@ today: a pointer on another row, a single table, a read step.
 """
 
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -143,10 +144,19 @@ class TestPickIsAddressedInsideItsRows:
         assert out["best_locator"] == f"{CHAIN} >> nth=1"
         assert await page.locator(out["best_locator"]).evaluate(LANDS_JS) == "Smith|table2"
 
-    async def test_pointer_just_right_of_the_link(self, page):
+    async def test_pointer_on_the_next_link_is_refused(self, page):
+        """6 px right of the edit link the point is on the cell's next link: the Smith edit
+        address does not land on the pointed element, so nothing ships (point-then-prove §6:
+        a point off the element is refused, one retry) and the refusal names both links."""
         await _open(page)
         out = await _click_call(page, SMITH_EDIT, right_of=True)
-        assert out["best_locator"] == f"{CHAIN} >> nth=0"
+        assert out["found"] is False
+        assert out["best_locator"] is None
+        assert out["error_type"] == "NotPointedElement"
+        assert re.fullmatch(
+            r"finds <a> at \(\d+, \d+\); the element you pointed at is <a> at \(\d+, \d+\)",
+            out["identity_unproven"],
+        )
 
     async def test_address_follows_the_smith_row_when_the_rows_move(self, page):
         await _open(page)

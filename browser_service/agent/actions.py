@@ -490,20 +490,29 @@ async def _same_element(search_root, result, candidate, action, iframe_context=N
 
 async def _candidate_proven(
     page, iframe_context, locator, action, element_data, by_index, point
-) -> bool:
-    """Point-then-prove D4: the agent's unique candidate lands on the element it pointed at."""
+) -> Tuple[bool, str]:
+    """Point-then-prove D4 for the agent's unique candidate: ``(True, "")`` when it lands on the
+    element the agent pointed at; ``(False, why)`` on a performed step when it does not, so the
+    cascade runs from the call's evidence instead; ``(False, "")`` outside IDENTITY_ACTIONS."""
     if action not in IDENTITY_ACTIONS:
-        return False
+        return False, ""
     target = await pointed_target(page, iframe_context, element_data, by_index, point)
-    if target is None:
-        return False
-    ok, relation = await proven(page, iframe_context, locator, target, False)
+    ok, why = (
+        await proven(page, iframe_context, locator, target, False)
+        if target is not None
+        else (False, _NO_TARGET)
+    )
     if ok:
         logger.info(
-            f"   ✅ CANDIDATE PROVEN: '{locator}' lands on the pointed element ({relation}); "
+            f"   ✅ CANDIDATE PROVEN: '{locator}' lands on the pointed element ({why}); "
             f"the row-anchor, identity and word checks are skipped (signal: candidate-proven)"
         )
-    return ok
+        return True, ""
+    logger.info(
+        f"   ⛔ CANDIDATE NOT PROVEN: '{locator}' — {why}; continuing with smart locator "
+        f"finder (signal: candidate-unproven)"
+    )
+    return False, why
 
 
 async def _settle_row_datum(
@@ -1195,8 +1204,9 @@ async def find_unique_locator_action(
                     if count == 1:
                         # Point-then-prove D4: a candidate proven on the pointed element skips
                         # the row-anchor, identity and word checks below; the action fit and
-                        # the volatile / positional demotion still run.
-                        _candidate_is_proven = await _candidate_proven(
+                        # the volatile / positional demotion still run. An unproven one on a
+                        # performed step is set aside: the cascade runs, then the exit gate.
+                        _candidate_is_proven, _candidate_unproven = await _candidate_proven(
                             page,
                             iframe_context,
                             playwright_locator,
@@ -1336,7 +1346,9 @@ async def find_unique_locator_action(
                         # resolves to on the page — not the intended element from element_data
                         # (audit Issue 2b). Guard with expected_text so we accept on uniqueness
                         # alone when no semantic hint is available (audit Issue 5).
-                        _semantic_ok = not _anchor_reject and not _identity_reason
+                        _semantic_ok = (
+                            not _anchor_reject and not _identity_reason and not _candidate_unproven
+                        )
                         if _semantic_ok and expected_text and not _candidate_is_proven:
                             from browser_service.locators import validate_semantic_match
 

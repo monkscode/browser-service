@@ -181,8 +181,8 @@ async def proven(
 
     The frame hop is stripped and the locator counted in the frame. A collection is proven when
     the target is one of its matches or holds one; a single result when it matches exactly one
-    element with a ``RELATION_JS`` relation. The reason names both elements; any read error,
-    a detached node included, is ``(False, "unreadable")``. Never raises.
+    element with a ``RELATION_JS`` relation. The reason names both elements by tag and box
+    centre; any read error, a detached node included, is ``(False, "unreadable")``. Never raises.
     """
     try:
         root = page.frame_locator(iframe_context) if iframe_context else page
@@ -200,11 +200,21 @@ async def proven(
             relation = await element.evaluate(RELATION_JS, target)
             if relation:
                 return True, relation
-            found = await element.evaluate(_DESCRIBE_JS)
-        pointed = await target.evaluate(_DESCRIBE_JS)
-        return False, f"finds {found}; the element you pointed at is {pointed}"
+            found = await _named(element)
+        return False, f"finds {found}; the element you pointed at is {await _named(target)}"
     except Exception:
         return False, "unreadable"
+
+
+async def _named(handle) -> str:
+    """``<tag id=… type=… role=… class=…> at (x, y)``: the box centre in viewport pixels tells two
+    alike elements apart (no text or value is read). No box (hidden): the tag alone."""
+    name = await handle.evaluate(_DESCRIBE_JS)
+    box = await handle.bounding_box()
+    if box is None:
+        return name
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    return f"{name} at ({round(x)}, {round(y)})"
 
 
 async def box_is_hit(box, hit) -> bool:

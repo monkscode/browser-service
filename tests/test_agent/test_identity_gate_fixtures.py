@@ -47,6 +47,12 @@ async def _at(page, selector, frame=None):
     return await _centre(element)
 
 
+async def _named(page, selector, name):
+    """How a refusal names the element ``selector`` finds: ``name`` and its box centre."""
+    x, y = await _at(page, selector)
+    return f"{name} at ({round(x)}, {round(y)})"
+
+
 async def test_sibling_label_checkbox_point_on_box(page):
     await page.set_content(TODOMVC)
 
@@ -88,10 +94,9 @@ async def test_app_root_candidate_refused(page):
     ok, reason = await _judge(page, "id=root", await _at(page, FIRST_TOGGLE))
 
     assert ok is False
-    assert reason == (
-        "finds <section id=root class=todoapp>; the element you pointed at is "
-        "<input type=checkbox class=toggle>"
-    )
+    found = await _named(page, "#root", "<section id=root class=todoapp>")
+    pointed = await _named(page, FIRST_TOGGLE, "<input type=checkbox class=toggle>")
+    assert reason == f"finds {found}; the element you pointed at is {pointed}"
 
 
 async def test_indexed_icon_tile_kept(page):
@@ -127,7 +132,10 @@ async def test_indexless_div_tile_refused(page):
     ok, reason = await _judge(page, "#t1", await _at(page, "#t1 span"))
 
     assert ok is False
-    assert reason == "finds <div id=t1 class=tile>; the element you pointed at is <span>"
+    found = await _named(page, "#t1", "<div id=t1 class=tile>")
+    assert reason == f"finds {found}; the element you pointed at is " + await _named(
+        page, "#t1 span", "<span>"
+    )
 
 
 async def test_flatpickr_button_to_input(page):
@@ -147,7 +155,24 @@ async def test_same_control_other_item_refused(page):
     ok, reason = await _judge(page, FIRST_TOGGLE, await _at(page, "li:nth-child(2) label"))
 
     assert ok is False
-    assert reason.endswith("the element you pointed at is <label>")
+    assert reason.endswith(
+        "the element you pointed at is " + await _named(page, "li:nth-child(2) label", "<label>")
+    )
+
+
+async def test_two_links_are_told_apart_by_position(page):
+    """Two bare <a>: the refusal names each by its tag and its box centre, never its text."""
+    await page.set_content(
+        '<table><tr><td><a href="#">edit</a></td></tr><tr><td><a href="#">edit</a></td></tr>'
+        "</table>"
+    )
+    first, second = "tr:nth-child(1) a", "tr:nth-child(2) a"
+    ok, reason = await _judge(page, first, await _at(page, second))
+
+    assert ok is False
+    found, pointed = await _named(page, first, "<a>"), await _named(page, second, "<a>")
+    assert found != pointed
+    assert reason == f"finds {found}; the element you pointed at is {pointed}"
 
 
 async def test_two_checkboxes_in_one_item_refused(page):
@@ -171,7 +196,9 @@ async def test_overlay_covering_target_refused(page):
     ok, reason = await _judge(page, "#buy", await _centre(page.locator("#buy")))
 
     assert ok is False
-    assert reason == "finds <button id=buy>; the element you pointed at is <div id=cookie>"
+    found = await _named(page, "#buy", "<button id=buy>")
+    pointed = await _named(page, "#cookie", "<div id=cookie>")
+    assert reason == f"finds {found}; the element you pointed at is {pointed}"
 
 
 async def test_detached_target_unreadable(page):

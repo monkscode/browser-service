@@ -39,7 +39,10 @@ from tests.test_agent.test_vision_escalation import (
 TARGET = object()
 FRAME = 'iframe[id="f"]'
 FOUND = {"element_id": "elem_1", "found": True, "best_locator": "id=toggle", "unique": True}
-WHY = "finds <section id=root>; the element you pointed at is <input type=checkbox>"
+WHY = (
+    "finds <section id=root> at (640, 300); the element you pointed at is "
+    "<input type=checkbox> at (412, 230)"
+)
 PROVEN_LINE = "(signal: pointed-identity-proven)"
 REFUSED_LINE = "(signal: pointed-identity-refused)"
 
@@ -297,7 +300,10 @@ VETOES = {
 NOT_FOUND = {"found": False, "error": "cascade found nothing"}
 
 
-async def _candidate(proof, action="click", surface=CHECKBOX, fit="", **overrides):
+async def _candidate(
+    proof, action="click", surface=CHECKBOX, fit="", cascade_result=NOT_FOUND, **overrides
+):
+    """The real action on the fake page; ``proof`` is ``proven``'s verdict or a stand-in for it."""
     kwargs = dict(
         x=100,
         y=100,
@@ -309,9 +315,9 @@ async def _candidate(proof, action="click", surface=CHECKBOX, fit="", **override
         action=action,
     )
     kwargs.update(overrides)
-    cascade = AsyncMock(return_value=dict(NOT_FOUND))
+    cascade = AsyncMock(return_value=dict(cascade_result))
     target = AsyncMock(return_value=TARGET)
-    judge = AsyncMock(return_value=proof)
+    judge = AsyncMock(side_effect=proof) if callable(proof) else AsyncMock(return_value=proof)
     with (
         patch("browser_service.locators.find_unique_locator_at_coordinates", new=cascade),
         patch.object(actions, "pointed_target", new=target),
@@ -341,12 +347,46 @@ async def test_proven_candidate_skips_the_veto(caplog, veto):
     assert len([m for m in caplog.messages if m.endswith("(signal: candidate-proven)")]) == 1
 
 
-@pytest.mark.parametrize("veto", sorted(VETOES))
-async def test_unproven_candidate_keeps_the_veto(veto):
-    out, cascade, _, _ = await _candidate((False, WHY), **VETOES[veto])
+CASCADE_FOUND = {"found": True, "best_locator": "id=toggle-1", "unique": True, "count": 1}
+UNPROVEN_LINE = (
+    f"   ⛔ CANDIDATE NOT PROVEN: 'li:first-child .toggle' — {WHY}; continuing with smart "
+    f"locator finder (signal: candidate-unproven)"
+)
+
+
+def _only_proven(locator):
+    """A stand-in for ``proven``: only ``locator`` lands on the pointed element."""
+
+    async def judge(page, iframe_context, candidate, target, is_collection):
+        return (True, "same") if candidate == locator else (False, WHY)
+
+    return judge
+
+
+async def test_unproven_candidate_goes_to_the_cascade_whose_proven_answer_ships(caplog):
+    """D4: no veto would stop this candidate today; unproven, it is set aside for the cascade."""
+    with caplog.at_level(logging.INFO, logger="browser_service.agent.actions"):
+        out, cascade, _, _ = await _candidate(
+            _only_proven("id=toggle-1"), cascade_result=CASCADE_FOUND
+        )
+
+    cascade.assert_awaited()
+    assert out["found"] is True
+    assert out["best_locator"] == "id=toggle-1"
+    assert [m for m in caplog.messages if m.endswith("(signal: candidate-unproven)")] == [
+        UNPROVEN_LINE
+    ]
+
+
+async def test_unproven_candidate_and_an_unproven_cascade_answer_are_refused():
+    out, cascade, _, _ = await _candidate(
+        _only_proven(None), cascade_result={**CASCADE_FOUND, "best_locator": "id=root"}
+    )
 
     cascade.assert_awaited()
     assert out["found"] is False
+    assert out["best_locator"] is None
+    assert out["identity_unproven"] == WHY
 
 
 async def test_proven_candidate_still_takes_the_action_fit(caplog):
@@ -400,7 +440,8 @@ REFUSED = {
     "identity_unproven": WHY,
 }
 RETRY_TEXT = (
-    "Your locator finds <section id=root>; the element you pointed at is <input type=checkbox>. "
+    "Your locator finds <section id=root> at (640, 300); the element you pointed at is "
+    "<input type=checkbox> at (412, 230). "
     "Point at the element itself and call find_unique_locator again with its element_index or "
     "the coordinates of its centre. A screenshot is attached to your next message."
 )

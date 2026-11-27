@@ -325,6 +325,7 @@ async def test_a_parked_candidate_survives_the_cascade_refusal():
         SEARCH_TEXT,
         FakeLocator,
         FakePage,
+        _pointed_element_proven,
     )
 
     refusal = {
@@ -340,6 +341,7 @@ async def test_a_parked_candidate_survives_the_cascade_refusal():
             "browser_service.agent.actions.check_action_fit",
             new=AsyncMock(return_value="<div> cannot be filled"),
         ),
+        _pointed_element_proven(),  # the fake page cannot be hit-tested
     ):
         out = await find_unique_locator_action(
             x=100,

@@ -23,6 +23,7 @@ drives the helper itself.
 """
 
 import logging
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -174,11 +175,23 @@ class TestRowScopedCandidateIsKept:
         )
         assert out["best_locator"] == candidate
 
-    async def test_candidate_wins_over_a_pointer_on_another_row(self, page):
+    async def test_candidate_on_another_row_than_the_pointer_is_set_aside(self, page, caplog):
+        """Point-then-prove D4 + §6: the Smith candidate does not land on the pointed Bach link,
+        so it is set aside (named with both elements) and what ships lands on the pointed link;
+        whether that is the step's row is the element verifier's call."""
         await _open(page)
-        out = await _call(page, BACH_EDIT, FIRST_SHAPE, expected_text="edit", action="click")
-        assert out["best_locator"] == FIRST_SHAPE
-        assert await page.locator(out["best_locator"]).evaluate(LANDS_JS) == "Smith|table1"
+        with caplog.at_level(logging.INFO):
+            out = await _call(page, BACH_EDIT, FIRST_SHAPE, expected_text="edit", action="click")
+        assert out["best_locator"] != FIRST_SHAPE
+        assert await page.locator(out["best_locator"]).evaluate(LANDS_JS) == "Bach|table1"
+        set_aside = [
+            r.getMessage() for r in caplog.records if "candidate-unproven" in r.getMessage()
+        ]
+        assert len(set_aside) == 1
+        assert re.search(
+            r"finds <a> at \(\d+, \d+\); the element you pointed at is <a> at \(\d+, \d+\)",
+            set_aside[0],
+        )
 
     async def test_row_scoped_candidate_is_accepted_inside_a_frame(self, page, caplog):
         await page.goto(_file_url("row_anchor_two_tables_frame.html"), wait_until="load")

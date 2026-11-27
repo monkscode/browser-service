@@ -205,17 +205,20 @@ async def test_whole_row_text_keeps_todays_answer(page):
 
 @chromium
 async def test_action_link_is_never_clicked(page):
+    """The Cancel link is never aimed at; the row itself is no control, so nothing ships
+    (point-then-prove D2: a container that is not a control is never proven)."""
     kwargs_over = dict(
         candidate_locator="tr.r-1",
         element_description="table row for order 1234",
         expected_text="Order 1234 Shipped Cancel",
     )
-    out, kwargs = await _call(page, CANCEL, "tr.r-1", **kwargs_over)
-    today = await find_unique_locator_action.__wrapped__(**kwargs)
+    out, _ = await _call(page, CANCEL, "tr.r-1", **kwargs_over)
 
     assert "inner_control" not in out
-    assert out["best_locator"] == today["best_locator"]
-    assert await _acts_after_click(page, CANCEL, out["best_locator"]) == []
+    assert out["found"] is False
+    assert out["best_locator"] is None
+    assert out["error_type"] == "NotPointedElement"
+    assert await page.evaluate("window.__acts") == []  # no action link was clicked
 
 
 ALICE_ROW = (

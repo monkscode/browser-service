@@ -74,6 +74,22 @@ ELEMENT_FACTS_JS = (
     const h = headRow && headRow.children[n - 1];
     if (h && h.tagName === 'TH') header = safeText(h, 80);
   }
+  // item: the nearest repeated ancestor-or-self (<= 6 levels) when the element is in no table row (row facts cover rows).
+  let itemText = '', itemPos = '';
+  if (!row) {
+    const sameKind = (a, b) => a.tagName === b.tagName && (a.tagName === 'LI' || a.tagName === 'ARTICLE'
+      || (a.getAttribute('role') === 'listitem' && b.getAttribute('role') === 'listitem')
+      || ((a.getAttribute('class') || '').trim() !== '' && (a.getAttribute('class') || '').trim() === (b.getAttribute('class') || '').trim()));
+    for (let n = el, d = 0; n && n.parentElement && d <= 6 && n !== document.body; n = n.parentElement, d++) {
+      const peers = [...n.parentElement.children].filter((s) => sameKind(s, n));
+      const listy = n.tagName === 'LI' || n.tagName === 'ARTICLE' || n.getAttribute('role') === 'listitem';
+      if (listy || peers.length >= 2) {
+        itemText = safeText(n, 120);
+        itemPos = (peers.indexOf(n) + 1) + ' of ' + peers.length;
+        break;
+      }
+    }
+  }
   const facts = {
     tag: el.tagName.toLowerCase(),
     id: attr('id').trim(),
@@ -89,6 +105,8 @@ ELEMENT_FACTS_JS = (
     row_text: safeText(row, 120),
     column_position: position,
     column_header: header,
+    item_text: itemText,
+    item_position: itemPos,
   };
   // graphic: a wordless element's picture as text (first svg: viewBox, path start; else first img: alt, file name).
   // shortcut: a sprite icon (<use href>), a bounding-box first path (M0 0h24v24H0z) or an icon drawn without a path gives

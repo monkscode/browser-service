@@ -475,17 +475,13 @@ class TestFindUniqueLocatorAction:
         """No candidate, no element_data, no expected_text → refused (bs #72); the cascade never runs."""
         from browser_service.agent.actions import find_unique_locator_action
 
-        # point-then-prove D4: refused only when the point hits no element either
-        with patch(
-            "browser_service.agent.actions.pointed_target", new=AsyncMock(return_value=None)
-        ):
-            result = await find_unique_locator_action(
-                page=mock_playwright_page,
-                x=300,
-                y=400,
-                element_id="elem_3",
-                element_description="unknown element",
-            )
+        result = await find_unique_locator_action(
+            page=mock_playwright_page,
+            x=300,
+            y=400,
+            element_id="elem_3",
+            element_description="unknown element",
+        )
 
         assert result["found"] is False
         assert result["error_type"] == "NoElementEvidence"

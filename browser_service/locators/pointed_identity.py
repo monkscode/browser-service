@@ -60,6 +60,21 @@ async def _kept(handle):
     return handle
 
 
+async def _hit_at(page, iframe_context: str | None, point: tuple[float, float]):
+    """The element under ``point`` (viewport pixels), inside the frame with frame-relative
+    coordinates; None for nothing, body, html or an iframe. Raises when the page cannot be read."""
+    frame, (x, y) = page, point
+    if iframe_context:
+        iframe = page.locator(iframe_context)
+        box = await iframe.bounding_box(timeout=XPATH_TIMEOUT_MS)
+        frame = await (await iframe.element_handle(timeout=XPATH_TIMEOUT_MS)).content_frame()
+        if box is None or frame is None:
+            raise RuntimeError(f"cannot enter the frame {iframe_context}")
+        x, y = x - box["x"], y - box["y"]
+    found = await frame.evaluate_handle(_HIT_JS, {"x": x, "y": y})
+    return await _kept(found.as_element())
+
+
 async def pointed_target(
     page,
     iframe_context: str | None,
@@ -84,16 +99,7 @@ async def pointed_target(
                 return await _kept(handle)
             except Exception:  # unresolvable xpath (svg, shadow, re-render): the point decides
                 pass
-        if point is None:
-            return None
-        frame, (x, y) = page, point
-        if iframe_context:
-            iframe = page.locator(iframe_context)
-            box = await iframe.bounding_box(timeout=XPATH_TIMEOUT_MS)
-            frame = await (await iframe.element_handle(timeout=XPATH_TIMEOUT_MS)).content_frame()
-            x, y = x - box["x"], y - box["y"]
-        found = await frame.evaluate_handle(_HIT_JS, {"x": x, "y": y})
-        return await _kept(found.as_element())
+        return None if point is None else await _hit_at(page, iframe_context, point)
     except Exception:
         return None
 

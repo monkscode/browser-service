@@ -55,8 +55,9 @@ def page():
 @pytest.fixture
 def no_target():
     """The point hits nothing an element could be (point-then-prove D4): the refusal stands."""
-    with patch("browser_service.agent.actions.pointed_target", new=AsyncMock(return_value=None)):
-        yield
+    target = AsyncMock(return_value=None)
+    with patch("browser_service.agent.actions.pointed_target", new=target):
+        yield target
 
 
 @pytest.fixture
@@ -87,10 +88,15 @@ REFUSED = [
 ]
 
 
+# The calls a pointed target could let through (a performed step, one located element):
+# refused all the same when the point hits nothing, body, html or an iframe.
+PROVABLE_REFUSED = [
+    pytest.param({**p.values[0], "action": "click"}, id=f"click-{p.id}") for p in REFUSED
+] + [pytest.param({"action": "get_text", "locate_only": True}, id="locate-only")]
+
+
 @pytest.mark.parametrize("kwargs", REFUSED)
-async def test_call_without_evidence_is_refused_and_the_page_untouched(
-    page, cascade, no_target, kwargs
-):
+async def test_call_without_evidence_is_refused_and_the_page_untouched(page, cascade, kwargs):
     result = await _call(page, **kwargs)
 
     assert result["found"] is False
@@ -104,7 +110,25 @@ async def test_call_without_evidence_is_refused_and_the_page_untouched(
     cascade.assert_not_called()
 
 
-async def test_the_refusal_is_logged_as_one_signal_line(page, cascade, no_target, caplog):
+@pytest.mark.parametrize("kwargs", PROVABLE_REFUSED)
+async def test_provable_call_is_refused_when_the_point_hits_nothing(
+    page, cascade, no_target, kwargs
+):
+    result = await _call(page, **kwargs)
+
+    no_target.assert_awaited_once_with(page, None, None, False, (120, 340))
+    assert result["found"] is False
+    assert result["error_type"] == "NoElementEvidence"
+    assert result["error"] == ERROR
+    assert result["evidence"] == "none"
+    assert result["coordinates"] == {"x": 120, "y": 340}
+    assert "best_locator" not in result
+    page.locator.assert_not_called()
+    page.frame_locator.assert_not_called()
+    cascade.assert_not_called()
+
+
+async def test_the_refusal_is_logged_as_one_signal_line(page, cascade, caplog):
     with caplog.at_level(logging.INFO, logger="browser_service.agent.actions"):
         await _call(page, candidate_locator="id=status")
 

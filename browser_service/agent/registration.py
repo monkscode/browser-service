@@ -40,7 +40,7 @@ from browser_service.locators.action_fit import IDENTITY_ACTIONS, PERFORMED_ACTI
 from browser_service.locators.css_tokens import css_attr
 from browser_service.locators.frame_locator import strip_frame
 from browser_service.locators.hidden_value import SECRET_MARK, node_hides_value, node_text
-from browser_service.locators.pointed_identity import box_is_hit, pointed_target
+from browser_service.locators.pointed_identity import _hit_at, box_is_hit, pointed_target
 from browser_service.locators.read_change import (
     CAME_BACK,
     NOT_CAME_BACK,
@@ -1976,26 +1976,35 @@ def register_custom_actions(
                     try:
                         _point = (scaled_x, scaled_y)
                         _point_frame = _detect_iframe_context(selector_map, _point)[0]
-                        _hit = await pointed_target(active_page, _point_frame, None, False, _point)
-                        _box = (
-                            await pointed_target(
-                                active_page, _point_frame, element_data_from_index, True, None
+                        _drop = ""
+                        if _point_frame != iframe_context:  # another document: never the hit
+                            _drop = (
+                                f"is in {iframe_context or 'the main document'} but the point "
+                                f"{_point} is in {_point_frame or 'the main document'}"
                             )
-                            if _hit is not None
-                            else None
-                        )
-                        if _hit is not None and _box is None:
-                            logger.warning(
-                                f"   ⚠️ Point-box check: the box "
-                                f"<{element_data_from_index.get('tagName')}> could not be "
-                                f"resolved in the page — kept (signal: point-box-kept-unjudged)"
+                        else:
+                            # _hit_at raises on a read error: the except keeps the box unjudged
+                            _hit = await _hit_at(active_page, _point_frame, _point)
+                            _box = (
+                                await pointed_target(
+                                    active_page, _point_frame, element_data_from_index, True, None
+                                )
+                                if _hit is not None
+                                else None
                             )
-                        elif _hit is None or not await box_is_hit(_box, _hit):
+                            if _hit is not None and _box is None:
+                                logger.warning(
+                                    f"   ⚠️ Point-box check: the box "
+                                    f"<{element_data_from_index.get('tagName')}> could not be "
+                                    f"resolved in the page — kept (signal: point-box-kept-unjudged)"
+                                )
+                            elif _hit is None or not await box_is_hit(_box, _hit):
+                                _drop = f"is not the element under the point {_point}"
+                        if _drop:
                             logger.info(
                                 f"   🎯 POINT-BOX DROPPED: the smallest indexed box "
-                                f"<{element_data_from_index.get('tagName')}> is not the element "
-                                f"under the point {_point} — the call goes on from the point "
-                                f"(signal: point-box-dropped)"
+                                f"<{element_data_from_index.get('tagName')}> {_drop} — the call "
+                                f"goes on from the point (signal: point-box-dropped)"
                             )
                             element_data_from_index = None
                             confirmed_coords = None

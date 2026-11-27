@@ -41,6 +41,7 @@ from browser_service.locators.click_target import find_inner_control
 from browser_service.locators.css_tokens import robot_safe
 from browser_service.locators.frame_locator import ensure_frame_on_result, strip_frame
 from browser_service.locators.hidden_value import HIDES_VALUE_JS
+from browser_service.locators.pointed_identity import pointed_target
 from browser_service.locators.read_target import apply_read_target_policy, carries_value
 from browser_service.locators.smart_locator import (
     NO_EVIDENCE_ERROR,
@@ -852,6 +853,7 @@ async def find_unique_locator_action(
         Tuple[int, int]
     ] = None,  # Index-less read: raw point read as pixels (#75)
     locate_only: bool = False,  # NLRF #162: a wait / hover / upload / count — reads no value
+    pointed_by_index: bool = False,  # point-then-prove: element_data is the indexed node itself
 ) -> Dict[str, Any]:
     """
     Custom action that agent can call to find and validate unique locator.
@@ -983,16 +985,23 @@ async def find_unique_locator_action(
         # bs #72: a call that names no element ships nothing. Blank text counts as
         # none: a blank needle makes validate_semantic_match accept any empty element.
         # (The cascade refuses the one case left: a frame container it discards.)
+        # Point-then-prove D4: refused only when the point hits no element either.
         if not element_data and not (expected_text or "").strip():
+            if await pointed_target(page, iframe_context, None, False, (x, y)) is None:
+                logger.info(
+                    f"   ⛔ NO EVIDENCE: {element_id} '{element_description}' at ({x}, {y}), "
+                    f"candidate={candidate_locator!r} — no element data and no expected text; "
+                    f"refused (signal: no-evidence-refused)"
+                )
+                return create_error_result(
+                    "NoElementEvidence",
+                    NO_EVIDENCE_ERROR,
+                    {"evidence": "none"},
+                )
             logger.info(
-                f"   ⛔ NO EVIDENCE: {element_id} '{element_description}' at ({x}, {y}), "
-                f"candidate={candidate_locator!r} — no element data and no expected text; "
-                f"refused (signal: no-evidence-refused)"
-            )
-            return create_error_result(
-                "NoElementEvidence",
-                NO_EVIDENCE_ERROR,
-                {"evidence": "none"},
+                f"   🎯 NO EVIDENCE BUT A TARGET: {element_id} '{element_description}' at ({x}, {y}) "
+                f"— no element data and no expected text, but the point hits an element; "
+                f"continuing (signal: no-evidence-point-target)"
             )
 
         # ========================================

@@ -36,10 +36,11 @@ import logging
 import re
 from typing import Optional
 
-from browser_service.locators.action_fit import READ_ACTIONS
+from browser_service.locators.action_fit import IDENTITY_ACTIONS, PERFORMED_ACTIONS, READ_ACTIONS
 from browser_service.locators.css_tokens import css_attr
 from browser_service.locators.frame_locator import strip_frame
 from browser_service.locators.hidden_value import SECRET_MARK, node_hides_value, node_text
+from browser_service.locators.pointed_identity import box_is_hit, pointed_target
 from browser_service.locators.read_change import (
     CAME_BACK,
     NOT_CAME_BACK,
@@ -59,7 +60,7 @@ logger = logging.getLogger(__name__)
 
 # The actions _do_interaction performs. One list: F1 keeps the page right before each of
 # them, so an action added here is snapshotted and performed, never one without the other.
-_PERFORMED_ACTIONS = frozenset({"input", "type", "click", "submit", "select", "check", "uncheck"})
+_PERFORMED_ACTIONS = PERFORMED_ACTIONS
 
 # Class tokens usable as a bare `.class` selector — anything with CSS meta
 # characters (Tailwind `w-1/2`, `md:flex`) is skipped rather than escaped.
@@ -1961,6 +1962,46 @@ def register_custom_actions(
                     else None
                 )
 
+                # Point-then-prove D1: for a performed step an index-less smallest box (STEP A or
+                # the frame lookup) stands only when it IS the element under the agent's point,
+                # or that element's control; else the call goes on from the point alone.
+                if (
+                    element_index_was_none
+                    and element_data_from_index is not None
+                    and active_page is not None
+                    and _step_action in IDENTITY_ACTIONS
+                ):
+                    try:
+                        _point = (scaled_x, scaled_y)
+                        _point_frame = _detect_iframe_context(selector_map, _point)[0]
+                        _hit = await pointed_target(active_page, _point_frame, None, False, _point)
+                        _box = (
+                            await pointed_target(
+                                active_page, _point_frame, element_data_from_index, True, None
+                            )
+                            if _hit is not None
+                            else None
+                        )
+                        if _hit is not None and _box is None:
+                            logger.warning(
+                                f"   ⚠️ Point-box check: the box "
+                                f"<{element_data_from_index.get('tagName')}> could not be "
+                                f"resolved in the page — kept"
+                            )
+                        elif _hit is None or not await box_is_hit(_box, _hit):
+                            logger.info(
+                                f"   🎯 POINT-BOX DROPPED: the smallest indexed box "
+                                f"<{element_data_from_index.get('tagName')}> is not the element "
+                                f"under the point {_point} — the call goes on from the point "
+                                f"(signal: point-box-dropped)"
+                            )
+                            element_data_from_index = None
+                            confirmed_coords = None
+                            final_x, final_y = _point
+                            iframe_context = _point_frame
+                    except Exception as e:
+                        logger.warning(f"   ⚠️ Point-box check failed, the box is kept: {e}")
+
                 result = await find_unique_locator_action(
                     x=final_x,  # Use confirmed or scaled coordinates
                     y=final_y,  # Use confirmed or scaled coordinates
@@ -1984,6 +2025,7 @@ def register_custom_actions(
                     # tries it as pixels last. Off-screen or equal to the scaled point = no source.
                     pixel_point=_pixel_point(params, scaled_x, scaled_y, viewport_w, viewport_h),
                     locate_only=_element_specs.get(params.element_id, {}).get("locate_only", False),
+                    pointed_by_index=not element_index_was_none,
                 )
 
                 # Convert result to ActionResult format

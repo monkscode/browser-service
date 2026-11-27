@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 FIT_READ_TIMEOUT_MS = 1000
 
 READ_ACTIONS = frozenset({"get_text", "get_attribute"})
+# The actions bs performs during discovery (registration's _do_interaction).
+PERFORMED_ACTIONS = frozenset({"input", "type", "click", "submit", "select", "check", "uncheck"})
+# Point-then-prove: the performed steps whose locator must land on the pointed element. Select
+# keeps today's rules until its own "dropdown recipes" item.
+IDENTITY_ACTIONS = PERFORMED_ACTIONS - {"select"}
 _FILL_ACTIONS = frozenset({"input", "type"})
 _ENABLED_ACTIONS = frozenset({"click", "submit", "select", "check", "uncheck"})
 _UNFILLABLE_INPUT_TYPES = frozenset(

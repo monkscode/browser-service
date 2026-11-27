@@ -9,7 +9,8 @@ element, so it is refused before the page is touched: no candidate is counted,
 no frame is entered, the cascade does not run (one exception: a frame container as the
 only element data passes this check and is refused by the cascade itself, before any step).
 A row anchor, ``is_collection`` or a candidate locator alone are NOT evidence (owner:
-collections get no exception).
+collections get no exception). Point-then-prove D4: such a call is refused only when the point
+hits no element either (``pointed_target`` None); the refusal tests pin that.
 """
 
 import logging
@@ -51,6 +52,13 @@ def page():
 
 
 @pytest.fixture
+def no_target():
+    """The point hits nothing an element could be (point-then-prove D4): the refusal stands."""
+    with patch("browser_service.agent.actions.pointed_target", new=AsyncMock(return_value=None)):
+        yield
+
+
+@pytest.fixture
 def cascade():
     spy = AsyncMock(return_value=dict(CASCADE_RESULT))
     with patch("browser_service.locators.find_unique_locator_at_coordinates", new=spy):
@@ -79,7 +87,9 @@ REFUSED = [
 
 
 @pytest.mark.parametrize("kwargs", REFUSED)
-async def test_call_without_evidence_is_refused_and_the_page_untouched(page, cascade, kwargs):
+async def test_call_without_evidence_is_refused_and_the_page_untouched(
+    page, cascade, no_target, kwargs
+):
     result = await _call(page, **kwargs)
 
     assert result["found"] is False
@@ -93,7 +103,7 @@ async def test_call_without_evidence_is_refused_and_the_page_untouched(page, cas
     cascade.assert_not_called()
 
 
-async def test_the_refusal_is_logged_as_one_signal_line(page, cascade, caplog):
+async def test_the_refusal_is_logged_as_one_signal_line(page, cascade, no_target, caplog):
     with caplog.at_level(logging.INFO, logger="browser_service.agent.actions"):
         await _call(page, candidate_locator="id=status")
 
@@ -101,6 +111,27 @@ async def test_the_refusal_is_logged_as_one_signal_line(page, cascade, caplog):
     assert lines == [
         "   ⛔ NO EVIDENCE: elem_1 'the status message' at (120, 340), candidate='id=status' "
         "— no element data and no expected text; refused (signal: no-evidence-refused)"
+    ]
+
+
+async def test_point_target_lets_evidence_less_call_proceed(page, cascade, caplog):
+    """D4: no index data and no text, but the point hits an element: the call goes on."""
+    hit = object()
+    target = AsyncMock(return_value=hit)
+    with (
+        patch("browser_service.agent.actions.pointed_target", new=target),
+        caplog.at_level(logging.INFO, logger="browser_service.agent.actions"),
+    ):
+        result = await _call(page, candidate_locator="id=status", pointed_by_index=False)
+
+    target.assert_awaited_once_with(page, None, None, False, (120, 340))
+    assert page.locator.call_args_list[0] == call("id=status")  # the candidate was counted
+    cascade.assert_called_once()
+    assert "evidence" not in result
+    assert [m for m in caplog.messages if "signal: no-evidence" in m] == [
+        "   🎯 NO EVIDENCE BUT A TARGET: elem_1 'the status message' at (120, 340) — no element "
+        "data and no expected text, but the point hits an element; continuing "
+        "(signal: no-evidence-point-target)"
     ]
 
 

@@ -246,15 +246,24 @@ def _actions_accepted_by_dispatcher() -> set[str]:
         encoding="utf-8"
     )
     tree = ast.parse(source)
+    # registration aliases action_fit's set: ``_PERFORMED_ACTIONS = PERFORMED_ACTIONS``.
+    fit = ast.parse(
+        (REPO_ROOT / "browser_service" / "locators" / "action_fit.py").read_text(encoding="utf-8")
+    )
 
-    # The accept-list may be a module-level ``NAME = frozenset({...})`` constant.
+    # The accept-list may be a module-level ``NAME = frozenset({...})`` constant, or an alias.
     constants: dict[str, ast.expr] = {}
-    for stmt in tree.body:
-        if (
+    for stmt in [*fit.body, *tree.body]:
+        if not (
             isinstance(stmt, ast.Assign)
             and len(stmt.targets) == 1
             and isinstance(stmt.targets[0], ast.Name)
-            and isinstance(stmt.value, ast.Call)
+        ):
+            continue
+        if isinstance(stmt.value, ast.Name) and stmt.value.id in constants:
+            constants[stmt.targets[0].id] = constants[stmt.value.id]
+        elif (
+            isinstance(stmt.value, ast.Call)
             and isinstance(stmt.value.func, ast.Name)
             and stmt.value.func.id == "frozenset"
             and len(stmt.value.args) == 1

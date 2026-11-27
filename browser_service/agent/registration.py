@@ -2069,7 +2069,8 @@ def register_custom_actions(
                     # A model judges whether the pick is the element NLRF's step means. A "mismatch"
                     # on a new element is asked again once, then NOT FOUND; on a re-query of an
                     # accepted element the accepted locator stands (D3's shape). Fail-open: any error
-                    # in this block logs a warning and the pick ships exactly as today.
+                    # in this block logs a warning and the pick ships exactly as today. A picture-only
+                    # pick the verifier stays silent on twice is refused (bs #97).
                     if verifier_llm is not None:
                         try:
                             _v_spec = _element_specs.get(params.element_id) or {}
@@ -2102,37 +2103,51 @@ def register_custom_actions(
                                 _v_facts = await element_verifier.read_element_facts(
                                     _step_locator(active_page, _v_loc, iframe_context)[1]
                                 )
-                                _v = await element_verifier.verify_pick(
-                                    verifier_llm,
-                                    user_query,
-                                    _v_spec["description"],
-                                    _v_spec["action"],
-                                    _v_facts,
-                                )
-                                _v_why = " ".join(_v.reason.split()[:25])
-                                _v_said = f" — {_v_why}" if _v_why else ""
-                                logger.info(
-                                    f"   🔎 Element verifier for {params.element_id}: {_v.verdict} "
-                                    f"(prompt {_v.prompt_tokens} / completion {_v.completion_tokens} "
-                                    f"tokens, {_v.seconds:.1f}s) on '{_v_loc}'{_v_said} "
-                                    f"(signal: element-verifier-{_v.verdict})"
-                                )
-                                # A wordless pick is judged on its picture alone: it ships only on "match".
-                                _v_unsure_graphic = (
-                                    _v.verdict == "unsure"
-                                    and isinstance(_v_facts, dict)
-                                    and "graphic" in _v_facts
-                                )
-                                if _v_unsure_graphic:
+                                _v_graphic = isinstance(_v_facts, dict) and "graphic" in _v_facts
+                                for _v_try in (1, 2):
+                                    _v = await element_verifier.verify_pick(
+                                        verifier_llm,
+                                        user_query,
+                                        _v_spec["description"],
+                                        _v_spec["action"],
+                                        _v_facts,
+                                    )
+                                    _v_why = " ".join(_v.reason.split()[:25])
+                                    _v_said = f" — {_v_why}" if _v_why else ""
+                                    logger.info(
+                                        f"   🔎 Element verifier for {params.element_id}: {_v.verdict} "
+                                        f"(prompt {_v.prompt_tokens} / completion {_v.completion_tokens} "
+                                        f"tokens, {_v.seconds:.1f}s) on '{_v_loc}'{_v_said} "
+                                        f"(signal: element-verifier-{_v.verdict})"
+                                    )
+                                    # A silent verifier on a picture-only pick is asked once more.
+                                    if not (_v_graphic and _v.verdict == "skipped" and _v_try == 1):
+                                        break
+                                    logger.info(
+                                        f"   🔎 Element verifier gave no answer on the picture of "
+                                        f"{params.element_id} — asking once more "
+                                        f"(signal: element-verifier-graphic-reask)"
+                                    )
+                                # A wordless pick is judged on its picture alone: it ships only on a clear "match".
+                                _v_unsure_graphic = _v_graphic and _v.verdict == "unsure"
+                                _v_silent_graphic = _v_graphic and _v.verdict == "skipped"
+                                if _v_unsure_graphic or _v_silent_graphic:
+                                    _v_signal = "unsure" if _v_unsure_graphic else "skipped"
                                     logger.info(
                                         f"   ⛔ Element verifier could not confirm the picture of "
                                         f"{params.element_id} — refused like a mismatch "
-                                        f"(signal: element-verifier-unsure-graphic-refused)"
+                                        f"(signal: element-verifier-{_v_signal}-graphic-refused)"
                                     )
-                                if _v.verdict == "mismatch" or _v_unsure_graphic:
+                                    if _v_silent_graphic:
+                                        _v_why = ""  # a skip reason (timeout, error name) is no judgement
+                                if (
+                                    _v.verdict == "mismatch"
+                                    or _v_unsure_graphic
+                                    or _v_silent_graphic
+                                ):
                                     _v_why = _v_why or (
                                         "the verifier could not confirm it is the element the step means"
-                                        if _v_unsure_graphic
+                                        if _v_unsure_graphic or _v_silent_graphic
                                         else "the verifier judged it a different element"
                                     )
                                     if _prev_locator is not None:

@@ -1735,6 +1735,8 @@ def register_custom_actions(
                 # bs #75 E2: the index's OWN box centre, taken before STEP A can replace
                 # confirmed_coords with the box of whatever sits at the scaled point.
                 indexed_centre = confirmed_coords
+                # Point-then-prove: "by index" = the index FOUND a node; a stale index is no index.
+                index_found = element_data_from_index is not None
 
                 # ========================================
                 # COORDINATE SCALING: Vision AI → Viewport Pixels
@@ -1966,7 +1968,7 @@ def register_custom_actions(
                 # the frame lookup) stands only when it IS the element under the agent's point,
                 # or that element's control; else the call goes on from the point alone.
                 if (
-                    element_index_was_none
+                    not index_found
                     and element_data_from_index is not None
                     and active_page is not None
                     and _step_action in IDENTITY_ACTIONS
@@ -1986,7 +1988,7 @@ def register_custom_actions(
                             logger.warning(
                                 f"   ⚠️ Point-box check: the box "
                                 f"<{element_data_from_index.get('tagName')}> could not be "
-                                f"resolved in the page — kept"
+                                f"resolved in the page — kept (signal: point-box-kept-unjudged)"
                             )
                         elif _hit is None or not await box_is_hit(_box, _hit):
                             logger.info(
@@ -2000,7 +2002,10 @@ def register_custom_actions(
                             final_x, final_y = _point
                             iframe_context = _point_frame
                     except Exception as e:
-                        logger.warning(f"   ⚠️ Point-box check failed, the box is kept: {e}")
+                        logger.warning(
+                            f"   ⚠️ Point-box check failed, the box is kept: {e} "
+                            f"(signal: point-box-kept-unjudged)"
+                        )
 
                 result = await find_unique_locator_action(
                     x=final_x,  # Use confirmed or scaled coordinates
@@ -2025,7 +2030,7 @@ def register_custom_actions(
                     # tries it as pixels last. Off-screen or equal to the scaled point = no source.
                     pixel_point=_pixel_point(params, scaled_x, scaled_y, viewport_w, viewport_h),
                     locate_only=_element_specs.get(params.element_id, {}).get("locate_only", False),
-                    pointed_by_index=not element_index_was_none,
+                    pointed_by_index=index_found,
                 )
 
                 # Convert result to ActionResult format

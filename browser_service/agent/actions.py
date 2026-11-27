@@ -35,7 +35,7 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from browser_service.agent.read_step_identity import read_identity_facts, read_step_verdict
-from browser_service.locators.action_fit import READ_ACTIONS, check_action_fit
+from browser_service.locators.action_fit import IDENTITY_ACTIONS, READ_ACTIONS, check_action_fit
 from browser_service.locators.classifier import classify_element_type
 from browser_service.locators.click_target import find_inner_control
 from browser_service.locators.css_tokens import robot_safe
@@ -985,9 +985,16 @@ async def find_unique_locator_action(
         # bs #72: a call that names no element ships nothing. Blank text counts as
         # none: a blank needle makes validate_semantic_match accept any empty element.
         # (The cascade refuses the one case left: a frame container it discards.)
-        # Point-then-prove D4: refused only when the point hits no element either.
+        # Point-then-prove D4: a pointed target lets the call through only where a later check
+        # proves the pick (the identity gate; the verifier for one located element), flag on.
         if not element_data and not (expected_text or "").strip():
-            if await pointed_target(page, iframe_context, None, False, (x, y)) is None:
+            provable = action in IDENTITY_ACTIONS or (
+                locate_only and action is not None and is_collection is not True
+            )
+            if (
+                not provable
+                or await pointed_target(page, iframe_context, None, False, (x, y)) is None
+            ):
                 logger.info(
                     f"   ⛔ NO EVIDENCE: {element_id} '{element_description}' at ({x}, {y}), "
                     f"candidate={candidate_locator!r} — no element data and no expected text; "

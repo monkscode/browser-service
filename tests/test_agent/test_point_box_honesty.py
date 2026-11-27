@@ -25,6 +25,7 @@ NOT_FOUND = {"element_id": "elem_1", "found": False, "error": "Could not find un
 SCALED = (960, 540)  # the raw (500, 500) on the 1920x1080 grid
 BOX_CENTRE = (940, 390)
 DROPPED = "(signal: point-box-dropped)"
+UNJUDGED = "(signal: point-box-kept-unjudged)"
 HIT, BOX = object(), object()
 
 
@@ -108,6 +109,7 @@ async def test_unresolvable_box_keeps_the_data(caplog):
 
     _kept(kwargs)
     assert not [m for m in caplog.messages if DROPPED in m]
+    assert len([m for m in caplog.messages if m.endswith(UNJUDGED)]) == 1
 
 
 async def test_indexed_call_is_never_checked():
@@ -116,6 +118,19 @@ async def test_indexed_call_is_never_checked():
     target.assert_not_awaited()
     _kept(kwargs)
     assert kwargs["pointed_by_index"] is True
+
+
+async def test_stale_index_is_treated_as_no_index(caplog):
+    """An element_index the selector map lacks found no node: STEP A's box is checked like any
+    index-less box, and the call is not 'by index'."""
+    with caplog.at_level(logging.INFO, logger="browser_service.agent.registration"):
+        kwargs, target = await _call("click", {"element_index": 7})  # the map holds only [3]
+
+    assert kwargs["element_data"] is None
+    assert (kwargs["x"], kwargs["y"]) == SCALED
+    assert kwargs["pointed_by_index"] is False
+    assert target.await_args_list[0].args[1:] == (None, None, False, SCALED)
+    assert len([m for m in caplog.messages if m.endswith(DROPPED)]) == 1
 
 
 async def test_box_kept_for_read_steps():
@@ -140,7 +155,9 @@ async def test_check_exception_keeps_data(caplog):
 
     _kept(kwargs)
     assert not [m for m in caplog.messages if DROPPED in m]
-    assert any("frame detached" in m for m in caplog.messages)
+    assert [m for m in caplog.messages if m.endswith(UNJUDGED)] == [
+        f"   ⚠️ Point-box check failed, the box is kept: frame detached {UNJUDGED}"
+    ]
 
 
 async def test_a_drop_takes_the_frame_at_the_raw_point():

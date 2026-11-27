@@ -9,8 +9,9 @@ element, so it is refused before the page is touched: no candidate is counted,
 no frame is entered, the cascade does not run (one exception: a frame container as the
 only element data passes this check and is refused by the cascade itself, before any step).
 A row anchor, ``is_collection`` or a candidate locator alone are NOT evidence (owner:
-collections get no exception). Point-then-prove D4: such a call is refused only when the point
-hits no element either (``pointed_target`` None); the refusal tests pin that.
+collections get no exception). Point-then-prove D4: a performed step (``IDENTITY_ACTIONS``) or a
+single-element locate-only step, with the flag on, is refused only when the point hits no element
+either (``pointed_target`` None); every other wordless call is refused as before.
 """
 
 import logging
@@ -115,14 +116,17 @@ async def test_the_refusal_is_logged_as_one_signal_line(page, cascade, no_target
 
 
 async def test_point_target_lets_evidence_less_call_proceed(page, cascade, caplog):
-    """D4: no index data and no text, but the point hits an element: the call goes on."""
+    """D4: no index data and no text, but the point hits an element: a performed step goes on
+    (Task 4's identity gate proves its result)."""
     hit = object()
     target = AsyncMock(return_value=hit)
     with (
         patch("browser_service.agent.actions.pointed_target", new=target),
         caplog.at_level(logging.INFO, logger="browser_service.agent.actions"),
     ):
-        result = await _call(page, candidate_locator="id=status", pointed_by_index=False)
+        result = await _call(
+            page, candidate_locator="id=status", action="click", pointed_by_index=False
+        )
 
     target.assert_awaited_once_with(page, None, None, False, (120, 340))
     assert page.locator.call_args_list[0] == call("id=status")  # the candidate was counted
@@ -133,6 +137,46 @@ async def test_point_target_lets_evidence_less_call_proceed(page, cascade, caplo
         "data and no expected text, but the point hits an element; continuing "
         "(signal: no-evidence-point-target)"
     ]
+
+
+async def test_locate_only_step_with_a_target_proceeds(page, cascade):
+    """The d09 shape: a wordless hover (a locate-only get_text) on a pointed target goes on."""
+    target = AsyncMock(return_value=object())
+    with patch("browser_service.agent.actions.pointed_target", new=target):
+        result = await _call(page, action="get_text", locate_only=True)
+
+    target.assert_awaited_once()
+    cascade.assert_called_once()
+    assert "evidence" not in result
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"action": "get_text"}, id="value-read"),
+        pytest.param({"action": "get_attribute"}, id="attribute-read"),
+        pytest.param({"action": "select"}, id="select"),
+        pytest.param(
+            {"action": "get_text", "locate_only": True, "is_collection": True},
+            id="locate-only-collection",
+        ),
+        pytest.param({"action": None, "locate_only": True}, id="flag-off"),
+    ],
+)
+async def test_wordless_call_no_later_check_proves_is_refused_even_on_a_target(
+    page, cascade, kwargs
+):
+    """Value reads keep bs #72's refusal; so do select steps, locate-only collections (no gate,
+    no verifier) and every step with the flag off. The hit-test is not even run."""
+    target = AsyncMock(return_value=object())
+    with patch("browser_service.agent.actions.pointed_target", new=target):
+        result = await _call(page, candidate_locator="id=status", **kwargs)
+
+    assert result["error_type"] == "NoElementEvidence"
+    assert result["evidence"] == "none"
+    target.assert_not_awaited()
+    page.locator.assert_not_called()
+    cascade.assert_not_called()
 
 
 async def test_expected_text_is_evidence_and_the_candidate_is_counted(page, cascade):

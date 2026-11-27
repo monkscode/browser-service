@@ -2109,7 +2109,9 @@ def register_custom_actions(
                                         verifier_llm,
                                         user_query,
                                         _v_spec["description"],
-                                        _v_spec["action"],
+                                        "locate"
+                                        if _v_spec.get("locate_only") is True
+                                        else _v_spec["action"],
                                         _v_facts,
                                     )
                                     _v_why = " ".join(_v.reason.split()[:25])

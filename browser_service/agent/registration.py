@@ -2069,7 +2069,8 @@ def register_custom_actions(
                     # A model judges whether the pick is the element NLRF's step means. A "mismatch"
                     # on a new element is asked again once, then NOT FOUND; on a re-query of an
                     # accepted element the accepted locator stands (D3's shape). Fail-open: any error
-                    # in this block logs a warning and the pick ships exactly as today.
+                    # in this block logs a warning and the pick ships exactly as today. A picture-only
+                    # pick the verifier stays silent on twice is refused (bs #97).
                     if verifier_llm is not None:
                         try:
                             _v_spec = _element_specs.get(params.element_id) or {}

@@ -407,12 +407,17 @@ async def test_mismatch_does_not_log_the_graphic_signal(caplog):
 
 REASK_SIGNAL = "(signal: element-verifier-graphic-reask)"
 SKIPPED_SIGNAL = "(signal: element-verifier-skipped-graphic-refused)"
-GRAPHIC = AsyncMock(return_value=GRAPHIC_FACTS)
+
+
+def _graphic():
+    return AsyncMock(return_value=GRAPHIC_FACTS)
 
 
 async def test_graphic_skipped_then_match_ships_after_one_reask(caplog):
     with caplog.at_level(logging.INFO, logger=LOGGER):
-        (result,), m = await _run(["elem_1"], [("skipped", "timeout"), "match"], read_facts=GRAPHIC)
+        (result,), m = await _run(
+            ["elem_1"], [("skipped", "timeout"), "match"], read_facts=_graphic()
+        )
     _shipped(result)
     m.interaction.assert_awaited_once()
     assert m.verify.await_count == 2
@@ -427,18 +432,19 @@ async def test_graphic_skipped_then_match_ships_after_one_reask(caplog):
 async def test_graphic_skipped_then_a_judgement_is_refused(second, caplog):
     with caplog.at_level(logging.INFO, logger=LOGGER):
         (first,), m = await _run(
-            ["elem_1"], [("skipped", "timeout"), (second, REASON)], read_facts=GRAPHIC
+            ["elem_1"], [("skipped", "timeout"), (second, REASON)], read_facts=_graphic()
         )
     assert "find_unique_locator again" in first.error
     assert first.metadata["found"] is False
     m.interaction.assert_not_awaited()
     assert m.verify.await_count == 2
     assert SKIPPED_SIGNAL not in caplog.text
+    assert (GRAPHIC_SIGNAL in caplog.text) == (second == "unsure")
 
 
 async def test_graphic_skipped_twice_is_refused_without_the_skip_reason(caplog):
     with caplog.at_level(logging.INFO, logger=LOGGER):
-        (first,), m = await _run(["elem_1"], [("skipped", "timeout")] * 2, read_facts=GRAPHIC)
+        (first,), m = await _run(["elem_1"], [("skipped", "timeout")] * 2, read_facts=_graphic())
     assert "find_unique_locator again" in first.error
     assert "could not confirm it is the element the step means" in first.error
     assert "timeout" not in first.error and "timeout" not in first.metadata["error"]
@@ -453,7 +459,7 @@ async def test_graphic_skipped_twice_is_refused_without_the_skip_reason(caplog):
 async def test_graphic_skipped_twice_on_the_second_refusal_is_not_found(caplog):
     with caplog.at_level(logging.INFO, logger=LOGGER):
         (first, second), m = await _run(
-            ["elem_1", "elem_1"], [("skipped", "timeout")] * 4, read_facts=GRAPHIC
+            ["elem_1", "elem_1"], [("skipped", "timeout")] * 4, read_facts=_graphic()
         )
     assert "find_unique_locator again" in first.error
     assert "NOT FOUND" in second.extracted_content and second.error is None
@@ -470,7 +476,7 @@ async def test_graphic_skipped_twice_on_a_requery_keeps_the_validated_locator(ca
             ["elem_1", "elem_1"],
             ["match", ("skipped", "timeout"), ("skipped", "timeout")],
             engines=[FOUND, {**FOUND, "best_locator": "css=#other"}],
-            read_facts=GRAPHIC,
+            read_facts=_graphic(),
         )
     _shipped(first)
     assert second.error is None and "Locator: css=#pick" in second.extracted_content
@@ -490,6 +496,6 @@ async def test_skipped_without_a_graphic_ships_with_no_reask(caplog):
 
 @pytest.mark.parametrize("verdict", ["match", "unsure", "mismatch"])
 async def test_graphic_first_verdict_is_never_reasked(verdict):
-    (first,), m = await _run(["elem_1"], [(verdict, REASON)], read_facts=GRAPHIC)
+    (first,), m = await _run(["elem_1"], [(verdict, REASON)], read_facts=_graphic())
     m.verify.assert_awaited_once()
     assert (first.error is None) == (verdict == "match")

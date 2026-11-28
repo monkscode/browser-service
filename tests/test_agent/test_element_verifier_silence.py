@@ -1,10 +1,12 @@
 """Point-then-prove D6 (the silence rule) and the D4 amendment (point-only picks), stub verifier.
 
-A ``skipped`` first answer is asked once more for every pick whose facts were read. After two
-silences a picture-only pick is refused (bs #97, unchanged); any other pick ships only when the
-agent's own words occur in its facts AND it holds no other control (``count_inner_controls``).
-A point-only pick (a locate-only step the point alone found: no element data, no words) ships
-only on a "match"; anything else, the verifier off included, is refused like a mismatch.
+A ``skipped`` first answer is asked once more on a picture-only pick (bs #97, unchanged), on a
+performed step (``IDENTITY_ACTIONS``) and on a point-only pick, when facts were read. After two
+silences a picture-only pick is refused; a performed step ships only when the agent's own words
+occur in its facts AND it holds no other control (``count_inner_controls``). A point-only pick (a
+locate-only step the point alone found: no element data, no words) ships only on a "match";
+anything else, the verifier off included, is refused like a mismatch. Reads, selects, worded
+locate-only steps and the flag off keep 615c9e7's rules (R11).
 
 Harness: test_element_verifier_wiring.py's ``_run`` (the real registered handler, the engine and
 Playwright faked); ``count_inner_controls`` is patched at registration's seam. The real-DOM count
@@ -27,6 +29,7 @@ from tests.test_agent.test_element_verifier_wiring import (
     LLM,
     LOGGER,
     QUERY,
+    REASON,
     _run,
     _shipped,
 )
@@ -225,6 +228,52 @@ async def test_unreadable_count_is_refused_not_shipped(count, caplog):
     assert "the pick ships as today" not in caplog.text
 
 
+# ---- R11: the non-graphic re-ask and the silence rule are for performed steps only ------------
+
+READ_1 = {"id": "elem_1", "action": "get_text", "value": "", "description": "the product name"}
+SELECT = {"id": "elem_1", "action": "select", "value": "Blue", "description": "the colour list"}
+WORDED_HOVER = {**HOVER, "id": "elem_1"}
+
+
+@pytest.mark.parametrize(
+    ("elements", "extra", "fit"),
+    [
+        ((READ_1,), None, True),
+        ((SELECT,), WORDS, True),
+        ((WORDED_HOVER,), {"expected_text": "Account"}, True),
+        ((CLICK,), WORDS, False),
+    ],
+    ids=["read-no-words", "select", "worded-hover", "flag-off"],
+)
+async def test_out_of_scope_silence_ships_with_one_ask(elements, extra, fit, caplog):
+    """Reads, selects, worded locate-only steps and the flag off keep 615c9e7's rule: only a
+    picture is asked again, and a silent answer ships (a count of 3 would refuse a click)."""
+    count = AsyncMock(return_value=3)
+    with (
+        caplog.at_level(logging.INFO, logger=LOGGER),
+        patch.object(config.locator, "enable_action_fit", fit),
+    ):
+        (result,), m = await _silent(count, elements=elements, extra=extra)
+    _shipped(result)
+    m.verify.assert_awaited_once()
+    count.assert_not_awaited()
+    assert "silent-reask" not in caplog.text and "silent-words" not in caplog.text
+
+
+@pytest.mark.parametrize("second", ["match", SILENT], ids=["then-match", "silent-twice"])
+async def test_point_only_silence_is_asked_once_more_and_needs_a_match(second, caplog):
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        (first,), m = await _hover([SILENT, second])
+    assert m.verify.await_count == 2
+    assert "(signal: element-verifier-silent-reask)" in caplog.text
+    assert "silent-words" not in caplog.text
+    if second == "match":
+        _shipped(first)
+    else:
+        _refused(first)
+        assert "(signal: element-verifier-point-only-refused)" in caplog.text
+
+
 # ---- the D4 amendment: a point-only pick ships only on "match" -------------------------------
 
 
@@ -331,6 +380,46 @@ async def test_point_only_requery_refusal_keeps_the_validated_locator(caplog):
     assert second.error is None and "Locator: css=#pick" in second.extracted_content
     assert "(signal: element-verifier-requery-kept)" in caplog.text
     assert "(signal: element-verifier-point-only-refused)" in caplog.text
+
+
+CONFIRMED = ("could not be confirmed", "that could not be confirmed")
+JUDGED = ("judged the new pick a different element", "the verifier judged different")
+
+
+@pytest.mark.parametrize(
+    ("spec", "second", "extra", "wording"),
+    [
+        (HOVER, ["unsure"], None, CONFIRMED),
+        (CLICK, [SILENT, SILENT], {"expected_text": "Checkout"}, CONFIRMED),
+        (CLICK, [("mismatch", REASON)], None, JUDGED),
+    ],
+    ids=["point-only-unsure", "silence-refused", "mismatch"],
+)
+async def test_requery_refusal_says_why_the_validated_locator_stands(
+    spec, second, extra, wording, caplog
+):
+    """R12: only a "mismatch" says the verifier judged the new pick different."""
+    eid = spec["id"]
+    other = CONFIRMED if wording is JUDGED else JUDGED
+    with (
+        caplog.at_level(logging.INFO, logger=LOGGER),
+        patch.object(config.locator, "enable_action_fit", True),
+        patch(COUNT, new=AsyncMock(return_value=0)),
+    ):
+        (first, second_result), m = await _run(
+            [eid, eid],
+            ["match", *second],
+            elements=(spec,),
+            engines=[FOUND, {**FOUND, "best_locator": "css=#other"}],
+            extra=extra,
+        )
+    _shipped(first)
+    assert second_result.error is None
+    assert "Locator: css=#pick" in second_result.extracted_content
+    assert wording[0] in second_result.extracted_content
+    assert other[0] not in second_result.extracted_content
+    line = next(msg for msg in caplog.messages if "signal: element-verifier-requery-kept" in msg)
+    assert wording[1] in line and other[1] not in line
 
 
 # ---- ruling 1: one definition, used by the pass-through and by registration ------------------

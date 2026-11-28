@@ -2140,11 +2140,13 @@ def register_custom_actions(
                     # on a new element is asked again once, then NOT FOUND; on a re-query of an
                     # accepted element the accepted locator stands (D3's shape). Fail-open: any error
                     # in this block logs a warning and the pick ships exactly as today. A silent first
-                    # answer on a pick whose facts were read is asked once more. Silent twice: a
-                    # picture-only pick is refused (bs #97); any other ships only when the agent's own
-                    # words agree and it holds no other control (D6). A point-only pick ships only on
-                    # "match": anything else, the verifier off or failing included, refuses it (D4).
+                    # answer on a picture-only pick is asked once more, and silent twice it is refused
+                    # (bs #97). A performed step (D6) and a point-only pick get the same re-ask; silent
+                    # twice, a performed step ships only when the agent's own words agree and it holds
+                    # no other control. A point-only pick ships only on "match": anything else, the
+                    # verifier off or failing included, refuses it (D4). Every other step: as 615c9e7.
                     _v_spec = _element_specs.get(params.element_id) or {}
+                    _v_in_scope = _step_action in IDENTITY_ACTIONS
                     _v_point_only = point_only(
                         element_data_from_index,
                         params.expected_text,
@@ -2211,7 +2213,12 @@ def register_custom_actions(
                                     )
                                     # A silent verifier is asked once more on a pick whose facts were
                                     # read (without facts verify_pick makes no model call).
-                                    if not (_v_facts and _v.verdict == "skipped" and _v_try == 1):
+                                    if not (
+                                        _v_facts
+                                        and _v.verdict == "skipped"
+                                        and _v_try == 1
+                                        and (_v_graphic or _v_point_only or _v_in_scope)
+                                    ):
                                         break
                                     if _v_graphic:
                                         logger.info(
@@ -2245,9 +2252,9 @@ def register_custom_actions(
                                         f"(signal: element-verifier-{_v_signal}-graphic-refused)"
                                     )
                                     _v_refused = True
-                                elif _v.verdict == "skipped" and _v_facts:
-                                    # D6, silent twice: the agent's own words decide, and only for an element
-                                    # that holds no other control (a container's text holds every word).
+                                elif _v.verdict == "skipped" and _v_facts and _v_in_scope:
+                                    # D6, a performed step silent twice: the agent's own words decide, only for
+                                    # an element that holds no other control (a container's text holds every word).
                                     _v_detail = ""
                                     if not element_verifier.words_agree(
                                         params.expected_text, _v_facts
@@ -2301,9 +2308,12 @@ def register_custom_actions(
                                 else "the verifier could not confirm it is the element the step means"
                             )
                             if _prev_locator is not None:
+                                # only a "mismatch" is a judgement; any other refusal is unconfirmed
+                                _v_judged = _v_verdict == "mismatch"
                                 logger.info(
                                     f"   ⛔ Re-query for {params.element_id} picked an element "
-                                    f"the verifier judged different ({best_locator}) — keeping "
+                                    f"{'the verifier judged different' if _v_judged else 'that could not be confirmed'} "
+                                    f"({best_locator}) — keeping "
                                     f"the validated locator {_prev_locator} "
                                     f"(signal: element-verifier-requery-kept)"
                                 )
@@ -2311,7 +2321,7 @@ def register_custom_actions(
                                     extracted_content=(
                                         f"✅ Element {params.element_id} is already validated.\n"
                                         f"Locator: {_prev_locator}\n"
-                                        f"The verifier judged the new pick a different element "
+                                        f"{'The verifier judged the new pick a different element' if _v_judged else 'The new pick could not be confirmed'} "
                                         f"— the earlier validated locator stands. "
                                         f"Proceed to the next element."
                                     ),

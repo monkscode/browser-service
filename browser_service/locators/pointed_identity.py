@@ -9,11 +9,17 @@ control at or above it.
 ``proven`` (D2) is the identity gate's test: a locator ships for a performed step only when it
 lands on the target or on one allowlisted relation of it (``RELATION_JS``).
 
+``point_only`` (D4) names a locate-only pick the point alone found; ``count_inner_controls`` (D6)
+tells a single control from a container of controls for the element verifier's silence rule.
+
 Referenced by: agent/registration.py, agent/actions.py
 Depends on: locators/smart_locator.py (the open-shadow-aware hit-test helper),
-    locators/frame_locator.py, locators/validation.py
+    locators/frame_locator.py, locators/validation.py, locators/action_fit.py
 """
 
+import asyncio
+
+from browser_service.locators.action_fit import IDENTITY_ACTIONS
 from browser_service.locators.frame_locator import strip_frame
 from browser_service.locators.smart_locator import _SHADOW_DOM_HELPER_JS
 from browser_service.locators.validation import convert_to_playwright_locator
@@ -30,25 +36,45 @@ _HIT_JS = f"""
 # A point on these names no element: empty page, or a frame bs did not enter.
 _NO_TARGET_JS = "el => ['body', 'html', 'iframe'].includes(el.localName)"
 
-# The nearest control at or above ``el``: the element itself, then up to 6 ancestors, crossing
-# open shadow hosts. null when none.
+# The ONE Control definition (isControl), and the nearest control at or above ``el``: the element
+# itself, then up to 6 ancestors, crossing open shadow hosts. null when none.
 _NEAREST_CONTROL_JS = """
-    function nearestControl(el) {
+    function isControl(el) {
         const TAGS = ['a', 'button', 'input', 'select', 'textarea', 'label', 'summary', 'option'];
         const ROLES = ['button', 'link', 'checkbox', 'radio', 'switch', 'tab', 'menuitem',
             'menuitemcheckbox', 'menuitemradio', 'option', 'combobox', 'textbox', 'searchbox',
             'slider', 'spinbutton', 'treeitem'];
+        const role = (el.getAttribute('role') || '').trim().toLowerCase();
+        const editable = el.getAttribute('contenteditable');
+        return TAGS.includes(el.localName) || ROLES.includes(role)
+            || (editable !== null && editable.toLowerCase() !== 'false');
+    }
+    function nearestControl(el) {
         for (let level = 0; el && level <= 6; level++) {
-            const role = (el.getAttribute('role') || '').trim().toLowerCase();
-            const editable = el.getAttribute('contenteditable');
-            if (TAGS.includes(el.localName) || ROLES.includes(role)
-                || (editable !== null && editable.toLowerCase() !== 'false')) {
-                return el;
-            }
+            if (isControl(el)) return el;
             el = el.parentElement || (el.parentNode instanceof ShadowRoot ? el.parentNode.host : null);
         }
         return null;
     }
+"""
+
+# D6: the controls strictly inside ``t``, open shadow roots included; a label's own control is
+# not one (a label wrapping its checkbox is that checkbox's click target).
+_INNER_CONTROLS_JS = f"""
+(t) => {{
+    {_NEAREST_CONTROL_JS}
+    const own = t.localName === 'label' ? t.control : null;
+    let count = 0;
+    const walk = (root) => {{
+        for (const n of root.querySelectorAll('*')) {{
+            if (n !== own && isControl(n)) count++;
+            if (n.shadowRoot) walk(n.shadowRoot);
+        }}
+    }};
+    walk(t);
+    if (t.shadowRoot) walk(t.shadowRoot);
+    return count;
+}}
 """
 
 _BOX_IS_HIT_JS = f"""
@@ -223,3 +249,23 @@ async def box_is_hit(box, hit) -> bool:
     Both handles must live in one frame; an unreadable pair raises, and the caller decides.
     """
     return bool(await hit.evaluate(_BOX_IS_HIT_JS, box))
+
+
+async def count_inner_controls(target, timeout_s: float = 2.0) -> int:
+    """How many controls ``target`` (a Locator or an ElementHandle) holds, not counting a label's
+    own control. Raises when the page cannot be read; the caller decides."""
+    return await asyncio.wait_for(target.evaluate(_INNER_CONTROLS_JS), timeout_s)
+
+
+def point_only(element_data, expected_text, locate_only, action, is_collection) -> bool:
+    """A locate-only step's call that named no element (no element data, no words): only the
+    point found it, so only the element verifier can prove it (D4). Flag off (``action`` None),
+    a collection or a performed step (the identity gate proves those) is never point-only."""
+    return (
+        not element_data
+        and not (expected_text or "").strip()
+        and bool(locate_only)
+        and action is not None
+        and is_collection is not True
+        and action not in IDENTITY_ACTIONS
+    )

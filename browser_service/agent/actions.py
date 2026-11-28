@@ -42,6 +42,7 @@ from browser_service.locators.css_tokens import robot_safe
 from browser_service.locators.frame_locator import ensure_frame_on_result, strip_frame
 from browser_service.locators.hidden_value import HIDES_VALUE_JS
 from browser_service.locators.pointed_identity import (
+    point_only,
     pointed_target,
     pointed_target_or_raise,
     proven,
@@ -1092,8 +1093,8 @@ async def find_unique_locator_action(
         # Point-then-prove D4: a pointed target lets the call through only where a later check
         # proves the pick (the identity gate; the verifier for one located element), flag on.
         if not element_data and not (expected_text or "").strip():
-            provable = action in IDENTITY_ACTIONS or (
-                locate_only and action is not None and is_collection is not True
+            provable = action in IDENTITY_ACTIONS or point_only(
+                element_data, expected_text, locate_only, action, is_collection
             )
             if (
                 not provable

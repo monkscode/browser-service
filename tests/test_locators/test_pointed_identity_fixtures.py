@@ -8,7 +8,11 @@ the box must be the hit itself or the nearest control at or above it. Inline HTM
 import pytest
 from playwright.async_api import async_playwright
 
-from browser_service.locators.pointed_identity import box_is_hit, pointed_target
+from browser_service.locators.pointed_identity import (
+    box_is_hit,
+    count_inner_controls,
+    pointed_target,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -163,3 +167,46 @@ async def test_box_is_hit_false_for_container(page):
 
     assert await hit.evaluate("el => el.className") == "toggle"
     assert await box_is_hit(box, hit) is False
+
+
+# D6: the controls a pick holds (the element verifier's silence rule ships only at 0).
+
+
+async def test_count_inner_controls_root_container(page):
+    await page.set_content(TODOMVC)
+    # the new-todo input, then a checkbox, a label and a button in each of the 2 rows
+    assert await count_inner_controls(page.locator("#root")) == 7
+
+
+async def test_count_inner_controls_label_wrapping_its_checkbox_is_zero(page):
+    await page.set_content('<label id="agree"><input type="checkbox"> I agree</label>')
+    assert await count_inner_controls(page.locator("#agree")) == 0
+
+
+async def test_count_inner_controls_label_holding_another_control_counts_it(page):
+    await page.set_content(
+        '<label id="agree"><input type="checkbox"> I agree to <a href="#t">the terms</a></label>'
+    )
+    assert await count_inner_controls(page.locator("#agree")) == 1
+
+
+async def test_count_inner_controls_icon_button_by_element_handle(page):
+    await page.set_content(ICON_BUTTON)
+    assert await count_inner_controls(await page.locator("#del").element_handle()) == 0
+
+
+async def test_count_inner_controls_reads_roles_and_contenteditable(page):
+    await page.set_content(
+        '<div id="w"><div role="button">x</div><p contenteditable>y</p>'
+        '<p contenteditable="false">z</p><span>w</span></div>'
+    )
+    assert await count_inner_controls(page.locator("#w")) == 2
+
+
+async def test_count_inner_controls_crosses_open_shadow_roots(page):
+    await page.set_content('<div id="host"></div>')
+    await page.evaluate(
+        """() => document.getElementById('host').attachShadow({mode: 'open'}).innerHTML =
+            '<span><button>Save</button></span><div role="tab">A</div>'"""
+    )
+    assert await count_inner_controls(page.locator("#host")) == 2

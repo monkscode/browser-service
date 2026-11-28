@@ -40,7 +40,13 @@ from browser_service.locators.action_fit import IDENTITY_ACTIONS, PERFORMED_ACTI
 from browser_service.locators.css_tokens import css_attr
 from browser_service.locators.frame_locator import strip_frame
 from browser_service.locators.hidden_value import SECRET_MARK, node_hides_value, node_text
-from browser_service.locators.pointed_identity import _hit_at, box_is_hit, pointed_target
+from browser_service.locators.pointed_identity import (
+    _hit_at,
+    box_is_hit,
+    count_inner_controls,
+    point_only,
+    pointed_target,
+)
 from browser_service.locators.read_change import (
     CAME_BACK,
     NOT_CAME_BACK,
@@ -2023,6 +2029,7 @@ def register_custom_actions(
                             f"(signal: point-box-kept-unjudged)"
                         )
 
+                _locate_only = _element_specs.get(params.element_id, {}).get("locate_only", False)
                 result = await find_unique_locator_action(
                     x=final_x,  # Use confirmed or scaled coordinates
                     y=final_y,  # Use confirmed or scaled coordinates
@@ -2045,7 +2052,7 @@ def register_custom_actions(
                     # bs #75: an index-less point the grid scaling may have mis-read; the read gate
                     # tries it as pixels last. Off-screen or equal to the scaled point = no source.
                     pixel_point=_pixel_point(params, scaled_x, scaled_y, viewport_w, viewport_h),
-                    locate_only=_element_specs.get(params.element_id, {}).get("locate_only", False),
+                    locate_only=_locate_only,
                     pointed_by_index=index_found and not frame_box_swapped,
                 )
 
@@ -2132,19 +2139,35 @@ def register_custom_actions(
                     # A model judges whether the pick is the element NLRF's step means. A "mismatch"
                     # on a new element is asked again once, then NOT FOUND; on a re-query of an
                     # accepted element the accepted locator stands (D3's shape). Fail-open: any error
-                    # in this block logs a warning and the pick ships exactly as today. A picture-only
-                    # pick the verifier stays silent on twice is refused (bs #97).
-                    if verifier_llm is not None:
+                    # in this block logs a warning and the pick ships exactly as today. A silent first
+                    # answer on a pick whose facts were read is asked once more. Silent twice: a
+                    # picture-only pick is refused (bs #97); any other ships only when the agent's own
+                    # words agree and it holds no other control (D6). A point-only pick ships only on
+                    # "match": anything else, the verifier off or failing included, refuses it (D4).
+                    _v_spec = _element_specs.get(params.element_id) or {}
+                    _v_point_only = point_only(
+                        element_data_from_index,
+                        params.expected_text,
+                        _locate_only,
+                        _step_action,
+                        params.is_collection,
+                    )
+                    if verifier_llm is not None or _v_point_only:
+                        _v_refused, _v_why, _v_cause, _v_verdict = False, "", "", ""
                         try:
-                            _v_spec = _element_specs.get(params.element_id) or {}
                             _v_type = result.get("element_type")
-                            if _v_type in ("collection", "file-upload"):
+                            _v_accepted = (
+                                _prev_locator is not None and best_locator == _prev_locator
+                            )
+                            if verifier_llm is None:
+                                _v_skip = "the verifier is off"
+                            elif _v_type in ("collection", "file-upload"):
                                 _v_skip = f"element type {_v_type}"
                             elif params.is_collection is True:
                                 _v_skip = "is_collection was set"
                             elif not _v_spec:
                                 _v_skip = "no NLRF step for this element"
-                            elif _prev_locator is not None and best_locator == _prev_locator:
+                            elif _v_accepted:
                                 _v_skip = "re-query returned the accepted locator"
                             else:
                                 _v_skip = ""
@@ -2153,6 +2176,8 @@ def register_custom_actions(
                                     f"   🔎 Element verifier not asked for {params.element_id}: "
                                     f"{_v_skip} (signal: element-verifier-not-asked)"
                                 )
+                                # that locator was already accepted: it ships as today
+                                _v_refused, _v_cause = _v_point_only and not _v_accepted, _v_skip
                             else:
                                 _v_info = result.get("element_info") or {}
                                 _v_input = _v_info.get("input_locator")
@@ -2163,9 +2188,8 @@ def register_custom_actions(
                                     and _v_input
                                     else best_locator
                                 )
-                                _v_facts = await element_verifier.read_element_facts(
-                                    _step_locator(active_page, _v_loc, iframe_context)[1]
-                                )
+                                _v_target = _step_locator(active_page, _v_loc, iframe_context)[1]
+                                _v_facts = await element_verifier.read_element_facts(_v_target)
                                 _v_graphic = isinstance(_v_facts, dict) and "graphic" in _v_facts
                                 for _v_try in (1, 2):
                                     _v = await element_verifier.verify_pick(
@@ -2185,110 +2209,166 @@ def register_custom_actions(
                                         f"tokens, {_v.seconds:.1f}s) on '{_v_loc}'{_v_said} "
                                         f"(signal: element-verifier-{_v.verdict})"
                                     )
-                                    # A silent verifier on a picture-only pick is asked once more.
-                                    if not (_v_graphic and _v.verdict == "skipped" and _v_try == 1):
+                                    # A silent verifier is asked once more on a pick whose facts were
+                                    # read (without facts verify_pick makes no model call).
+                                    if not (_v_facts and _v.verdict == "skipped" and _v_try == 1):
                                         break
-                                    logger.info(
-                                        f"   🔎 Element verifier gave no answer on the picture of "
-                                        f"{params.element_id} — asking once more "
-                                        f"(signal: element-verifier-graphic-reask)"
-                                    )
+                                    if _v_graphic:
+                                        logger.info(
+                                            f"   🔎 Element verifier gave no answer on the picture of "
+                                            f"{params.element_id} — asking once more "
+                                            f"(signal: element-verifier-graphic-reask)"
+                                        )
+                                    else:
+                                        logger.info(
+                                            f"   🔎 Element verifier gave no answer on "
+                                            f"{params.element_id} — asking once more "
+                                            f"(signal: element-verifier-silent-reask)"
+                                        )
+                                _v_verdict = _v.verdict
+                                # a skip reason (timeout, error name) is no judgement
+                                if _v.verdict == "skipped":
+                                    _v_why = ""
                                 # A wordless pick is judged on its picture alone: it ships only on a clear "match".
                                 _v_unsure_graphic = _v_graphic and _v.verdict == "unsure"
                                 _v_silent_graphic = _v_graphic and _v.verdict == "skipped"
-                                if _v_unsure_graphic or _v_silent_graphic:
+                                if _v_point_only:
+                                    _v_refused, _v_cause = (
+                                        _v.verdict != "match",
+                                        f"verdict {_v.verdict}",
+                                    )
+                                elif _v_unsure_graphic or _v_silent_graphic:
                                     _v_signal = "unsure" if _v_unsure_graphic else "skipped"
                                     logger.info(
                                         f"   ⛔ Element verifier could not confirm the picture of "
                                         f"{params.element_id} — refused like a mismatch "
                                         f"(signal: element-verifier-{_v_signal}-graphic-refused)"
                                     )
-                                    if _v_silent_graphic:
-                                        _v_why = ""  # a skip reason (timeout, error name) is no judgement
-                                if (
-                                    _v.verdict == "mismatch"
-                                    or _v_unsure_graphic
-                                    or _v_silent_graphic
-                                ):
-                                    _v_why = _v_why or (
-                                        "the verifier could not confirm it is the element the step means"
-                                        if _v_unsure_graphic or _v_silent_graphic
-                                        else "the verifier judged it a different element"
-                                    )
-                                    if _prev_locator is not None:
+                                    _v_refused = True
+                                elif _v.verdict == "skipped" and _v_facts:
+                                    # D6, silent twice: the agent's own words decide, and only for an element
+                                    # that holds no other control (a container's text holds every word).
+                                    _v_detail = ""
+                                    if not element_verifier.words_agree(
+                                        params.expected_text, _v_facts
+                                    ):
+                                        _v_detail = "the words do not agree"
+                                    else:
+                                        try:
+                                            _v_inner = await count_inner_controls(_v_target)
+                                        except Exception:  # noqa: BLE001 — a count not read is not 0
+                                            _v_inner = None
+                                        if type(_v_inner) is not int:
+                                            _v_detail = "the words agree but its inner controls could not be counted"
+                                        elif _v_inner:
+                                            _v_detail = f"the words agree but it holds {_v_inner} other controls"
+                                            _v_why = f"it holds {_v_inner} other controls; point at the one the step means"
+                                    _v_refused = bool(_v_detail)
+                                    if _v_refused:
                                         logger.info(
-                                            f"   ⛔ Re-query for {params.element_id} picked an element "
-                                            f"the verifier judged different ({best_locator}) — keeping "
-                                            f"the validated locator {_prev_locator} "
-                                            f"(signal: element-verifier-requery-kept)"
+                                            f"   ⛔ Element verifier gave no answer twice on {params.element_id}: "
+                                            f"{_v_detail} — refused like a mismatch "
+                                            f"(signal: element-verifier-silent-words-refused)"
                                         )
-                                        return ActionResult(
-                                            extracted_content=(
-                                                f"✅ Element {params.element_id} is already validated.\n"
-                                                f"Locator: {_prev_locator}\n"
-                                                f"The verifier judged the new pick a different element "
-                                                f"— the earlier validated locator stands. "
-                                                f"Proceed to the next element."
-                                            ),
-                                            long_term_memory=_memory_line(
-                                                params.element_id,
-                                                _prev_locator,
-                                                "not_applicable",
-                                                "",
-                                                _already_performed,
-                                            ),
-                                        )
-                                    _v_n = _verifier_rejections.get(params.element_id, 0) + 1
-                                    _verifier_rejections[params.element_id] = _v_n
-                                    _v_meta = {
-                                        **result,
-                                        "found": False,
-                                        "best_locator": None,
-                                        "error": _v_why,
-                                    }
-                                    # No long_term_memory: browser-use 0.13.7 drops extracted_content when it is set.
-                                    if _v_n == 1:
-                                        retry_msg = (
-                                            f"The element picked for '{params.element_id}' is not the "
-                                            f"element the step means: {_v_why}. Re-examine the attached "
-                                            f"screenshot, point at the element the step means and call "
-                                            f"find_unique_locator again with its element_index or the "
-                                            f"coordinates of its centre. A screenshot of the current page "
-                                            f"is attached to your next message (when available)."
-                                        )
+                                    else:
                                         logger.info(
-                                            f"🔄 ELEMENT VERIFIER RETRY for {params.element_id}: {_v_why} "
-                                            f"(signal: element-verifier-retry)"
+                                            f"   ✅ Element verifier gave no answer twice on {params.element_id}, "
+                                            f"but the words agree and it holds no other control — it ships "
+                                            f"(signal: element-verifier-silent-words-agree)"
                                         )
-                                        _keep_vision_on(agent)
-                                        return ActionResult(
-                                            extracted_content=retry_msg,
-                                            error=retry_msg,
-                                            is_done=False,
-                                            metadata={**_v_meta, "include_screenshot": True},
-                                        )
-                                    final_msg = (
-                                        f"'{params.element_id}' was again not the element the step "
-                                        f"means ({_v_why}); it is recorded as NOT FOUND. Do not retry "
-                                        f"it — continue with the remaining elements."
-                                    )
-                                    if _v_spec["action"] in _PERFORMED_ACTIONS:
-                                        final_msg += " Do not perform this step's action yourself."
-                                    logger.info(
-                                        f"⛔ ELEMENT VERIFIER NOT FOUND for {params.element_id} after "
-                                        f"{_v_n} rejections (signal: element-verifier-not-found)"
-                                    )
-                                    # No error: browser-use counts an error result as an agent
-                                    # failure, and 5 in a row end the run (max_failures).
-                                    return ActionResult(
-                                        extracted_content=final_msg,
-                                        is_done=False,
-                                        metadata=_v_meta,
-                                    )
+                                else:
+                                    _v_refused = _v.verdict == "mismatch"
                         except Exception as _v_err:  # noqa: BLE001 — the verifier must never drop a pick
-                            logger.warning(
-                                f"   Element verifier step skipped for {params.element_id} "
-                                f"({type(_v_err).__name__}) — the pick ships as today"
+                            if _v_point_only:  # ...that only the verifier could prove: refused
+                                _v_refused, _v_why = True, ""
+                                _v_cause = f"error {type(_v_err).__name__}"
+                            else:
+                                _v_refused = False
+                                logger.warning(
+                                    f"   Element verifier step skipped for {params.element_id} "
+                                    f"({type(_v_err).__name__}) — the pick ships as today"
+                                )
+                        if _v_refused and _v_point_only:
+                            logger.info(
+                                f"   ⛔ Element verifier did not confirm the point-only pick of "
+                                f"{params.element_id} ({_v_cause}) — refused like a mismatch "
+                                f"(signal: element-verifier-point-only-refused)"
+                            )
+                        if _v_refused:
+                            _v_why = _v_why or (
+                                "the verifier judged it a different element"
+                                if _v_verdict == "mismatch"
+                                else "the verifier could not confirm it is the element the step means"
+                            )
+                            if _prev_locator is not None:
+                                logger.info(
+                                    f"   ⛔ Re-query for {params.element_id} picked an element "
+                                    f"the verifier judged different ({best_locator}) — keeping "
+                                    f"the validated locator {_prev_locator} "
+                                    f"(signal: element-verifier-requery-kept)"
+                                )
+                                return ActionResult(
+                                    extracted_content=(
+                                        f"✅ Element {params.element_id} is already validated.\n"
+                                        f"Locator: {_prev_locator}\n"
+                                        f"The verifier judged the new pick a different element "
+                                        f"— the earlier validated locator stands. "
+                                        f"Proceed to the next element."
+                                    ),
+                                    long_term_memory=_memory_line(
+                                        params.element_id,
+                                        _prev_locator,
+                                        "not_applicable",
+                                        "",
+                                        _already_performed,
+                                    ),
+                                )
+                            _v_n = _verifier_rejections.get(params.element_id, 0) + 1
+                            _verifier_rejections[params.element_id] = _v_n
+                            _v_meta = {
+                                **result,
+                                "found": False,
+                                "best_locator": None,
+                                "error": _v_why,
+                            }
+                            # No long_term_memory: browser-use 0.13.7 drops extracted_content when it is set.
+                            if _v_n == 1:
+                                retry_msg = (
+                                    f"The element picked for '{params.element_id}' is not the "
+                                    f"element the step means: {_v_why}. Re-examine the attached "
+                                    f"screenshot, point at the element the step means and call "
+                                    f"find_unique_locator again with its element_index or the "
+                                    f"coordinates of its centre. A screenshot of the current page "
+                                    f"is attached to your next message (when available)."
+                                )
+                                logger.info(
+                                    f"🔄 ELEMENT VERIFIER RETRY for {params.element_id}: {_v_why} "
+                                    f"(signal: element-verifier-retry)"
+                                )
+                                _keep_vision_on(agent)
+                                return ActionResult(
+                                    extracted_content=retry_msg,
+                                    error=retry_msg,
+                                    is_done=False,
+                                    metadata={**_v_meta, "include_screenshot": True},
+                                )
+                            final_msg = (
+                                f"'{params.element_id}' was again not the element the step "
+                                f"means ({_v_why}); it is recorded as NOT FOUND. Do not retry "
+                                f"it — continue with the remaining elements."
+                            )
+                            if _v_spec["action"] in _PERFORMED_ACTIONS:
+                                final_msg += " Do not perform this step's action yourself."
+                            logger.info(
+                                f"⛔ ELEMENT VERIFIER NOT FOUND for {params.element_id} after "
+                                f"{_v_n} rejections (signal: element-verifier-not-found)"
+                            )
+                            # No error: browser-use counts an error result as an agent
+                            # failure, and 5 in a row end the run (max_failures).
+                            return ActionResult(
+                                extracted_content=final_msg,
+                                is_done=False,
+                                metadata=_v_meta,
                             )
 
                     # ========================================

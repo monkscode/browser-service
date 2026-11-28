@@ -8,6 +8,8 @@ the step and its action to the model and returns a verdict. The element's typed 
 inside an ``[nlrf-secret]`` element or an ``<input type=password>`` is dropped from every text field. Fail-open:
 a missing fact read, a timeout, an exception or a malformed reply is a "skipped" outcome, never a verdict, and
 ``verify_pick`` never raises. The prompt is the one measured by the bs #62 spike, plus two rulings.
+``words_agree`` (point-then-prove D6) checks the agent's own words against those facts, for a pick the model
+stayed silent on twice.
 
 Referenced by: agent/registration.py (the find_unique_locator handler)
 Depends on: locators/hidden_value.py; browser_use.llm.messages (the llm object is passed in)
@@ -180,6 +182,18 @@ async def read_element_facts(target, timeout_ms: int = 2000) -> dict | None:
         logger.info("element-facts-unavailable: %s", type(exc).__name__)
         return None
     return facts if isinstance(facts, dict) and facts else None
+
+
+_WORD_FACTS = ("text", "label", "aria_label", "title", "placeholder", "item_text")
+
+
+def words_agree(expected_text: str | None, facts: dict | None) -> bool:
+    """D6: the agent's own words, whitespace collapsed and lower-cased, occur in one of the
+    element's worded facts. False for no words or no facts."""
+    words = " ".join((expected_text or "").split()).lower()
+    if not words or not facts:
+        return False
+    return any(words in " ".join(str(facts.get(k) or "").split()).lower() for k in _WORD_FACTS)
 
 
 def build_messages(user_query: str, step: str, action: str, facts: dict) -> list:

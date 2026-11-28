@@ -35,12 +35,18 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from browser_service.agent.read_step_identity import read_identity_facts, read_step_verdict
-from browser_service.locators.action_fit import READ_ACTIONS, check_action_fit
+from browser_service.locators.action_fit import IDENTITY_ACTIONS, READ_ACTIONS, check_action_fit
 from browser_service.locators.classifier import classify_element_type
 from browser_service.locators.click_target import find_inner_control
 from browser_service.locators.css_tokens import robot_safe
 from browser_service.locators.frame_locator import ensure_frame_on_result, strip_frame
 from browser_service.locators.hidden_value import HIDES_VALUE_JS
+from browser_service.locators.pointed_identity import (
+    point_only,
+    pointed_target,
+    pointed_target_or_raise,
+    proven,
+)
 from browser_service.locators.read_target import apply_read_target_policy, carries_value
 from browser_service.locators.smart_locator import (
     NO_EVIDENCE_ERROR,
@@ -483,6 +489,34 @@ async def _same_element(search_root, result, candidate, action, iframe_context=N
     return same
 
 
+async def _candidate_proven(
+    page, iframe_context, locator, action, element_data, by_index, point, row_named=False
+) -> Tuple[bool, str]:
+    """Point-then-prove D4 for the agent's unique candidate: ``(True, "")`` when it lands on the
+    element the agent pointed at; ``(False, why)`` on a performed step when it does not, so the
+    cascade runs from the call's evidence instead — or, when the step names a row
+    (``row_named``), the caller refuses the call; ``(False, "")`` outside IDENTITY_ACTIONS."""
+    if action not in IDENTITY_ACTIONS:
+        return False, ""
+    target = await pointed_target(page, iframe_context, element_data, by_index, point)
+    ok, why = (
+        await proven(page, iframe_context, locator, target, False)
+        if target is not None
+        else (False, _NO_TARGET)
+    )
+    if ok:
+        logger.info(
+            f"   ✅ CANDIDATE PROVEN: '{locator}' lands on the pointed element ({why}); "
+            f"the row-anchor, identity and word checks are skipped (signal: candidate-proven)"
+        )
+        return True, ""
+    then = "refused: the step names a row" if row_named else "continuing with smart locator finder"
+    logger.info(
+        f"   ⛔ CANDIDATE NOT PROVEN: '{locator}' — {why}; {then} (signal: candidate-unproven)"
+    )
+    return False, why
+
+
 async def _settle_row_datum(
     result, fallback_result, action, search_root, iframe_context, row_datum, expected_text
 ) -> Dict[str, Any]:
@@ -677,6 +711,78 @@ def _through_frame_gate(action):
     return gated
 
 
+# The point is on nothing the gate can judge: the reason, and the sentence the agent reads.
+_NO_TARGET = "no element at the point"
+_UNREADABLE = "unreadable"
+_REFUSAL_ERRORS = {
+    _NO_TARGET: "Your point is on no element.",
+    _UNREADABLE: "The element you pointed at could not be read; the page may have changed.",
+}
+
+
+async def _gate_target(page, frame: Optional[str], bound: Dict[str, Any]) -> Tuple[Any, str]:
+    """The call's target and "", or None and why: no element at its point, or unreadable."""
+    try:
+        target = await pointed_target_or_raise(
+            page,
+            frame,
+            bound.get("element_data"),
+            bool(bound.get("pointed_by_index")),
+            (bound["x"], bound["y"]),
+        )
+    except Exception:
+        return None, _UNREADABLE
+    return target, "" if target is not None else _NO_TARGET
+
+
+def _through_identity_gate(action):
+    """Ship a performed step's locator only when it lands on the pointed element (point-then-prove D3).
+
+    For a found result of a step in IDENTITY_ACTIONS (flag on) with a page, the target is the
+    indexed node or the element under the call's OWN (x, y) — never ``vision_point``, which a
+    re-aimed call keeps on the dead container. The result stands only when ``proven``; else it
+    comes back not found with ``identity_unproven`` (registration's one retry, then NOT FOUND).
+    Everything else passes as the same object. Stacked inside the inner-control re-aim and
+    outside the frame gate, so it sees the framed string every exit ships.
+    """
+    signature = inspect.signature(action)
+
+    @functools.wraps(action)
+    async def identity_gated(*args, **kwargs):
+        result = await action(*args, **kwargs)
+        bound = signature.bind(*args, **kwargs).arguments
+        page = bound.get("page")
+        best = result.get("best_locator") if isinstance(result, dict) else None
+        if not (best and result.get("found") and page is not None):
+            return result
+        if bound.get("action") not in IDENTITY_ACTIONS:
+            return result
+        frame = bound.get("iframe_context")
+        target, why = await _gate_target(page, frame, bound)
+        if target is not None:
+            collection = bound.get("is_collection") is True or result.get("unique") is False
+            ok, why = await proven(page, frame, best, target, collection)
+            if ok:
+                logger.info(
+                    f"   ✅ POINTED IDENTITY PROVEN: '{best}' lands on the pointed element ({why}) "
+                    f"(signal: pointed-identity-proven)"
+                )
+                return result
+        logger.warning(
+            f"   ⛔ POINTED IDENTITY REFUSED: '{best}' — {why} (signal: pointed-identity-refused)"
+        )
+        return {
+            **result,
+            "found": False,
+            "best_locator": None,
+            "error": _REFUSAL_ERRORS.get(why, f"Your locator {why}."),
+            "error_type": "NotPointedElement",
+            "identity_unproven": why,
+        }
+
+    return identity_gated
+
+
 _SPECIALISED_TYPES = frozenset({"dropdown", "checkbox", "radio", "file-upload", "date-picker"})
 
 
@@ -826,6 +932,7 @@ def _through_inner_control(action):
 
 
 @_through_inner_control
+@_through_identity_gate
 @_through_frame_gate
 async def find_unique_locator_action(
     x: float,
@@ -852,6 +959,7 @@ async def find_unique_locator_action(
         Tuple[int, int]
     ] = None,  # Index-less read: raw point read as pixels (#75)
     locate_only: bool = False,  # NLRF #162: a wait / hover / upload / count — reads no value
+    pointed_by_index: bool = False,  # point-then-prove: element_data is the node an index found
 ) -> Dict[str, Any]:
     """
     Custom action that agent can call to find and validate unique locator.
@@ -983,16 +1091,30 @@ async def find_unique_locator_action(
         # bs #72: a call that names no element ships nothing. Blank text counts as
         # none: a blank needle makes validate_semantic_match accept any empty element.
         # (The cascade refuses the one case left: a frame container it discards.)
+        # Point-then-prove D4: a pointed target lets the call through only where a later check
+        # proves the pick (the identity gate; the verifier for one located element), flag on.
         if not element_data and not (expected_text or "").strip():
-            logger.info(
-                f"   ⛔ NO EVIDENCE: {element_id} '{element_description}' at ({x}, {y}), "
-                f"candidate={candidate_locator!r} — no element data and no expected text; "
-                f"refused (signal: no-evidence-refused)"
+            provable = action in IDENTITY_ACTIONS or point_only(
+                element_data, expected_text, locate_only, action, is_collection
             )
-            return create_error_result(
-                "NoElementEvidence",
-                NO_EVIDENCE_ERROR,
-                {"evidence": "none"},
+            if (
+                not provable
+                or await pointed_target(page, iframe_context, None, False, (x, y)) is None
+            ):
+                logger.info(
+                    f"   ⛔ NO EVIDENCE: {element_id} '{element_description}' at ({x}, {y}), "
+                    f"candidate={candidate_locator!r} — no element data and no expected text; "
+                    f"refused (signal: no-evidence-refused)"
+                )
+                return create_error_result(
+                    "NoElementEvidence",
+                    NO_EVIDENCE_ERROR,
+                    {"evidence": "none"},
+                )
+            logger.info(
+                f"   🎯 NO EVIDENCE BUT A TARGET: {element_id} '{element_description}' at ({x}, {y}) "
+                f"— no element data and no expected text, but the point hits an element; "
+                f"continuing (signal: no-evidence-point-target)"
             )
 
         # ========================================
@@ -1082,6 +1204,31 @@ async def find_unique_locator_action(
                     logger.info("      - validation_method: playwright")
 
                     if count == 1:
+                        # Point-then-prove D4: a candidate proven on the pointed element skips
+                        # the row-anchor, identity and word checks below; the action fit and
+                        # the volatile / positional demotion still run. An unproven one on a
+                        # performed step is set aside: the cascade runs, then the exit gate.
+                        # §6: when the step names a row, the agent pointed at another row's
+                        # control — refused at once, in the exit gate's shape (one retry).
+                        _row_named = bool((row_anchor_text or "").strip())
+                        _candidate_is_proven, _candidate_unproven = await _candidate_proven(
+                            page,
+                            iframe_context,
+                            playwright_locator,
+                            action,
+                            element_data,
+                            pointed_by_index,
+                            (x, y),
+                            _row_named,
+                        )
+                        if _candidate_unproven and _row_named:
+                            return create_error_result(
+                                "NotPointedElement",
+                                _REFUSAL_ERRORS.get(
+                                    _candidate_unproven, f"Your locator {_candidate_unproven}."
+                                ),
+                                {"best_locator": None, "identity_unproven": _candidate_unproven},
+                            )
                         # q02 guard: a unique candidate that targets the row
                         # anchor datum itself while the indexed element's own
                         # text disagrees is the anchor CELL, not the row's
@@ -1105,7 +1252,8 @@ async def find_unique_locator_action(
                             ).split()
                         )
                         _anchor_reject = bool(
-                            _anchor_norm
+                            not _candidate_is_proven
+                            and _anchor_norm
                             and _elem_text_norm
                             and _elem_text_norm != _anchor_norm
                             and candidate_targets_row_anchor(playwright_locator, row_anchor_text)
@@ -1143,7 +1291,11 @@ async def find_unique_locator_action(
                             _resolved_element = await _read_resolved_element(
                                 search_root, playwright_locator
                             )
-                            _identity_reason = _identity_mismatch(element_data, _resolved_element)
+                            _identity_reason = (
+                                ""
+                                if _candidate_is_proven
+                                else _identity_mismatch(element_data, _resolved_element)
+                            )
                             # E2a (todomvc u10): the index is the guard's evidence. When the
                             # INDEXED element provably cannot perform the step and the
                             # candidate's element can, the index is the wrong evidence.
@@ -1208,8 +1360,10 @@ async def find_unique_locator_action(
                         # resolves to on the page — not the intended element from element_data
                         # (audit Issue 2b). Guard with expected_text so we accept on uniqueness
                         # alone when no semantic hint is available (audit Issue 5).
-                        _semantic_ok = not _anchor_reject and not _identity_reason
-                        if _semantic_ok and expected_text:
+                        _semantic_ok = (
+                            not _anchor_reject and not _identity_reason and not _candidate_unproven
+                        )
+                        if _semantic_ok and expected_text and not _candidate_is_proven:
                             from browser_service.locators import validate_semantic_match
 
                             # accept_empty_interactive (q05 guard i): a unique

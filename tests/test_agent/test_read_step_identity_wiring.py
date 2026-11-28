@@ -178,7 +178,24 @@ async def test_failed_read_keeps_the_reject():
 async def test_non_read_steps_never_consult_k(action):
     """Click/select/input act through the index in discovery (registration.py:976-988);
     None = ENABLE_ACTION_FIT=false."""
-    result, k_read = await _call(_page(), ACCEPT, action=action)
+
+    # Premise: the agent pointed at the sidebar link; the h6 candidate is not it, the cascade's
+    # sidebar answer is. The fake page cannot be hit-tested, so point-then-prove's reads are given.
+    async def only_the_sidebar_is_proven(page, iframe_context, locator, target, is_collection):
+        return (locator == SIDEBAR_CASCADE_RESULT["best_locator"], "same")
+
+    with (
+        patch("browser_service.agent.actions.pointed_target", new=AsyncMock(return_value=object())),
+        patch(
+            "browser_service.agent.actions.pointed_target_or_raise",
+            new=AsyncMock(return_value=object()),
+        ),
+        patch(
+            "browser_service.agent.actions.proven",
+            new=AsyncMock(side_effect=only_the_sidebar_is_proven),
+        ),
+    ):
+        result, k_read = await _call(_page(), ACCEPT, action=action)
     k_read.assert_not_awaited()
     assert result["best_locator"] == SIDEBAR_CASCADE_RESULT["best_locator"]
 

@@ -181,10 +181,24 @@ async def test_match_proceeds_to_the_interaction(caplog):
     assert "Sign in" not in caplog.text  # the facts are never logged
 
 
+async def test_locate_only_step_tells_verifier_locate():
+    hover = {**READ, "description": "the avatar to hover", "locate_only": True}
+    (result,), m = await _run(["elem_2"], ["match"], elements=(hover,))
+    _shipped(result)
+    m.verify.assert_awaited_once_with(LLM, QUERY, hover["description"], "locate", FACTS)
+
+
+async def test_read_step_still_tells_verifier_get_text():
+    (result,), m = await _run(["elem_2"], ["match"], elements=(READ,))
+    _shipped(result)
+    m.verify.assert_awaited_once_with(LLM, QUERY, READ["description"], "get_text", FACTS)
+
+
 @pytest.mark.parametrize("verdict", ["unsure", "skipped"])
 async def test_unsure_and_skipped_proceed(verdict, caplog):
     with caplog.at_level(logging.INFO, logger=LOGGER):
-        (result,), m = await _run(["elem_1"], [(verdict, "timeout")])
+        # a skipped first answer is asked once more (D6): the second answer is queued
+        (result,), m = await _run(["elem_1"], [(verdict, "timeout"), "match"])
     _shipped(result)
     m.interaction.assert_awaited_once()
     assert f"(signal: element-verifier-{verdict})" in caplog.text
@@ -485,12 +499,14 @@ async def test_graphic_skipped_twice_on_a_requery_keeps_the_validated_locator(ca
     assert SKIPPED_SIGNAL in caplog.text
 
 
-async def test_skipped_without_a_graphic_ships_with_no_reask(caplog):
+async def test_skipped_without_a_graphic_is_reasked_under_its_own_signal(caplog):
+    """D6 re-asks every pick whose facts were read; the graphic signals stay the picture's own."""
     with caplog.at_level(logging.INFO, logger=LOGGER):
-        (result,), m = await _run(["elem_1"], [("skipped", "timeout")])
+        (result,), m = await _run(["elem_1"], [("skipped", "timeout"), "match"])
     _shipped(result)
     m.interaction.assert_awaited_once()
-    m.verify.assert_awaited_once()
+    assert m.verify.await_count == 2
+    assert "(signal: element-verifier-silent-reask)" in caplog.text
     assert REASK_SIGNAL not in caplog.text and SKIPPED_SIGNAL not in caplog.text
 
 

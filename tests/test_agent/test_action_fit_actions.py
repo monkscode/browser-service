@@ -6,6 +6,7 @@ tests drive find_unique_locator_action with the cascade and the fitness
 read mocked (same conventions as test_actions_mocked.py).
 """
 
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -137,10 +138,29 @@ class FakePage:
 CANDIDATE = f'[aria-label="{SEARCH_TEXT}"]'
 
 
+@contextmanager
+def _pointed_element_proven():
+    """Premise: every pick here is the element the agent pointed at. The fake page cannot be
+    hit-tested, so point-then-prove's reads (the candidate proof, the exit gate) are given a
+    proven verdict; they run on real Chromium in test_identity_gate_fixtures.py."""
+    with (
+        patch("browser_service.agent.actions.pointed_target", new=AsyncMock(return_value=object())),
+        patch(
+            "browser_service.agent.actions.pointed_target_or_raise",
+            new=AsyncMock(return_value=object()),
+        ),
+        patch("browser_service.agent.actions.proven", new=AsyncMock(return_value=(True, "same"))),
+    ):
+        yield
+
+
 async def _call(action, cascade):
     # bs #64: the exit counts the string it ships; the cascade's answer counts 1 too.
     page = FakePage({CANDIDATE: FakeLocator(1), FOUND_STABLE["best_locator"]: FakeLocator(1)})
-    with patch("browser_service.locators.find_unique_locator_at_coordinates", new=cascade):
+    with (
+        patch("browser_service.locators.find_unique_locator_at_coordinates", new=cascade),
+        _pointed_element_proven(),
+    ):
         return await find_unique_locator_action(
             x=100,
             y=100,

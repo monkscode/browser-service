@@ -182,6 +182,9 @@ LIVE = [
 @pytest.mark.parametrize("in_frame", [False, True])
 @pytest.mark.parametrize("body,target,desc,expected,string", LIVE, ids=["ws", "trail", "apos"])
 async def test_live_string_is_kept(page, in_frame, body, target, desc, expected, string):
+    """The point on ``#far`` is what routes the call to STEP 2.5 (on the button, text-first ships
+    ``text="..."`` first). A click there is refused by the identity gate (the test below), so the
+    step action is None (flag off): the gate is inert and the string check is the subject."""
     out = await _run(
         page,
         body,
@@ -190,10 +193,31 @@ async def test_live_string_is_kept(page, in_frame, body, target, desc, expected,
         pointed="#far",
         description=desc,
         expected=expected,
-        action="click",
+        action=None,
     )
     assert _best(out) == string
     assert await _is_target(page, out, target, in_frame)
+
+
+async def test_live_string_on_a_point_elsewhere_is_refused(page):
+    """Point-then-prove §6: a click whose point is on another element ships nothing; the
+    refusal names the element the string finds and the one the point is on."""
+    body, target, desc, expected, _ = LIVE[0]
+    out = await _run(
+        page,
+        body,
+        in_frame=False,
+        target=target,
+        pointed="#far",
+        description=desc,
+        expected=expected,
+        action="click",
+    )
+    assert out["found"] is False
+    assert out["best_locator"] is None
+    assert out["error_type"] == "NotPointedElement"
+    assert out["identity_unproven"].startswith("finds <button class=exp> at (")
+    assert "; the element you pointed at is <div id=far> at (" in out["identity_unproven"]
 
 
 # Top only: STEP 2.5b (the collection route) cannot run in a frame today.

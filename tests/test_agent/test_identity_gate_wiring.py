@@ -183,6 +183,15 @@ async def test_collection_is_judged_as_one():
     assert judge.await_args.args[4] is True
 
 
+@pytest.mark.parametrize("is_collection", [None, False])
+async def test_non_unique_result_is_judged_as_a_collection(is_collection):
+    """A result that says it is not unique is a collection even when the call did not say so;
+    judged as one element it would be refused."""
+    _, _, judge = await _gated({**FOUND, "unique": False}, is_collection=is_collection)
+
+    assert judge.await_args.args[4] is True
+
+
 @pytest.mark.parametrize(
     ("result", "call"),
     [
@@ -301,9 +310,16 @@ NOT_FOUND = {"found": False, "error": "cascade found nothing"}
 
 
 async def _candidate(
-    proof, action="click", surface=CHECKBOX, fit="", cascade_result=NOT_FOUND, **overrides
+    proof,
+    action="click",
+    surface=CHECKBOX,
+    fit="",
+    cascade_result=NOT_FOUND,
+    pointed=TARGET,
+    **overrides,
 ):
-    """The real action on the fake page; ``proof`` is ``proven``'s verdict or a stand-in for it."""
+    """The real action on the fake page; ``proof`` is ``proven``'s verdict or a stand-in for it;
+    ``pointed`` is what ``pointed_target`` returns."""
     kwargs = dict(
         x=100,
         y=100,
@@ -316,7 +332,7 @@ async def _candidate(
     )
     kwargs.update(overrides)
     cascade = AsyncMock(return_value=dict(cascade_result))
-    target = AsyncMock(return_value=TARGET)
+    target = AsyncMock(return_value=pointed)
     judge = AsyncMock(side_effect=proof) if callable(proof) else AsyncMock(return_value=proof)
     with (
         patch("browser_service.locators.find_unique_locator_at_coordinates", new=cascade),
@@ -363,11 +379,16 @@ def _only_proven(locator):
     return judge
 
 
-async def test_unproven_candidate_goes_to_the_cascade_whose_proven_answer_ships(caplog):
+@pytest.mark.parametrize("row_anchor_text", [None, "  "], ids=["no-row", "blank-row"])
+async def test_unproven_candidate_goes_to_the_cascade_whose_proven_answer_ships(
+    caplog, row_anchor_text
+):
     """D4: no veto would stop this candidate today; unproven, it is set aside for the cascade."""
     with caplog.at_level(logging.INFO, logger="browser_service.agent.actions"):
         out, cascade, _, _ = await _candidate(
-            _only_proven("id=toggle-1"), cascade_result=CASCADE_FOUND
+            _only_proven("id=toggle-1"),
+            cascade_result=CASCADE_FOUND,
+            row_anchor_text=row_anchor_text,
         )
 
     cascade.assert_awaited()
@@ -387,6 +408,67 @@ async def test_unproven_candidate_and_an_unproven_cascade_answer_are_refused():
     assert out["found"] is False
     assert out["best_locator"] is None
     assert out["identity_unproven"] == WHY
+
+
+ROW_DATA = {"tagName": "input", "xpath": "html/body/ul/li[2]/input"}
+
+
+@pytest.mark.parametrize(
+    ("pointed", "why", "error"),
+    [
+        pytest.param(TARGET, WHY, f"Your locator {WHY}.", id="another-element"),
+        pytest.param(
+            None, "no element at the point", "Your point is on no element.", id="no-element"
+        ),
+    ],
+)
+async def test_unproven_candidate_on_a_row_step_is_refused_without_the_cascade(
+    caplog, pointed, why, error
+):
+    """Design §6: on a step that names its row, a candidate off the pointed element is refused at
+    once, in the exit gate's shape; registration's identity branch gives the one retry."""
+    with caplog.at_level(logging.INFO, logger="browser_service.agent.actions"):
+        out, cascade, _, _ = await _candidate(
+            _only_proven("id=toggle-1"),
+            cascade_result=CASCADE_FOUND,
+            pointed=pointed,
+            element_data=ROW_DATA,
+            row_anchor_text="Buy milk",
+        )
+
+    cascade.assert_not_awaited()
+    assert out["found"] is False
+    assert out["best_locator"] is None
+    assert out["error"] == error
+    assert out["error_type"] == "NotPointedElement"
+    assert out["identity_unproven"] == why
+    assert [m for m in caplog.messages if m.endswith("(signal: candidate-unproven)")] == [
+        f"   ⛔ CANDIDATE NOT PROVEN: 'li:first-child .toggle' — {why}; refused: the step "
+        f"names a row (signal: candidate-unproven)"
+    ]
+
+
+@pytest.mark.parametrize("action", ["select", "get_text", None])
+async def test_out_of_scope_candidate_on_a_row_step_untouched(action):
+    """A select, a read or flag off reads no proof, so a row anchor refuses nothing there."""
+    out, _, target, judge = await _candidate(
+        (False, WHY), action=action, element_data=ROW_DATA, row_anchor_text="Buy milk"
+    )
+
+    target.assert_not_awaited()
+    judge.assert_not_awaited()
+    assert "identity_unproven" not in out
+    assert out["found"] is True
+    assert out["all_locators"][0]["type"] == "candidate"
+
+
+async def test_candidate_is_judged_at_the_calls_own_point():
+    """Never at vision_point: a re-aimed call keeps that on the dead container."""
+    _, _, target, _ = await _candidate(
+        (True, "same"), element_data=ROW_DATA, pointed_by_index=True, vision_point=(640, 300)
+    )
+
+    assert target.await_args_list[0].args[1:] == (None, ROW_DATA, True, (100, 100))
 
 
 async def test_proven_candidate_still_takes_the_action_fit(caplog):

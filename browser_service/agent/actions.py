@@ -490,11 +490,12 @@ async def _same_element(search_root, result, candidate, action, iframe_context=N
 
 
 async def _candidate_proven(
-    page, iframe_context, locator, action, element_data, by_index, point
+    page, iframe_context, locator, action, element_data, by_index, point, row_named=False
 ) -> Tuple[bool, str]:
     """Point-then-prove D4 for the agent's unique candidate: ``(True, "")`` when it lands on the
     element the agent pointed at; ``(False, why)`` on a performed step when it does not, so the
-    cascade runs from the call's evidence instead; ``(False, "")`` outside IDENTITY_ACTIONS."""
+    cascade runs from the call's evidence instead — or, when the step names a row
+    (``row_named``), the caller refuses the call; ``(False, "")`` outside IDENTITY_ACTIONS."""
     if action not in IDENTITY_ACTIONS:
         return False, ""
     target = await pointed_target(page, iframe_context, element_data, by_index, point)
@@ -509,9 +510,9 @@ async def _candidate_proven(
             f"the row-anchor, identity and word checks are skipped (signal: candidate-proven)"
         )
         return True, ""
+    then = "refused: the step names a row" if row_named else "continuing with smart locator finder"
     logger.info(
-        f"   ⛔ CANDIDATE NOT PROVEN: '{locator}' — {why}; continuing with smart locator "
-        f"finder (signal: candidate-unproven)"
+        f"   ⛔ CANDIDATE NOT PROVEN: '{locator}' — {why}; {then} (signal: candidate-unproven)"
     )
     return False, why
 
@@ -1207,6 +1208,9 @@ async def find_unique_locator_action(
                         # the row-anchor, identity and word checks below; the action fit and
                         # the volatile / positional demotion still run. An unproven one on a
                         # performed step is set aside: the cascade runs, then the exit gate.
+                        # §6: when the step names a row, the agent pointed at another row's
+                        # control — refused at once, in the exit gate's shape (one retry).
+                        _row_named = bool((row_anchor_text or "").strip())
                         _candidate_is_proven, _candidate_unproven = await _candidate_proven(
                             page,
                             iframe_context,
@@ -1215,7 +1219,16 @@ async def find_unique_locator_action(
                             element_data,
                             pointed_by_index,
                             (x, y),
+                            _row_named,
                         )
+                        if _candidate_unproven and _row_named:
+                            return create_error_result(
+                                "NotPointedElement",
+                                _REFUSAL_ERRORS.get(
+                                    _candidate_unproven, f"Your locator {_candidate_unproven}."
+                                ),
+                                {"best_locator": None, "identity_unproven": _candidate_unproven},
+                            )
                         # q02 guard: a unique candidate that targets the row
                         # anchor datum itself while the indexed element's own
                         # text disagrees is the anchor CELL, not the row's

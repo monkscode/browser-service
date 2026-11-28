@@ -8,9 +8,13 @@ when the target is a match or holds one. The target is built the way the gate bu
 (``pointed_target``). Inline HTML, 1280x900.
 """
 
+import logging
+
 import pytest
 from playwright.async_api import async_playwright
 
+from browser_service.agent.actions import find_unique_locator_action
+from browser_service.locators.frame_locator import strip_frame
 from browser_service.locators.handlers.checkbox import resolve_hidden_input_proxy
 from browser_service.locators.pointed_identity import pointed_target, proven
 from tests.test_locators.test_pointed_identity_fixtures import TODOMVC, _centre, _data
@@ -295,6 +299,80 @@ async def test_contenteditable_editor_in_frame_proven(page):
         True,
         "control-above",
     )
+
+
+EDITOR_FRAME = 'iframe[id="mce_0_ifr"]'
+
+
+async def _editor_call(page, caplog, x, y, data, *, by_index, expected_text=None):
+    """The q09 input step with the agent's candidate ``id=tinymce``, as registration calls it."""
+    with caplog.at_level(logging.INFO, logger="browser_service.agent.actions"):
+        return await find_unique_locator_action(
+            x=x,
+            y=y,
+            element_id="elem_1",
+            element_description="the body of the text editor inside the iframe",
+            expected_text=expected_text,
+            candidate_locator="id=tinymce",
+            element_data=data,
+            page=page,
+            iframe_context=EDITOR_FRAME,
+            is_collection=False,
+            action="input",
+            pointed_by_index=by_index,
+        )
+
+
+def _assert_editor_body_proven(out, caplog):
+    assert out["found"] is True
+    assert strip_frame(out["best_locator"], EDITOR_FRAME) == "id=tinymce"
+    assert any(m.endswith("(signal: candidate-proven)") for m in caplog.messages)
+    assert any(m.endswith("(signal: pointed-identity-proven)") for m in caplog.messages)
+
+
+@pytest.mark.parametrize("height", [200, 300])
+async def test_editor_frame_centre_after_the_frame_swap_proven(page, caplog, height):
+    """July TinyMCE q09: the agent indexed the <iframe>, the frame lookup swapped in another box
+    (not by index), so the call is judged at the frame's centre — below a one-line editor body, on
+    the frame's <html>. A contenteditable body is a control; that point names it."""
+    await page.set_content(
+        f'<iframe id="mce_0_ifr" style="width:600px;height:{height}px" srcdoc="'
+        "<body id='tinymce' contenteditable='true' style='margin:16px'>"
+        "<p>Your content goes here.</p></body>"
+        '"></iframe>'
+    )
+    await page.frame_locator(EDITOR_FRAME).locator("p").wait_for()
+    box = await page.locator(EDITOR_FRAME).bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    swapped = {"tagName": "div", "textContent": "notice", "xpath": "html/body/div"}
+
+    out = await _editor_call(
+        page, caplog, x, y, swapped, by_index=False, expected_text="Your content goes here."
+    )
+
+    _assert_editor_body_proven(out, caplog)
+
+
+async def test_indexed_editor_body_proven(page, caplog):
+    """The agent indexed the editor's own contenteditable <body>."""
+    await page.set_content(
+        '<iframe id="mce_0_ifr" style="width:500px;height:200px" srcdoc="'
+        "<body id='tinymce' class='mce-content-body' contenteditable='true'>"
+        "<p style='margin:40px'>Your content goes here.</p></body>"
+        '"></iframe>'
+    )
+    x, y = await _at(page, "p", EDITOR_FRAME)
+    data = {
+        "tagName": "body",
+        "id": "tinymce",
+        "className": "mce-content-body",
+        "textContent": "Your content goes here.",
+        "xpath": "html/body",
+    }
+
+    out = await _editor_call(page, caplog, x, y, data, by_index=True)
+
+    _assert_editor_body_proven(out, caplog)
 
 
 async def test_label_result_for_input_hit_proven(page):

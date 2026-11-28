@@ -33,8 +33,16 @@ _HIT_JS = f"""
 }}
 """
 
-# A point on these names no element: empty page, or a frame bs did not enter.
-_NO_TARGET_JS = "el => ['body', 'html', 'iframe'].includes(el.localName)"
+# The target ``el`` names, or null: a body, html or iframe names no element (empty page, or a
+# frame bs did not enter) — except a contenteditable body, an editor and so a control (TinyMCE
+# q09), which a point on its html below a short body names too.
+_TARGET_JS = """
+el => {
+    const t = el.localName === 'html' ? el.ownerDocument.body || el : el;
+    if (t.localName === 'body' && t.isContentEditable) return t;
+    return ['body', 'html', 'iframe'].includes(t.localName) ? null : t;
+}
+"""
 
 # The ONE Control definition (isControl), and the nearest control at or above ``el``: the element
 # itself, then up to 6 ancestors, crossing open shadow hosts. null when none.
@@ -140,10 +148,10 @@ el => {
 
 
 async def _kept(handle):
-    """``handle`` unless it names no element (none, body, html, an iframe)."""
-    if handle is None or await handle.evaluate(_NO_TARGET_JS):
+    """The element ``handle`` names (``_TARGET_JS``), or None for none, body, html, an iframe."""
+    if handle is None:
         return None
-    return handle
+    return (await handle.evaluate_handle(_TARGET_JS)).as_element()
 
 
 async def _hit_at(page, iframe_context: str | None, point: tuple[float, float]):

@@ -92,6 +92,31 @@ async def test_target_point_on_body_is_none(page):
     assert await pointed_target(page, None, None, False, (900, 700)) is None
 
 
+@pytest.mark.parametrize("editable", [False, True], ids=["plain-body", "editable-body"])
+async def test_target_on_a_frame_body_is_none_unless_editable(page, editable):
+    """A plain body names no element, by index or by a point on the frame's <html> below it; a
+    contenteditable body is an editor (a control), so both name it."""
+    attr = " contenteditable='true'" if editable else ""
+    frame = 'iframe[id="f"]'
+    await page.set_content(
+        f'<iframe id="f" style="width:400px;height:200px" '
+        f"srcdoc=\"<body id='b'{attr}><p>One line</p></body>\"></iframe>"
+    )
+    await page.frame_locator(frame).locator("p").wait_for()
+    centre = await _centre(page.locator(frame))
+    raw_hit = "p => document.elementFromPoint(innerWidth / 2, innerHeight / 2).localName"
+    assert await page.frame_locator(frame).locator("p").evaluate(raw_hit) == "html"  # below body
+    by_index = await pointed_target(page, frame, {"xpath": "html/body"}, True, None)
+    by_point = await pointed_target(page, frame, None, False, centre)
+
+    if editable:
+        assert await _id(by_index) == "b"
+        assert await _id(by_point) == "b"
+    else:
+        assert by_index is None
+        assert by_point is None
+
+
 async def test_target_in_iframe_uses_relative_point(page):
     await page.set_content(
         '<div style="height:300px"></div>'

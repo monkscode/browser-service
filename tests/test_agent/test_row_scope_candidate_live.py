@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from playwright.async_api import async_playwright
 
+from browser_service.agent import element_verifier
 from browser_service.agent.actions import find_unique_locator_action
 from browser_service.locators.frame_locator import strip_frame
 
@@ -175,23 +176,51 @@ class TestRowScopedCandidateIsKept:
         )
         assert out["best_locator"] == candidate
 
-    async def test_candidate_on_another_row_than_the_pointer_is_set_aside(self, page, caplog):
-        """Point-then-prove D4 + §6: the Smith candidate does not land on the pointed Bach link,
-        so it is set aside (named with both elements) and what ships lands on the pointed link;
-        whether that is the step's row is the element verifier's call."""
+    async def test_candidate_on_another_row_than_the_pointer_is_refused(self, page, caplog):
+        """Point-then-prove §6: the Smith candidate does not land on the pointed Bach link and the
+        step names its row, so the call is refused at once (no cascade), naming both elements;
+        registration's identity branch asks the agent once more."""
         await _open(page)
-        with caplog.at_level(logging.INFO):
+        cascade = AsyncMock()
+        with (
+            caplog.at_level(logging.INFO),
+            patch("browser_service.locators.find_unique_locator_at_coordinates", new=cascade),
+        ):
             out = await _call(page, BACH_EDIT, FIRST_SHAPE, expected_text="edit", action="click")
-        assert out["best_locator"] != FIRST_SHAPE
-        assert await page.locator(out["best_locator"]).evaluate(LANDS_JS) == "Bach|table1"
-        set_aside = [
-            r.getMessage() for r in caplog.records if "candidate-unproven" in r.getMessage()
-        ]
-        assert len(set_aside) == 1
-        assert re.search(
+        cascade.assert_not_awaited()
+        assert out["found"] is False
+        assert out["best_locator"] is None
+        assert out["error_type"] == "NotPointedElement"
+        assert re.fullmatch(
             r"finds <a> at \(\d+, \d+\); the element you pointed at is <a> at \(\d+, \d+\)",
-            set_aside[0],
+            out["identity_unproven"],
         )
+        refused = [r.getMessage() for r in caplog.records if "candidate-unproven" in r.getMessage()]
+        assert len(refused) == 1
+        assert "refused: the step names a row" in refused[0]
+
+    async def test_pointed_link_without_a_candidate_shows_the_verifier_its_row(self, page):
+        """No candidate, Bach's edit link indexed: whatever ships, the element verifier's facts
+        for it name Bach's row, so a step meaning Smith's row can be told apart."""
+        await _open(page)
+        x, y = await _center(page, BACH_EDIT)
+        out = await find_unique_locator_action(
+            x=x,
+            y=y,
+            element_id="elem_1",
+            element_description=DESC,
+            expected_text="edit",
+            element_data=await page.locator(BACH_EDIT).first.evaluate(INDEXED_DATA_JS),
+            page=page,
+            is_collection=False,
+            row_anchor_text="Smith",
+            action="click",
+            pointed_by_index=True,
+        )
+        assert out["found"] is True
+        facts = await element_verifier.read_element_facts(page.locator(out["best_locator"]))
+        assert "Bach" in facts["row_text"]
+        assert "Smith" not in facts["row_text"]
 
     async def test_row_scoped_candidate_is_accepted_inside_a_frame(self, page, caplog):
         await page.goto(_file_url("row_anchor_two_tables_frame.html"), wait_until="load")
@@ -213,13 +242,15 @@ class TestRowScopedCandidateIsKept:
 
 
 class TestKeptCandidateStillFacesTheLaterChecks:
-    """Withdrawing the anchor reject must not skip the identity and text checks."""
+    """Withdrawing the anchor reject must not skip the identity and text checks. A performed
+    step's unproven candidate on a row-anchored call is refused before these checks (§6), so they
+    are pinned with the flag off (action None)."""
 
     async def test_kept_candidate_still_meets_the_later_checks(self, page, caplog):
         await _open(page)
         candidate = "#table1 tbody tr:has-text('Smith') a[href='#delete']"
         with caplog.at_level(logging.INFO):
-            out = await _call(page, SMITH_EDIT, candidate, expected_text="edit", action="click")
+            out = await _call(page, SMITH_EDIT, candidate, expected_text="edit", action=None)
         assert "row-anchor-scope-not-target" in caplog.text
         assert out["best_locator"] != candidate
         assert await page.locator(out["best_locator"]).evaluate(LANDS_JS) == "Smith|table1"
@@ -228,7 +259,9 @@ class TestKeptCandidateStillFacesTheLaterChecks:
 
 class TestRejectStillStandsWhereTheElementCarriesTheAnchor:
     """Guards: green before and after the fix. The fix may only withdraw a
-    reject when the landed element provably does not carry the anchor."""
+    reject when the landed element provably does not carry the anchor. A performed step's
+    unproven candidate on a row-anchored call is refused before this check (§6), so the guards
+    run with the flag off (action None)."""
 
     async def _assert_rejected(self, out, caplog, candidate):
         assert "row-anchor-rejects-candidate" in caplog.text
@@ -239,14 +272,14 @@ class TestRejectStillStandsWhereTheElementCarriesTheAnchor:
         await _open(page)
         candidate = "xpath=//table[@id='table1']//td[text()='Smith']"
         with caplog.at_level(logging.INFO):
-            out = await _call(page, SMITH_EDIT, candidate, expected_text=None, action="click")
+            out = await _call(page, SMITH_EDIT, candidate, expected_text=None, action=None)
         await self._assert_rejected(out, caplog, candidate)
 
     async def test_whole_row_candidate_is_still_rejected(self, page, caplog):
         await _open(page)
         candidate = "#table1 tbody tr:has-text('Smith')"
         with caplog.at_level(logging.INFO):
-            out = await _call(page, SMITH_EDIT, candidate, expected_text="edit", action="click")
+            out = await _call(page, SMITH_EDIT, candidate, expected_text="edit", action=None)
         await self._assert_rejected(out, caplog, candidate)
 
     async def test_long_row_with_the_anchor_past_500_characters_is_still_rejected(
@@ -264,7 +297,7 @@ class TestRejectStillStandsWhereTheElementCarriesTheAnchor:
                 "#table1 tbody tr >> nth=0 >> a[href='#edit']",
                 candidate,
                 expected_text="edit",
-                action="click",
+                action=None,
             )
         await self._assert_rejected(out, caplog, candidate)
 

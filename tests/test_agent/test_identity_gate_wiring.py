@@ -27,6 +27,7 @@ from browser_service.agent.actions import (
     find_unique_locator_action,
 )
 from browser_service.agent.registration import register_custom_actions
+from tests.test_agent.test_indexed_read_screen_point import FakeBrowserSession as MappedSession
 from tests.test_agent.test_indexed_read_screen_point import FakeNode
 from tests.test_agent.test_point_box_honesty import _call as _registration_call
 from tests.test_agent.test_point_box_honesty import _frame
@@ -529,14 +530,14 @@ RETRY_TEXT = (
 )
 
 
-async def _register_and_run(calls, agent=None):
+async def _register_and_run(calls, agent=None, selector_map=None, finder=None):
     agent = agent or FakeAgentWithSettings("auto")
+    session = MappedSession(selector_map) if selector_map else FakeBrowserSession()
+    finder = finder or AsyncMock()
+    finder.side_effect = lambda **kw: {**REFUSED, "element_id": kw["element_id"]}
     elements = [{"id": "elem_1", "action": "click"}, {"id": "elem_2", "action": "click"}]
     with (
-        patch(
-            "browser_service.agent.actions.find_unique_locator_action",
-            new=AsyncMock(side_effect=lambda **kw: {**REFUSED, "element_id": kw["element_id"]}),
-        ),
+        patch("browser_service.agent.actions.find_unique_locator_action", new=finder),
         patch("playwright.async_api.async_playwright", new=_fake_playwright()),
     ):
         assert register_custom_actions(agent, elements=elements) is True
@@ -544,16 +545,25 @@ async def _register_and_run(calls, agent=None):
             await agent.tools.registry.execute_action(
                 "find_unique_locator",
                 {"x": 500, "y": 300, "element_description": "the toggle", **params},
-                browser_session=FakeBrowserSession(),
+                browser_session=session,
             )
             for params in calls
         ], agent
 
 
-@pytest.mark.parametrize("index", [{"element_index": 7}, {}], ids=["indexed", "index-less"])
-async def test_first_refusal_asks_again_with_a_screenshot(caplog, index):
+@pytest.mark.parametrize(
+    ("index", "selector_map"),
+    [({"element_index": 7}, {7: FakeNode(x=400, y=220, width=24, height=24)}), ({}, None)],
+    ids=["indexed", "index-less"],
+)
+async def test_first_refusal_asks_again_with_a_screenshot(caplog, index, selector_map):
+    finder = AsyncMock()
     with caplog.at_level(logging.INFO, logger="browser_service.agent.registration"):
-        (first,), agent = await _register_and_run([{"element_id": "elem_1", **index}])
+        (first,), agent = await _register_and_run(
+            [{"element_id": "elem_1", **index}], selector_map=selector_map, finder=finder
+        )
+
+    assert finder.call_args.kwargs["pointed_by_index"] is bool(index)
 
     assert first.error == RETRY_TEXT
     assert first.extracted_content == RETRY_TEXT
